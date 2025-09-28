@@ -1,4 +1,4 @@
-## llama2.hs
+## llama2.clash
 
 <p align="center">
   <img src="assets/llama_cute.jpg" width="300" height="300" alt="Cute Llama">
