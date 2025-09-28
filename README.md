@@ -4,7 +4,7 @@
   <img src="assets/llama_cute.jpg" width="300" height="300" alt="Cute Llama">
 </p>
 
-An implementation in Haskell/Clash based on Andrej Karpathy's [Llama 2](https://ai.meta.com/llama/) model in pure C [llama2.c](https://github.com/karpathy/llama2.c).
+An implementation in *Haskell*/[*Clash*](https://clash-lang.org/) based on Andrej Karpathy's [Llama 2](https://ai.meta.com/llama/) model in pure C [llama2.c](https://github.com/karpathy/llama2.c).
 
 ## Running the llama2
 
