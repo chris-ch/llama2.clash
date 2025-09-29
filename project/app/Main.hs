@@ -72,7 +72,7 @@ runModel modelFileContent tokenizerFileContent temperature steps prompt seed = d
       putStrLn "No prompt provided, starting with BOS token (1)"
       return [1]
     Just promptStr -> do
-      let promptTokensI = T.encodeTokens tokenizer (BSC.pack promptStr) True False
+      let promptTokensI = T.encodeTokens tokenizer (BSC.pack promptStr) False False
           promptTokens' = map fromIntegral promptTokensI :: [Token]
       case promptTokens' of
         [] -> do

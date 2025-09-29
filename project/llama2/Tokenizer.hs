@@ -26,14 +26,14 @@ data Tokenizer = Tokenizer
   , spaceId        :: !Int                     -- id of " " (dummy-prefix)
   }
 
--- Parse tokenizer.bin exactly like C (little-endian)
+-- Parse tokenizer
 buildTokenizer :: BSL.ByteString -> Int -> Tokenizer
 buildTokenizer blob vocabSize =
   let (maxTokLen, vocabScores, vocab) = BG.runGet (parser vocabSize) blob
       vVec   = V.fromList vocab
       sVec   = V.fromList vocabScores
       m      = M.fromList (zip vocab [0..])
-      spId   = fromMaybe (-1) (M.lookup " " m)  -- C looks up exactly one ASCII space
+      spId = fromMaybe 1 (M.lookup " " m)
   in Tokenizer { vocabVector    = vVec
                , scoresVector   = sVec
                , sortedMap      = m
@@ -65,7 +65,9 @@ encodeTokens tok text bos eos =
     start = [1 | bos]
 
     -- add dummy-prefix " " token if text != ""
-    start' = if BSL.null text then start else start ++ [spaceId tok]
+    start' = if BSL.null text || spaceId tok < 0
+            then start
+            else start ++ [spaceId tok]
 
     -- initial tokens from UTF-8 codepoints with byte-fallback (+3)
     baseTokens = start' ++ utf8ToTokens tok text

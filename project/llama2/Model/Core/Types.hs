@@ -30,6 +30,7 @@ import Clash.Prelude
 import qualified GHC.TypeNats
 import GHC.Stack (HasCallStack)
 
+
 {- 
 -- model config 260K
 type ModelDim = 64
@@ -40,12 +41,8 @@ type NumKeyValueHeads = 4
 type HeadDimension  = 8
 type FreqDim = 4
 type VocabSize = 512 :: Nat
-vocabSize :: Int
-vocabSize = natToNum @VocabSize
-type SeqLen         = 512
-seqLen :: Int
-seqLen = natToNum @SeqLen
- -}
+type SequenceLength  = 512
+-}
 
 -- model config 15M
 type ModelDim = 288
@@ -68,11 +65,7 @@ type NumKeyValueHeads = 8
 type HeadDimension  = 64
 type FreqDim = 32
 type VocabSize = 32000 :: Nat
-vocabSize :: Int
-vocabSize = natToNum @VocabSize
-type SeqLen         = 1024
-seqLen :: Int
-seqLen = natToNum @SeqLen
+type SequenthLength         = 1024
  -}
 {-
 -- model config 110M
@@ -84,11 +77,7 @@ type NumKeyValueHeads = 12
 type HeadDimension  = 64
 type FreqDim = 32
 type VocabSize = 32000 :: Nat
-vocabSize :: Int
-vocabSize = natToNum @VocabSize
-type SeqLen         = 1024
-seqLen :: Int
-seqLen = natToNum @SeqLen
+type SequenthLength         = 1024
 -}
 
 -- ============================================================================
