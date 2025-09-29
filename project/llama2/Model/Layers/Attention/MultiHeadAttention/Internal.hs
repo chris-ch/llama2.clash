@@ -18,27 +18,20 @@ data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   , rmsAtt :: Vec ModelDim Float
   } deriving (Show)
 
-applyRotaryPositionEncoding :: Vec HeadDimension Float    -- input vector
-  -> Vec FreqDim Float  -- cosFrequencies
-  -> Vec FreqDim Float  -- sinFrequencies
+applyRotaryPositionEncoding :: Vec HeadDimension Float
+  -> Vec FreqDim Float
+  -> Vec FreqDim Float
   -> Vec HeadDimension Float
 applyRotaryPositionEncoding inputVec cosVec sinVec =
-  imap rotatePair inputVec
-  where
-    rotatePair :: KnownNat headDim => Index headDim -> Float -> Float
-    rotatePair i _
-        | even idx = rotatedReal
-        | otherwise = rotatedImag
-        where
-            idx :: Int
-            idx = fromIntegral i
-            pairIdx = idx `div` 2
-            realComponent = inputVec !! (2 * pairIdx)
-            imagComponent = inputVec !! (2 * pairIdx + 1)
-            cosValue = cosVec !! pairIdx
-            sinValue = sinVec !! pairIdx
-            rotatedReal = realComponent * cosValue - imagComponent * sinValue
-            rotatedImag = realComponent * sinValue + imagComponent * cosValue
+  concat (imap rotatePair (unconcat d2 inputVec))
+ where
+  rotatePair :: Index FreqDim -> Vec 2 Float -> Vec 2 Float
+  rotatePair i (realComponent :> imagComponent :> Nil) =
+    let c = cosVec !! i
+        s = sinVec !! i
+        rotatedReal = realComponent * c - imagComponent * s
+        rotatedImag = realComponent * s + imagComponent * c
+    in  rotatedReal :> rotatedImag :> Nil
 
 -- Index into CArray2D to get a row
 getRow :: forall n m. (KnownNat n) => Index SequenceLength -> CArray2D n m -> Vec m Float

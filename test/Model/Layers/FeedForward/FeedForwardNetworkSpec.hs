@@ -13,10 +13,10 @@ spec = describe "FeedForwardNetwork.computeFeedForward" $ do
   it "returns input when weights are zero" $ do
     let
       countRows1 :: Vec ModelDim Float
-      countRows1 = imap (\i _ -> fromIntegral (i + 1)) (repeat (0 :: Int))
+      countRows1 = generate (SNat @ModelDim) (+ 0.001) (0.0 :: Float)
 
       countRows2 :: Vec HiddenDim Float
-      countRows2 = imap (\i _ -> fromIntegral (i + 1)) (repeat (0 :: Int))
+      countRows2 =generate (SNat @HiddenDim) (+ 0.001) (0.0 :: Float)
 
       mat1 :: CArray2D HiddenDim ModelDim
       mat1 = CArray2D $ repeat countRows1
@@ -25,5 +25,6 @@ spec = describe "FeedForwardNetwork.computeFeedForward" $ do
       mat2 = CArray2D $ repeat countRows2
 
       ffn = FeedForwardNetworkComponent { fW1 = mat1, fW2 = mat2, fW3 = mat1, fRMSFfn = repeat 1.0 }
-      inputVec = repeat 0.5 :: Vec 288 Float
-    computeFeedForward ffn inputVec `shouldBe` inputVec
+      inputVec = repeat 0.5 :: Vec ModelDim Float
+      outputVec = repeat 511398.7 :: Vec ModelDim Float
+    computeFeedForward ffn inputVec `shouldBe` outputVec

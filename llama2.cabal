@@ -139,8 +139,6 @@ test-suite llama2-test
     , hspec
     , llama2
     , QuickCheck
-  build-tool-depends:
-      hspec-discover:hspec-discover
   ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N -main-is Spec.main
   default-language: Haskell2010
   default-extensions:
