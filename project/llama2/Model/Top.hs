@@ -12,7 +12,7 @@ import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent)
 import qualified Model.Core.Transformer as Transformer
 
--- ====== NEW: top with attention tap out (includes pre-WO concat) ======
+-- ====== top with attention tap out ======
 topEntity
   :: forall dom
    . HiddenClockResetEnable dom

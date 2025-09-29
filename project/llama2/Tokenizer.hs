@@ -58,26 +58,19 @@ buildTokenizer blob vocabSize =
 
 -- Public encode: exactly like C encode(tokenizer, text, bos, eos)
 -- bos/eos flags mirror the C API (non-zero => include)
-encodeTokens :: Tokenizer -> BSL.ByteString -> Bool -> Bool -> [Int]
-encodeTokens tok text bos eos =
+encodeTokens :: Tokenizer -> BSL.ByteString -> [Int]
+encodeTokens tok text =
   let
-    -- start with optional BOS (=1)
-    start = [1 | bos]
-
     -- add dummy-prefix " " token if text != ""
-    start' = if BSL.null text || spaceId tok < 0
-            then start
-            else start ++ [spaceId tok]
+    start = [spaceId tok | not (BSL.null text)]
 
     -- initial tokens from UTF-8 codepoints with byte-fallback (+3)
-    baseTokens = start' ++ utf8ToTokens tok text
+    baseTokens = start ++ utf8ToTokens tok text
 
     -- iterative BPE merges (same ordering/criterion as C)
     merged = bpeMergeLoop tok baseTokens
 
-    -- optional EOS (=2)
-    final = if eos then merged ++ [2] else merged
-  in final
+  in merged
 
 -- Decode piece exactly like C decode(): BOS rule + <0xXX> byte tokens
 decodePiece :: Tokenizer -> Int -> Int -> BSL.ByteString

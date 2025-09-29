@@ -72,7 +72,7 @@ runModel modelFileContent tokenizerFileContent temperature steps prompt seed = d
       putStrLn "No prompt provided, starting with BOS token (1)"
       return [1]
     Just promptStr -> do
-      let promptTokensI = T.encodeTokens tokenizer (BSC.pack promptStr) False False
+      let promptTokensI = T.encodeTokens tokenizer (BSC.pack promptStr)
           promptTokens' = map fromIntegral promptTokensI :: [Token]
       case promptTokens' of
         [] -> do
@@ -105,7 +105,6 @@ runModel modelFileContent tokenizerFileContent temperature steps prompt seed = d
   putStrLn $ "Final RMS weight (first 10): "
           ++ show (take 10 (C.toList rmsFinal))
   
-  putStrLn "<s>"
   startTime <- getPOSIXTime
 
   (_, MultiHeadAttention.StepCount countTokens) <- generateTokensSimAutoregressive config tokenizer (fromIntegral steps) promptTokens temperature seedValue
@@ -319,7 +318,6 @@ generateTokensSimAutoregressive
   -> IO ([Token], MultiHeadAttention.StepCount)
 generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperature seed = do
   putStrLn $ "✅ Prompt: " ++ show promptTokens
-  putStr "<s>\n"
   hFlush stdout
 
   let temps = repeat temperature
@@ -343,7 +341,6 @@ generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperatur
       readyFlags = [ r | (_,r,_,_,_,_) <- outputs ]
 
       -- State per cycle n>=0: (currentToken, remainingPrompt, usingPrompt?)
-      -- Cycle 0 is seeded; tail states are built from (ready, sampled) tails
       rTail = drop 1 readyFlags
       oTail = drop 1 outTokens
 
@@ -367,7 +364,7 @@ generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperatur
       sampledAll :: [Token]
       sampledAll = [ t | (t,r,_,_,_,_) <- outputs, r ]
 
-  -- Pretty-print taps
+  -- Pretty-print taps (bounded)
   let fmt8 :: C.Vec n Float -> String
       fmt8 v = unwords (Prelude.map show (Prelude.take 8 (C.toList v)))
 
@@ -380,7 +377,14 @@ generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperatur
             pAdj = if l == maxBound then succIdx p else p
         in (lInt, fromEnum pAdj)
 
-  let tokens = Prelude.map (\(t,_,_,_,_,_) -> t) outputs
+      tokens = Prelude.map (\(t,_,_,_,_,_) -> t) outputs
+      promptLen = length promptTokens
+      dbgLimit :: Int
+      dbgLimit = promptLen + fromIntegral nSteps + 8  -- small margin
+
+      debugStream =
+        take dbgLimit (DL.zip5 tokens tapFlags tapLayers tapSeqs dbgXHats)
+
   mapM_
     (\(tok, tp, l, p, xhat) -> do
         let (lI, pI) = showPos l p
@@ -392,12 +396,11 @@ generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperatur
           putStrLn $ "xHat=" ++ fmt8 xhat
           hFlush stdout
     )
-    (DL.zip5 tokens tapFlags tapLayers tapSeqs dbgXHats)
+    debugStream
 
   -- Emit prompt verbatim, then sampled tokens after the prompt
-  let promptLen          = length promptTokens
-      forcedEmitted      = promptTokens
-      sampledAfterPrompt = drop promptLen sampledAll
+  let forcedEmitted      = promptTokens
+      sampledAfterPrompt = take (fromIntegral nSteps) (drop promptLen sampledAll)
       emittedAll         = forcedEmitted ++ sampledAfterPrompt
       totalWanted        = promptLen + fromIntegral nSteps
       emittedLimited     = take totalWanted emittedAll
@@ -441,6 +444,7 @@ topEntityBundled :: CS.HiddenClockResetEnable dom
     , C.Signal dom (C.Vec ModelDim Float)
     )
 topEntityBundled decoder bundledInputs =
-  Top.topEntity decoder inputToken inputTokenValid temp rngSeed
+  Top.topEntity decoder inputToken tokenReadyPulse temp rngSeed
+  --topEntity' decoder inputToken tokenReadyPulse temp rngSeed
   where
-    (inputToken, inputTokenValid, temp, rngSeed) = C.unbundle bundledInputs
+    (inputToken, tokenReadyPulse, temp, rngSeed) = C.unbundle bundledInputs
