@@ -7,20 +7,20 @@ module Model.Layers.Attention.OnlineSoftmax.Fixed
 
 import Clash.Prelude
 import GHC.Generics (Generic)
-import Model.Numeric.Types (F)
+import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
 import Model.Core.Types (HeadDimension)
 
 data SoftStateF = SoftStateF
-  { mMaxF  :: F
-  , denomF :: F
-  , numerF :: Vec HeadDimension F
+  { mMaxF  :: FixedPoint
+  , denomF :: FixedPoint
+  , numerF :: Vec HeadDimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 
 softInitF :: SoftStateF
 softInitF = SoftStateF { mMaxF = minBound, denomF = 0, numerF = repeat 0 }
 
-softStepF :: SoftStateF -> (F, Vec HeadDimension F) -> SoftStateF
+softStepF :: SoftStateF -> (FixedPoint, Vec HeadDimension FixedPoint) -> SoftStateF
 softStepF st (x, v) =
   let m  = mMaxF st
       d0 = denomF st
@@ -38,6 +38,6 @@ softStepF st (x, v) =
              n2 = zipWith (+) n1 v
          in SoftStateF { mMaxF = x, denomF = d1, numerF = n2 }
 
-softResultF :: SoftStateF -> Vec HeadDimension F
+softResultF :: SoftStateF -> Vec HeadDimension FixedPoint
 softResultF st = let d = denomF st
                  in if d == 0 then repeat 0 else map (/ d) (numerF st)

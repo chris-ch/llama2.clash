@@ -14,7 +14,7 @@ import Model.Core.Types
   , NumKeyValueHeads, HeadDimension, SequenceLength )
 import qualified Model.Memory.RamOps as RamOps (toRamOperation)
 import qualified Model.Memory.Addressing as Addressing
-import Model.Numeric.Types (Act, ExpS, F)
+import Model.Numeric.Types (Act, ExpS, FixedPoint)
 import Model.Numeric.Fixed (quantizeI8E)
 import Data.Maybe (fromMaybe)
 
@@ -57,54 +57,49 @@ writeSequencer
   :: HiddenClockResetEnable dom
   => Signal dom Bool                                     -- enable
   -> Signal dom (Index SequenceLength)                   -- sequence position
-  -> Signal dom (Vec HeadDimension Float, Vec HeadDimension Float) -- (K, V) Float
+  -> Signal dom (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint) -- (K, V) FixedPoint
   -> ( Signal dom BankAddress
      , Signal dom (Maybe (BankAddress, Act))             -- K mant write
      , Signal dom (Maybe (Index SequenceLength, ExpS))   -- K exp (row) write
      , Signal dom (Maybe (BankAddress, Act))             -- V mant write
      , Signal dom (Maybe (Index SequenceLength, ExpS))   -- V exp (row) write
      , Signal dom Bool)                                  -- done (1-cycle on last d)
-writeSequencer enSig seqPosSig kvFloatSig =
+writeSequencer enSig seqPosSig kvFixedSig =
   (bankAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, doneSig)
  where
   -- Local dimension counter
-  dimCnt    = register (0 :: Index HeadDimension) nextDimCnt
-  atLastDim = (== maxBound) <$> dimCnt
+  dimCnt     = register (0 :: Index HeadDimension) nextDimCnt
+  atLastDim  = (== maxBound) <$> dimCnt
   atFirstDim = (== (0 :: Index HeadDimension)) <$> dimCnt
 
   nextDimCnt =
     mux enSig
-        (P.fmap (\d -> if d == maxBound then 0 else succ d) dimCnt)
+        (fmap (\d -> if d == maxBound then 0 else succ d) dimCnt)
         (pure 0)
 
   doneSig = (&&) <$> enSig <*> atLastDim
 
-  -- Compute quantization once per row (when en && firstDim)
-  kf = map realToFrac . fst <$> kvFloatSig
-  vf = map realToFrac . snd <$> kvFloatSig
+  -- Fixed-point K,V rows from the caller
+  kF = fst <$> kvFixedSig
+  vF = snd <$> kvFixedSig
 
-  (quantK, quantV) = (q kf, q vf)
+  (quantK, quantV) = (q kF, q vF)
    where
-    q vF =
-      let computed = quantizeI8E <$> vF
-          latch s (go, v) =
-            let fire = go && v
-            in fire
-          -- State machine: latch Just on en && firstDim; hold while en; clear when !en
+    -- Quantize a whole row to (Vec Act, ExpS) once per row; hold while en; clear on !en
+    q vRowSig =
+      let computed = quantizeI8E <$> vRowSig
       in mealy
            (\st (en, first, kvq) ->
-              let st' = if en
-                           then if first then Just kvq else st
-                           else Nothing
+              let st' = if en then (if first then Just kvq else st) else Nothing
               in  (st', st'))
            Nothing
            (bundle (enSig, atFirstDim, computed))
 
   -- Element at dim index
-  mantAt qSig = ((\(mVec, _) d -> mVec !! d) P.. fromMaybe (repeat 0, 0) P.<$> qSig) <*> dimCnt
+  mantAt qSig =
+    ((\(mVec, _) d -> mVec !! d) . fromMaybe (repeat 0, 0) <$> qSig) <*> dimCnt
 
-  expRow = fmap (fmap snd) quantK -- any Just carries the exponent; emitted only when firstDim
-
+  -- Row exponent (any Just carries it); emitted only when firstDim
   kMantAt = mantAt quantK
   vMantAt = mantAt quantV
 

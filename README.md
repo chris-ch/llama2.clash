@@ -45,13 +45,8 @@ From that day on, Lily and Tom became good friends. They would often talk and sh
 cabal run -- llama2 --model-file data/stories15M.bin --temperature 0 "Hi"
 ```
 
-Reference run:
-```shell
-./run data/stories15M.bin -t 0 -i "Hi" -z data/tokenizer.bin
-```
-
 ```text
-Hippy was a little boy who loved to play with his toys. He had a big box full of them, and he liked to make them talk and have fun. One day, he decided to play a game with his toys. He wanted to see who could make the most toys.[...]"
+Hippy was a very happy dog. He loved to play in the park with his friends. One day, he saw a big, red ball. He wanted to play with it, but he was too shy to ask.[...]"
 ```
 
 ## C Version

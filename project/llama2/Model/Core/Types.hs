@@ -29,7 +29,7 @@ module Model.Core.Types
 import Clash.Prelude
 import qualified GHC.TypeNats
 import GHC.Stack (HasCallStack)
-
+import Model.Numeric.Types (FixedPoint)
 
 {- 
 -- model config 260K
@@ -177,18 +177,18 @@ data ProcessingState = ProcessingState
 -- Per-layer intermediate data vectors carried through the pipeline.
 -- Updated selectively depending on cycle stage.
 data IntermediateData = IntermediateData
-  { inputVector       :: Vec ModelDimemsion Float
-  , queryVectors      :: Vec NumQueryHeads (Vec HeadDimension Float)
-  , keyVectors        :: Vec NumKeyValueHeads (Vec HeadDimension Float)
-  , valueVectors      :: Vec NumKeyValueHeads (Vec HeadDimension Float)
-  , attentionOutput   :: Vec ModelDimemsion Float
-  , feedForwardOutput :: Vec ModelDimemsion Float
+  { inputVector       :: Vec ModelDimemsion FixedPoint
+  , queryVectors      :: Vec NumQueryHeads (Vec HeadDimension FixedPoint)
+  , keyVectors        :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  , valueVectors      :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  , attentionOutput   :: Vec ModelDimemsion FixedPoint
+  , feedForwardOutput :: Vec ModelDimemsion FixedPoint
   } deriving (Show, Generic, NFDataX, Eq)
 
 newtype CArray2D (n :: Nat) (m :: Nat) = CArray2D (Vec n (Vec m Float)) deriving (Show)
 
 type Token = Unsigned 32
-type Temperature = Float
+type Temperature = FixedPoint
 type Seed = Unsigned 32
 
 -- Data definitions for LLM architecture

@@ -3,20 +3,20 @@ module Model.Memory.KVCacheBank.Ports (mapKVPorts) where
 import Clash.Prelude
 import Model.Core.Types (BankDepth, SequenceLength, HeadDimension)
 import Model.Memory.KVCacheBank (KvBank(..))
-import Model.Numeric.Types ( F, Act, ExpS, scalePow2F )
+import Model.Numeric.Types ( FixedPoint, Act, ExpS, scalePow2F )
 
 mapKVPorts
   :: HiddenClockResetEnable dom
   => ( Signal dom (Index BankDepth)      -- read addr (Stage3)
      , Signal dom Bool                   -- read enable
-     , Signal dom (Index BankDepth)      -- write addr (Stage2)  -- unused here
+     , Signal dom (Index BankDepth)      -- write addr (Stage2)
      , Signal dom (Maybe (Index BankDepth, Act))   -- K mant write
      , Signal dom (Maybe (Index SequenceLength, ExpS)) -- K exp write
      , Signal dom (Maybe (Index BankDepth, Act))   -- V mant write
      , Signal dom (Maybe (Index SequenceLength, ExpS)) -- V exp write
      , KvBank dom)
-  -> ( Signal dom F                      -- K read (dequantized)
-     , Signal dom F )                    -- V read (dequantized)
+  -> ( Signal dom FixedPoint              -- K read (dequantized)
+     , Signal dom FixedPoint )            -- V read (dequantized)
 mapKVPorts (rdAddr, rdEn, wrAddr, wrKm, wrKe, wrVm, wrVe, bank) =
   (kOutF, vOutF)
  where
@@ -52,6 +52,6 @@ mapKVPorts (rdAddr, rdEn, wrAddr, wrKm, wrKe, wrVm, wrVe, bank) =
   (kExpA,  _) = letKe (addrExpA,  wrExpA)  (addrExpB,  wrExpB_K)
   (vExpA,  _) = letVe (addrExpA,  wrExpA)  (addrExpB,  wrExpB_V)
 
-  -- Dequantize element-wise: out = mant * 2^exp
+  -- Dequantize element-wise: out = mant * 2^exp (staying in FixedPoint)
   kOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> kMantA <*> kExpA
   vOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> vMantA <*> vExpA

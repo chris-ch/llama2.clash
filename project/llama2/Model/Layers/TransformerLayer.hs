@@ -10,14 +10,16 @@ import Model.Core.Types
   , NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..), SequenceLength
   )
-import Helpers (rmsNorm, matrixVectorMult, liftA4)
+import Model.Helpers.Fixed (rmsNormF, matrixVectorMultF)
 
 import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
-import qualified Model.Layers.Attention.AttentionHead (attendHead)
+
 import Data.Maybe (fromMaybe)
-import Model.Numeric.Types (ExpS)
+import Model.Numeric.Types (ExpS, FixedPoint)
+import Helpers (liftA4)
+import Model.Layers.Attention.AttentionHead.Fixed (attendHeadF)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttention.MultiHeadAttentionComponent
@@ -82,7 +84,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
 
   -- Per-head WO @ head, then sum across heads (equivalent to WO @ concatHeads)
   perHeadProjectedSignalsVec =
-    zipWith (\wo hSig -> matrixVectorMult wo <$> hSig) (MultiHeadAttention.mWo mha) perHeadOutputSignalsVec
+    zipWith (\wo hSig -> matrixVectorMultF wo <$> hSig) (MultiHeadAttention.mWo mha) perHeadOutputSignalsVec
 
   perHeadProjectedSignal = sequenceA perHeadProjectedSignalsVec
   woHeadsSignal          = fmap (foldl1 (zipWith (+))) perHeadProjectedSignal
@@ -174,13 +176,13 @@ queryHeadIndex1 kvIx =
   if hasSecondQueryHead kvIx then toEnum (baseQueryIndex kvIx + 1) else queryHeadIndex0 kvIx
 
 -- Access per-head vectors from IntermediateData
-getQueryVector :: Signal dom IntermediateData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension Float)
+getQueryVector :: Signal dom IntermediateData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getQueryVector idSig qIx = (\i -> queryVectors i !! qIx) <$> idSig
 
-getKeyVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension Float)
+getKeyVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 
-getValueVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension Float)
+getValueVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
 fillOneBank :: HiddenClockResetEnable dom
@@ -188,11 +190,11 @@ fillOneBank :: HiddenClockResetEnable dom
   -> Signal dom ProcessingState
   -> Cache.KVRamOwner dom
   -> Signal dom IntermediateData
-  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension Float))
+  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
   -> Index NumKeyValueHeads
-  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension Float))
+  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
@@ -266,9 +268,9 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, valueVec))
 
-    out0 = liftA4 Model.Layers.Attention.AttentionHead.attendHead
+    out0 = liftA4 attendHeadF
                      query0 kvKeysAll kvValsAll seqPosSignal
-    out1raw = liftA4 Model.Layers.Attention.AttentionHead.attendHead
+    out1raw = liftA4 attendHeadF
                        query1 kvKeysAll kvValsAll seqPosSignal
     out1 = if hasQ1 then out1raw else pure (repeat 0)
 

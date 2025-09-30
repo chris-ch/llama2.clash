@@ -30,9 +30,11 @@ library
     , Model.Core.Types
     , Model.Embedding.PRNG
     , Model.Helpers.EnableWrappers
+    , Model.Helpers.Fixed
     , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttendSequential.Fixed
     , Model.Layers.Attention.AttentionHead
+    , Model.Layers.Attention.AttentionHead.Fixed
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Internal
     , Model.Layers.Attention.OnlineSoftmax

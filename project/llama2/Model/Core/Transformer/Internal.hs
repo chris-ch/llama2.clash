@@ -24,6 +24,7 @@ import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
   )
+import Model.Numeric.Types (FixedPoint)
 
 initialIntermediateData :: IntermediateData
 initialIntermediateData = IntermediateData
@@ -34,6 +35,7 @@ initialIntermediateData = IntermediateData
   , attentionOutput   = repeat 0
   , feedForwardOutput = repeat 0
   }
+
 
 outputTokenSignal
   :: forall dom
@@ -48,8 +50,8 @@ outputTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextInte
   regEn 0 readyPulseSignal
         (PRNG.sampledTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextIntermediateDataSignal)
 
-embed :: CArray2D VocabularySize ModelDimemsion -> Token -> Vec ModelDimemsion Float
-embed (CArray2D vocab) tokenCode = vocab !! (fromIntegral tokenCode :: Int)
+embed :: CArray2D VocabularySize ModelDimemsion -> Token -> Vec ModelDimemsion FixedPoint
+embed (CArray2D vocab) tokenCode = map realToFrac (vocab !! (fromIntegral tokenCode :: Int))
 
 firstJustV :: Vec n (Maybe a) -> Maybe a
 firstJustV = foldr (\m acc -> case m of { Just _ -> m; Nothing -> acc }) Nothing

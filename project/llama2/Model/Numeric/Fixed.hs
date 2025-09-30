@@ -8,7 +8,7 @@ module Model.Numeric.Fixed
 
 import Clash.Prelude
 import GHC.Generics (Generic)
-import Model.Numeric.Types
+import Model.Numeric.Types (FixedPoint, Act, ExpS, scalePow2F, clampExp, satRoundToI8, epsF)
 
 -- ===========================
 -- Quantization: F <-> I8E (PoT)
@@ -17,13 +17,13 @@ import Model.Numeric.Types
 -- Quantize a vector to Signed 8 mantissas with a shared Signed 7 exponent.
 -- We choose e = floor(log2(maxAbs)) - 7 so that magnitudes roughly fit in [-127,127].
 -- No Floating is used to find the exponent: we compare against a ROM of 2^i.
-quantizeI8E :: forall n. KnownNat n => Vec n F -> (Vec n Act, ExpS)
+quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
 quantizeI8E xs =
-  let maxAbs :: F
+  let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
 
       -- 2^i for i in [-32 .. 31]
-      pow2 :: Vec 64 F
+      pow2 :: Vec 64 FixedPoint
       pow2 = map (\(i :: Index 64) ->
                     let iS :: ExpS
                         iS = fromInteger (toInteger (fromEnum i) - 32)
@@ -47,17 +47,17 @@ quantizeI8E xs =
       e :: ExpS
       e = clampExp (fromInteger (pInt - 7))
 
-      k :: F  -- 2^-e
+      k :: FixedPoint  -- 2^-e
       k = scalePow2F (negate e) 1
 
-      qElem :: F -> Act
+      qElem :: FixedPoint -> Act
       qElem x =
         let y  = x * k
             yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
         in satRoundToI8 yr
   in (map qElem xs, e)
 
-dequantizeI8E :: (Vec n Act, ExpS) -> Vec n F
+dequantizeI8E :: (Vec n Act, ExpS) -> Vec n FixedPoint
 dequantizeI8E (qs, e) =
   let s = scalePow2F e 1
   in map (\q -> fromIntegral q * s) qs
@@ -66,11 +66,11 @@ dequantizeI8E (qs, e) =
 -- expF using 2^x decomposition with LUT-256
 -- ===========================
 
-ln2InvF :: F
+ln2InvF :: FixedPoint
 ln2InvF = realToFrac (1.4426950408889634 :: Double)  -- 1/ln(2)
 
 -- 256-entry ROM for 2^(k/256), k=0..255
-exp2FracLUT :: Vec 256 F
+exp2FracLUT :: Vec 256 FixedPoint
 exp2FracLUT =
   map
     (\(i :: Index 256) ->
@@ -80,7 +80,7 @@ exp2FracLUT =
     indicesI
 
 -- 2^f with f in [0,1); nearest-neighbor LUT
-exp2Frac :: F -> F
+exp2Frac :: FixedPoint -> FixedPoint
 exp2Frac f =
   let fClamped = max 0 (min (1 - epsF) f)
       idx :: Unsigned 8
@@ -88,7 +88,7 @@ exp2Frac f =
   in exp2FracLUT !! idx
 
 -- expF: x -> 2^(x/ln2) = 2^n * 2^f
-expF :: F -> F
+expF :: FixedPoint -> FixedPoint
 expF x =
   let y  = x * ln2InvF
       nI = floor y :: Integer

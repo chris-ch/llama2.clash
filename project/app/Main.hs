@@ -42,6 +42,7 @@ import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decode
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
+import Model.Numeric.Types (FixedPoint)
 
 
 --------------------------------------------------------------------------------
@@ -301,7 +302,7 @@ generateTokensSimAutoregressive
   -> T.Tokenizer
   -> Int             -- ^ Number of tokens to generate
   -> [Token]         -- ^ Prompt tokens
-  -> Temperature
+  -> Float
   -> Seed
   -> IO Int
 generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens temperature seed = do
@@ -323,12 +324,12 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
                         (p:ps) -> (p, ps, True)
                         []     -> (sampled, [], False)
 
-    -- lazy / circular definitions: outputs depends on inputTokens,
-    -- inputTokens depends on states which depends on outputs.
+    temperature' = realToFrac temperature :: FixedPoint
+    
     outputs :: [(Token, Bool)]
     outputs =
       CS.simulate (bundledOutputs decoder)
-                  (DL.zip4 inputTokens inputValidFlags (repeat temperature) (repeat seed))
+                  (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
     (outputTokens, readyFlags) = unzip outputs
 

@@ -3,43 +3,46 @@ module Model.Layers.Attention.MultiHeadAttention (
 ) where
 
 import Clash.Prelude
-
-import Model.Core.Types (NumQueryHeads, ModelDimemsion, NumKeyValueHeads,
-  HeadDimension, CArray2D (..), SingleHeadComponent (..),
-  RotaryPositionalEmbeddingDimension, RotaryEncodingComponent (..), SequenceLength)
-import Helpers (matrixVectorMult, rmsNorm)
 import qualified Prelude as P
-
+import Model.Core.Types
+  ( NumQueryHeads, ModelDimemsion, NumKeyValueHeads
+  , HeadDimension, CArray2D (..), SingleHeadComponent (..)
+  , SequenceLength)
+import Model.Helpers.Fixed (rmsNormF)
+import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Attention.MultiHeadAttention.Internal
-    ( MultiHeadAttentionComponent(..),
-      computeHeadKV,
-      computeHeadQ )
+  ( computeHeadKVF
+  , computeHeadQF )
+
+data MultiHeadAttentionComponent = MultiHeadAttentionComponent
+  { heads  :: Vec NumQueryHeads SingleHeadComponent
+  , mWo    :: Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
+  , rmsAtt :: Vec ModelDimemsion Float
+  } deriving (Show)
 
 projectQKV :: MultiHeadAttentionComponent
   -> Index SequenceLength
-  -> Vec ModelDimemsion Float
-  -> (Vec NumQueryHeads (Vec HeadDimension Float), 
-  Vec NumKeyValueHeads (Vec HeadDimension Float), 
-  Vec NumKeyValueHeads (Vec HeadDimension Float))
-projectQKV multiHeadAttentionComponent stepCount inputVector = 
+  -> Vec ModelDimemsion FixedPoint
+  -> ( Vec NumQueryHeads   (Vec HeadDimension FixedPoint)
+     , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+     , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint) )
+projectQKV multiHeadAttentionComponent stepCount inputVector =
   let
-    normalizedInput = rmsNorm inputVector (rmsAtt multiHeadAttentionComponent)
-    -- Queries: one per Q head (with RoPE on Q)
+    normalizedInput = rmsNormF inputVector (rmsAtt multiHeadAttentionComponent)
+
     queries =
       imap (\queryHeadIdx _ ->
-        let
-          headComponent = heads multiHeadAttentionComponent !! queryHeadIdx
-          queryRotated = computeHeadQ headComponent stepCount normalizedInput
-        in queryRotated) indicesI
+              let headComponent = heads multiHeadAttentionComponent !! queryHeadIdx
+              in computeHeadQF headComponent stepCount normalizedInput)
+           indicesI
 
-    -- Keys/Values: one per KV head (apply RoPE to K only)
     keysAndValues =
       imap (\keyValueHeadIdx _ ->
-        let
-          qIdx0 = fromEnum keyValueHeadIdx * (natToNum @NumQueryHeads `P.div` natToNum @NumKeyValueHeads)
-          queryIndex = toEnum (min (natToNum @NumQueryHeads - 1) qIdx0) :: Index NumQueryHeads
-          headComponent = heads multiHeadAttentionComponent !! queryIndex
-          (keyRotated, valueRotated) = computeHeadKV headComponent stepCount normalizedInput
-        in (keyRotated, valueRotated)) indicesI
+        let qIdx0 = fromEnum keyValueHeadIdx * (natToNum @NumQueryHeads `P.div` natToNum @NumKeyValueHeads)
+            queryIndex = toEnum (min (natToNum @NumQueryHeads - 1) qIdx0) :: Index NumQueryHeads
+            headComponent = heads multiHeadAttentionComponent !! queryIndex
+        in computeHeadKVF headComponent stepCount normalizedInput)
+      indicesI
+
     (keys, values) = unzip keysAndValues
   in (queries, keys, values)
