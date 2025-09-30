@@ -2,8 +2,56 @@
 
 Scope
 - Target: synthesizable, timing‑clean hardware decoder for LLaMA‑2 style transformer in Clash.
-- Floating‑point: out of scope for now (assume Float is a placeholder; quantization or fixed‑point/FPGA IP later).
 - Goal: keep current API/structure where possible; replace impractical blocks with streaming/pipelined variants.
+
+# Design choices and constraints
+
+## Toolchain and scope
+ - Clash 1.8.2, GHC 9.6.7. Synthesizable only; no floating point in the final design.
+ - Target device flexible; prioritize simplicity and timing robustness over maximum clock.
+ - Goal: LLaMA2/3-class decoder, context length > 16k.
+
+## Numeric formats
+ - Scalar fixed-point for “real” math: F = SFixed 12 20 (signed; 12 integer, 20 fractional).
+ - Quantized 8-bit with power-of-two (PoT) scaling: value ≈ mantissa(Act/Wgt :: Signed 8) × 2^ExpS, ExpS :: Signed 7 (clamped to [-64, 63]).
+ - Accumulator for dot/MAC: Acc = Signed 32 with explicit saturating rounding when narrowing.
+
+## MAC mapping
+ - INT8 × INT16 → INT32 (promote one operand to 16 b), accumulate in 32 b, fuse PoT scales via shifts only.
+
+## Scaling policy (PoT everywhere)
+ - Weights: per-row static PoT exponent (one ExpS per weight row).
+ - Activations: per-vector, per-timestep dynamic PoT exponent (one ExpS per produced activation vector).
+ - Scale fusion via shifts at layer boundaries; no general multiplies for scaling.
+
+## Attention and KV cache
+ - Store K/V rows in BRAM as (Vec HeadDim Signed 8, ExpS).
+ - Stage2 writes directly in quantized form; no float mirrors.
+ - Stage3 uses streaming/sequential attention over BRAM (OnlineSoftmax), not a full-window register file; scales reconstruct with shifts.
+
+## Math primitives (fixed-point)
+ - exp(x): exp2 decomposition with 256-entry LUT for fractional part f in [0,1); result = 2^n × LUT[f]. Optional linear interpolation to reduce error.
+ - Softmax: online, numerically stable variant in F using expF above.
+ - RMSNorm: fixed-point mean-square, invsqrt via small LUT seed + one Newton–Raphson iteration; output renormalized in F and re-quantized to Act + ExpS.
+ - RoPE: sine/cosine tables in F; all ops in fixed-point.
+
+## Accuracy target
+ - “As high as possible” under the above fixed-point constraints; PoT scaling chosen for hardware simplicity and consistent timing.
+ - Validate with greedy (temp=0) and moderate temp sampling vs a float baseline; monitor top-k agreement and logit MSE.
+
+## Performance/timing
+ - Register-slice after matvec accumulation and after expF LUT.
+ - Guard bits on accumulators; saturating rounding when converting back to Act.
+
+## Build/runtime knobs
+ - Prefer shift-based scale fusing; avoid general multipliers on hot paths.
+ - Recommended flags: -O2, consider -fclash-inline-limit=64.
+
+## Quantized constants offline
+ - Offline, external binary loaded at boot (via PCIe/JTAG/UART)
+ - Flow: store weights as packed bytes + exponents in external flash/DDR; on boot, DMA into BRAMs/URAMs
+
+## 0 ) Moving to Fixed-Point from Float32
 
 ## 1) Synthesizability Assessment (Current Code)
 

@@ -31,10 +31,12 @@ library
     , Model.Core.Types
     , Model.Embedding.PRNG
     , Model.Layers.Attention.AttendSequential
+    , Model.Layers.Attention.AttendSequential.Fixed
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Internal
     , Model.Layers.Attention.OnlineSoftmax
+    , Model.Layers.Attention.OnlineSoftmax.Fixed
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
     , Model.Layers.TransformerLayer
@@ -42,6 +44,8 @@ library
     , Model.Memory.KVCacheBank
     , Model.Memory.KVCacheBank.Ports
     , Model.Memory.RamOps
+    , Model.Numeric.Types
+    , Model.Numeric.Fixed
     , Model.Top
     , Tokenizer
   hs-source-dirs:
