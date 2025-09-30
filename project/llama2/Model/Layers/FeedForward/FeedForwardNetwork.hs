@@ -9,7 +9,7 @@ import Model.Core.Types
 import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
-import Model.Layers.FeedForward.FeedForwardNetwork.Internal (runFeedForwardFQ)
+import Model.Layers.FeedForward.FeedForwardNetwork.Internal (runFeedForward)
 
 computeFeedForward
   :: FeedForwardNetworkComponentQ
@@ -17,5 +17,5 @@ computeFeedForward
   -> Vec ModelDimemsion FixedPoint
 computeFeedForward ffn inputVector =
   let xHat    = rmsNormFwFix inputVector (fRMSFfnF ffn)
-      ffnCore = runFeedForwardFQ ffn xHat
+      ffnCore = runFeedForward ffn xHat
   in zipWith (+) inputVector ffnCore

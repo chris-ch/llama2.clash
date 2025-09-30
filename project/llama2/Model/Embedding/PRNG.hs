@@ -10,7 +10,7 @@ import Model.Core.Types
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
 import Model.Helpers.FixedPoint (rmsNormFwFix)
-import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
+import Model.Helpers.MatVecI8E (matrixVectorMult)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
 import Model.Layers.Components.Quantized (EmbeddingComponentQ(..))
@@ -30,7 +30,7 @@ transformerLogitsF :: TransformerLayer.TransformerDecoderComponent
 transformerLogitsF decoder tokenVector =
   let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ
       tokenWithRms = rmsNormFwFix tokenVector (rmsFinalWeightF emb)
-  in matrixVectorMultI8E_Fixed (vocabularyQ emb) tokenWithRms
+  in matrixVectorMult (vocabularyQ emb) tokenWithRms
 
 logitsSignalF :: TransformerLayer.TransformerDecoderComponent
               -> Signal dom IntermediateData

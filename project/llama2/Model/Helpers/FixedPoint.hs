@@ -1,7 +1,6 @@
 module Model.Helpers.FixedPoint
   ( dotProductF
   , rmsNormFwFix          -- FixedPoint-weighted (for Q path)
-  , invSqrtF
   ) where
 
 import Clash.Prelude

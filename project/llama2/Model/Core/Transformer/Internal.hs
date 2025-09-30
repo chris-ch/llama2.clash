@@ -23,7 +23,7 @@ import qualified Model.Core.PipelineController as PipelineController
   )
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Components.Quantized (EmbeddingComponentQ(..))
-import qualified Model.Core.EmbeddingQ as EmbQ (embedQ)
+import qualified Model.Core.Embedding as Embedding (embed)
 
 initialIntermediateData :: IntermediateData
 initialIntermediateData = IntermediateData
@@ -50,7 +50,4 @@ outputTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextInte
 
 -- Embedding lookup using quantized table (I8E row -> FixedPoint vec)
 embedFromComponent :: EmbeddingComponentQ -> Token -> Vec ModelDimemsion FixedPoint
-embedFromComponent emb = EmbQ.embedQ (vocabularyQ emb)
-
-firstJustV :: Vec n (Maybe a) -> Maybe a
-firstJustV = foldr (\m acc -> case m of { Just _ -> m; Nothing -> acc }) Nothing
+embedFromComponent emb = Embedding.embed (vocabularyQ emb)

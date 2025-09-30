@@ -1,9 +1,7 @@
 -- ===== project/llama2/Model/Numeric/Fixed.hs =====
 module Model.Numeric.Fixed
   ( quantizeI8E
-  , dequantizeI8E
   , expF
-  , ln2InvF
   ) where
 
 import Clash.Prelude

@@ -21,7 +21,7 @@ import Model.Core.Types
 import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
-import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
+import Model.Helpers.MatVecI8E (matrixVectorMult)
 
 
 applyRotaryPositionEncodingF :: Vec HeadDimension FixedPoint
@@ -45,7 +45,7 @@ computeHeadQ
   -> Vec ModelDimemsion FixedPoint
   -> Vec HeadDimension FixedPoint
 computeHeadQ headComp stepCount xHat =
-  let q   = matrixVectorMultI8E_Fixed (wqHeadQ headComp) xHat
+  let q   = matrixVectorMult (wqHeadQ headComp) xHat
       qRo = applyRotationF (rotaryQ headComp) stepCount q
   in qRo
 
@@ -55,8 +55,8 @@ computeHeadKV
   -> Vec ModelDimemsion FixedPoint
   -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
 computeHeadKV headComp stepCount xHat =
-  let k   = matrixVectorMultI8E_Fixed (wkHeadQ headComp) xHat
-      v   = matrixVectorMultI8E_Fixed (wvHeadQ headComp) xHat
+  let k   = matrixVectorMult (wkHeadQ headComp) xHat
+      v   = matrixVectorMult (wvHeadQ headComp) xHat
       kRo = applyRotationF (rotaryQ headComp) stepCount k
   in (kRo, v)
 

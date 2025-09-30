@@ -3,23 +3,24 @@ module Model.Layers.Attention.AttentionHead
 
 import Clash.Prelude
 import Model.Core.Types (HeadDimension, SequenceLength)
+import Model.Numeric.Types (FixedPoint)
+import Model.Numeric.Fixed (expF)
 
 attendHead
-  :: Vec HeadDimension Float                -- Q (this head)
-  -> Vec SequenceLength (Vec HeadDimension Float)   -- all K rows for this head
-  -> Vec SequenceLength (Vec HeadDimension Float)   -- all V rows for this head
-  -> Index SequenceLength                           -- pos (inclusive)
-  -> Vec HeadDimension Float                -- attended output
+  :: Vec HeadDimension FixedPoint                      -- Q
+  -> Vec SequenceLength (Vec HeadDimension FixedPoint) -- K rows
+  -> Vec SequenceLength (Vec HeadDimension FixedPoint) -- V rows
+  -> Index SequenceLength                     -- pos (inclusive)
+  -> Vec HeadDimension FixedPoint
 attendHead q ks vs pos =
   let
-    scale :: Float
-    scale = 1.0 / sqrt (natToNum @HeadDimension :: Float)
+    scale :: FixedPoint
+    scale = realToFrac (1.0 / sqrt (fromIntegral (natToNum @HeadDimension) :: Double))
 
-    negBig :: Float
-    negBig = -1.0e30
+    negBig :: FixedPoint
+    negBig = scale * realToFrac (-2.0e30 :: Double)  -- any very negative number in F range
 
-    -- scores for all t, masked to -inf beyond pos
-    scores :: Vec SequenceLength Float
+    scores :: Vec SequenceLength FixedPoint
     scores =
       imap (\t krow ->
               let s = sum (zipWith (*) q krow) * scale
@@ -27,12 +28,10 @@ attendHead q ks vs pos =
            ks
 
     m   = maximum scores
-    exps = map (\s -> if s == negBig then 0 else exp (s - m)) scores
+    exps = map (\s -> if s == negBig then 0 else expF (s - m)) scores
     d   = fold (+) exps
-
     probs = if d == 0 then repeat 0 else map (/ d) exps
 
-    -- weighted sum over V rows
     out  = foldl
              (\acc (p, vrow) -> zipWith (+) acc (map (* p) vrow))
              (repeat 0)

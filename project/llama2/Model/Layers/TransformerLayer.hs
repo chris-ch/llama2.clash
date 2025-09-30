@@ -20,10 +20,10 @@ import Model.Layers.Components.Quantized
   )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
-import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
+import Model.Helpers.MatVecI8E (matrixVectorMult)
 import Model.Numeric.Types (ExpS, FixedPoint)
 import Helpers (liftA4)
-import Model.Layers.Attention.AttentionHead.Fixed (attendHeadF)
+import Model.Layers.Attention.AttentionHead (attendHead)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -84,7 +84,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
 
   -- Per-head WO projection now uses quantized WO blocks (I8E) -> FixedPoint
   perHeadProjectedSignalsVec =
-    zipWith (\woQ hSig -> matrixVectorMultI8E_Fixed woQ <$> hSig) (mWoQ mhaQ) perHeadOutputSignalsVec
+    zipWith (\woQ hSig -> matrixVectorMult woQ <$> hSig) (mWoQ mhaQ) perHeadOutputSignalsVec
 
   perHeadProjectedSignal = sequenceA perHeadProjectedSignalsVec
   woHeadsSignal          = fmap (foldl1 (zipWith (+))) perHeadProjectedSignal
@@ -250,9 +250,9 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, valueVec))
 
-    out0 = liftA4 attendHeadF
+    out0 = liftA4 attendHead
                      query0 kvKeysAll kvValsAll seqPosSignal
-    out1raw = liftA4 attendHeadF
+    out1raw = liftA4 attendHead
                        query1 kvKeysAll kvValsAll seqPosSignal
     out1 = if hasQ1 then out1raw else pure (repeat 0)
 
