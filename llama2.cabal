@@ -22,19 +22,25 @@ source-repository head
 library
   exposed-modules:
       Helpers
+    , Helpers.EnableWrappers
     , Model.Core.PipelineController
+    , Model.Core.LayerController
+    , Model.Core.StageEnable
     , Model.Core.Transformer
     , Model.Core.Transformer.Internal
     , Model.Core.Types
     , Model.Embedding.PRNG
+    , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Internal
+    , Model.Layers.Attention.OnlineSoftmax
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
     , Model.Layers.TransformerLayer
     , Model.Memory.Addressing
     , Model.Memory.KVCacheBank
+    , Model.Memory.KVCacheBank.Ports
     , Model.Memory.RamOps
     , Model.Top
     , Tokenizer
