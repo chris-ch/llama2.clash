@@ -31,18 +31,17 @@ applyRotaryPositionEncoding inputVec cosVec sinVec =
         rotatedImag = realComponent * s + imagComponent * c
     in  rotatedReal :> rotatedImag :> Nil
 
--- Index into CArray2D to get a row
-getRow :: forall n m. (KnownNat n) => Index SequenceLength -> CArray2D n m -> Vec m Float
-getRow index (CArray2D arr) = arr !! (fromIntegral index :: Index n)
-
 -- Apply rotation per head
 applyRotation :: RotaryEncodingComponent
   -> Index SequenceLength
   -> Vec HeadDimension Float
   -> Vec HeadDimension Float
 applyRotation rot stepCount tokenVec =
-  let cosFrequencies = getRow stepCount (freqCos rot)
-      sinFrequencies = getRow stepCount (freqSin rot)
+  let
+    CArray2D arrFreqCos = freqCos rot
+    CArray2D arrFreqSin = freqSin rot
+    cosFrequencies = arrFreqCos !! stepCount
+    sinFrequencies = arrFreqSin !! stepCount
   in applyRotaryPositionEncoding tokenVec cosFrequencies sinFrequencies
 
 -- Compute K/V for a head
