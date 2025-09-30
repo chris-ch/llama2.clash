@@ -24,7 +24,7 @@ import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..) )
 import Model.Layers.Attention.MultiHeadAttention.Internal
-  ( computeHeadQF_Q, computeHeadKVF_Q )
+  ( computeHeadQ, computeHeadKV )
 import Model.Helpers.FixedPoint (rmsNormFwFix)
 
 -- Quantized MHA: normalize with FixedPoint RMS, compute Q/K/V using I8E mats,
@@ -43,7 +43,7 @@ projectQKV mha stepCount inputVector =
     queries =
       imap (\qIx _ ->
               let headQ = headsQ mha !! qIx
-              in computeHeadQF_Q headQ stepCount normalizedInput)
+              in computeHeadQ headQ stepCount normalizedInput)
            indicesI
 
     keysAndValues =
@@ -52,7 +52,7 @@ projectQKV mha stepCount inputVector =
             nKV = natToNum @NumKeyValueHeads :: Int
             qIdx0 = toEnum (min (nQ - 1) (fromEnum kvIx * (nQ `div` nKV))) :: Index NumQueryHeads
             headQ = headsQ mha !! qIdx0
-        in computeHeadKVF_Q headQ stepCount normalizedInput)
+        in computeHeadKV headQ stepCount normalizedInput)
       indicesI
 
     (keys, values) = unzip keysAndValues

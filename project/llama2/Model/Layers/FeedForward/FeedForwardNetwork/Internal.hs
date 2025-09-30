@@ -10,7 +10,6 @@ import Model.Core.Types
 
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
-import Model.Helpers.FixedPoint (rmsNormF)
 import qualified Model.Numeric.Fixed
 import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
 

@@ -3,17 +3,12 @@ module Model.Layers.FeedForward.FeedForwardNetwork (
 ) where
 
 import Clash.Prelude
-import Model.Helpers.FixedPoint (rmsNormF)
-import Model.Core.Types (CArray2D, ModelDimemsion, HiddenDimension)
-import Model.Numeric.Types (FixedPoint)
-
-
-import Clash.Prelude
-import Model.Numeric.Types (FixedPoint)
-import Model.Core.Types (ModelDimemsion)
+import Model.Helpers.FixedPoint ( rmsNormFwFix )
+import Model.Core.Types
+    ( CArray2D, ModelDimemsion, HiddenDimension, ModelDimemsion )
+import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
-import Model.Helpers.FixedPoint (rmsNormFwFix)
 import Model.Layers.FeedForward.FeedForwardNetwork.Internal (runFeedForwardFQ)
 
 computeFeedForward

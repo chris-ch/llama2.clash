@@ -41,9 +41,8 @@ import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
 import Model.Numeric.Types (FixedPoint)
-import qualified Model.Layers.Components.Quantized as Q
-import Model.Layers.Components.Quantized
-    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..) )
+import qualified Model.Layers.Components.Quantized as Quantized
+    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding )
 
 
 --------------------------------------------------------------------------------
@@ -229,7 +228,7 @@ parseModelConfigFile = do
       { vocabulary     = CArray2D tokenEmbeddingTable'
       , rmsFinalWeight = rmsFinalWeight'
       }
-    embeddingQ = Q.quantizeEmbedding embeddingFloat
+    embeddingQ = Quantized.quantizeEmbedding embeddingFloat
 
     layer :: C.Index NumLayers -> TransformerLayerComponent
     layer lIdx =
@@ -267,25 +266,25 @@ parseModelConfigFile = do
         mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
         mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
-        mhaFloat :: MultiHeadAttentionComponent
-        mhaFloat = MultiHeadAttentionComponent
+        mhaFloat :: Quantized.MultiHeadAttentionComponent
+        mhaFloat = Quantized.MultiHeadAttentionComponent
           { heads  = C.map sha (C.indicesI :: C.Vec NumQueryHeads (C.Index NumQueryHeads))
           , mWo    = mWoVec
           , rmsAtt = rmsAttWeight' C.!! lIdx
           }
 
-        mhaQ :: Q.MultiHeadAttentionComponentQ
-        mhaQ = Q.quantizeMHA mhaFloat
+        mhaQ :: Quantized.MultiHeadAttentionComponentQ
+        mhaQ = Quantized.quantizeMHA mhaFloat
 
-        ffnFloat :: FeedForwardNetworkComponent
-        ffnFloat = FeedForwardNetworkComponent
+        ffnFloat :: Quantized.FeedForwardNetworkComponent
+        ffnFloat = Quantized.FeedForwardNetworkComponent
           { fW1     = CArray2D $ w1' C.!! lIdx
           , fW2     = CArray2D $ w2' C.!! lIdx
           , fW3     = CArray2D $ w3' C.!! lIdx
           , fRMSFfn = rmsFfnWeight' C.!! lIdx
           }
-        ffnQ :: Q.FeedForwardNetworkComponentQ
-        ffnQ = Q.quantizeFFN ffnFloat
+        ffnQ :: Quantized.FeedForwardNetworkComponentQ
+        ffnQ = Quantized.quantizeFFN ffnFloat
 
       in TransformerLayerComponent
            { multiHeadAttention = mhaQ

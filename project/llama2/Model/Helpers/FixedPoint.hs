@@ -1,7 +1,5 @@
 module Model.Helpers.FixedPoint
   ( dotProductF
-  , matrixVectorMultF
-  , rmsNormF              -- Float-weighted (back-compat)
   , rmsNormFwFix          -- FixedPoint-weighted (for Q path)
   , invSqrtF
   ) where
@@ -14,16 +12,6 @@ import Model.Numeric.Fixed (expF)
 -- Dot product in FixedPoint
 dotProductF :: KnownNat n => Vec n FixedPoint -> Vec n FixedPoint -> FixedPoint
 dotProductF a b = sum (zipWith (*) a b)
-
--- Matrix @ vector where matrix rows are Float params, converted once to FixedPoint.
-matrixVectorMultF
-  :: forall rows cols. (KnownNat rows, KnownNat cols)
-  => CArray2D rows cols
-  -> Vec cols FixedPoint
-  -> Vec rows FixedPoint
-matrixVectorMultF (CArray2D rowsF) xF =
-  let rows = map (map realToFrac) rowsF :: Vec rows (Vec cols FixedPoint)
-  in map (`dotProductF` xF) rows
 
 -- ===========================
 -- Fixed-point RMSNorm with inv-sqrt(LUT seed + 1 NR)
@@ -83,16 +71,6 @@ invSqrtF a0 =
       y0 = seedMant * scale
   in nrImproveInvSqrt a y0
 
--- Variant 1: weights provided as Float (legacy call sites).
-rmsNormF :: forall n. KnownNat n
-         => Vec n FixedPoint           -- x
-         -> Vec n Float                -- w (Float params; converted once)
-         -> Vec n FixedPoint
-rmsNormF x wFloat =
-  let w = map realToFrac wFloat :: Vec n FixedPoint
-  in rmsNormFwFix x w
-
--- Variant 2: weights provided as FixedPoint (Q path).
 rmsNormFwFix :: forall n. KnownNat n
               => Vec n FixedPoint           -- x
               -> Vec n FixedPoint           -- w (already in FixedPoint)

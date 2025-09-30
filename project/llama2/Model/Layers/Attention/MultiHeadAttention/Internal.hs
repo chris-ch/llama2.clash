@@ -3,22 +3,25 @@ module Model.Layers.Attention.MultiHeadAttention.Internal where
 import Clash.Prelude
 import qualified Prelude as P
 import Model.Core.Types
-  ( NumQueryHeads, ModelDimemsion, NumKeyValueHeads
-  , HeadDimension, CArray2D (..), SingleHeadComponent (..)
-  , RotaryPositionalEmbeddingDimension, RotaryEncodingComponent (..)
-  , SequenceLength)
-import Model.Numeric.Types (FixedPoint)
-import Model.Helpers.FixedPoint (matrixVectorMultF)
-import Model.Layers.Components.Quantized (SingleHeadComponentQ)
-import qualified Prelude as P
-import Model.Core.Types
-  ( ModelDimemsion, HeadDimension
-  , RotaryEncodingComponent(..)
-  , RotaryPositionalEmbeddingDimension
-  , SequenceLength, CArray2D(..) )
-import Model.Numeric.Types (FixedPoint)
+    ( NumQueryHeads,
+      ModelDimemsion,
+      NumKeyValueHeads,
+      HeadDimension,
+      CArray2D(..),
+      SingleHeadComponent(..),
+      RotaryPositionalEmbeddingDimension,
+      RotaryEncodingComponent(..),
+      SequenceLength,
+      ModelDimemsion,
+      HeadDimension,
+      RotaryEncodingComponent(..),
+      RotaryPositionalEmbeddingDimension,
+      SequenceLength,
+      CArray2D(..) )
+import Model.Numeric.Types ( FixedPoint, FixedPoint )
+import Model.Layers.Components.Quantized
+    ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
-import Model.Layers.Components.Quantized (SingleHeadComponentQ(..))
 
 
 applyRotaryPositionEncodingF :: Vec HeadDimension FixedPoint
@@ -36,22 +39,22 @@ applyRotaryPositionEncodingF inputVec cosVecF sinVecF =
         rotatedImag = realComponent * s + imagComponent * c
     in  rotatedReal :> rotatedImag :> Nil
 
-computeHeadQF_Q
+computeHeadQ
   :: SingleHeadComponentQ
   -> Index SequenceLength
   -> Vec ModelDimemsion FixedPoint
   -> Vec HeadDimension FixedPoint
-computeHeadQF_Q headComp stepCount xHat =
+computeHeadQ headComp stepCount xHat =
   let q   = matrixVectorMultI8E_Fixed (wqHeadQ headComp) xHat
       qRo = applyRotationF (rotaryQ headComp) stepCount q
   in qRo
 
-computeHeadKVF_Q
+computeHeadKV
   :: SingleHeadComponentQ
   -> Index SequenceLength
   -> Vec ModelDimemsion FixedPoint
   -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
-computeHeadKVF_Q headComp stepCount xHat =
+computeHeadKV headComp stepCount xHat =
   let k   = matrixVectorMultI8E_Fixed (wkHeadQ headComp) xHat
       v   = matrixVectorMultI8E_Fixed (wvHeadQ headComp) xHat
       kRo = applyRotationF (rotaryQ headComp) stepCount k
