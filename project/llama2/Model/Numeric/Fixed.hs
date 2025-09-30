@@ -1,3 +1,4 @@
+-- ===== project/llama2/Model/Numeric/Fixed.hs =====
 module Model.Numeric.Fixed
   ( quantizeI8E
   , dequantizeI8E
@@ -13,13 +14,13 @@ import Model.Numeric.Types
 -- Quantization: F <-> I8E (PoT)
 -- ===========================
 
--- Find p ≈ floor(log2 maxAbs) without Floating:
--- Compare maxAbs against a table of powers-of-two in [2^-32 .. 2^31]
--- and take the greatest i where 2^i <= maxAbs. Then e = p - 7.
-quantizeI8E :: forall n. KnownNat n => Vec (n + 1) F -> (Vec (n + 1) Act, ExpS)
+-- Quantize a vector to Signed 8 mantissas with a shared Signed 7 exponent.
+-- We choose e = floor(log2(maxAbs)) - 7 so that magnitudes roughly fit in [-127,127].
+-- No Floating is used to find the exponent: we compare against a ROM of 2^i.
+quantizeI8E :: forall n. KnownNat n => Vec n F -> (Vec n Act, ExpS)
 quantizeI8E xs =
   let maxAbs :: F
-      maxAbs = maximum (map abs xs)
+      maxAbs = foldl max 0 (map abs xs)
 
       -- 2^i for i in [-32 .. 31]
       pow2 :: Vec 64 F
@@ -36,7 +37,7 @@ quantizeI8E xs =
       -- last True index (or 0 if all False)
       pIdx :: Index 64
       pIdx = fst (foldl
-                    (\(best, _) (i,b) -> if b then (i,True) else (best,False))
+                    (\(best, seen) (i,b) -> if b then (i,True) else (best,seen))
                     (minBound, False)
                     (zip indicesI flags))
 
@@ -78,7 +79,7 @@ exp2FracLUT =
        in  realToFrac val)
     indicesI
 
--- 2^f with f in [0,1); nearest-neighbor LUT (upgradeable to linear interp)
+-- 2^f with f in [0,1); nearest-neighbor LUT
 exp2Frac :: F -> F
 exp2Frac f =
   let fClamped = max 0 (min (1 - epsF) f)

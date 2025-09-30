@@ -8,7 +8,7 @@ import Clash.Prelude
 import Model.Core.Types
   ( ModelDimemsion, EmbeddingComponent(..)
   , NumLayers, NumQueryHeads, NumKeyValueHeads
-  , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..)
+  , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..), SequenceLength
   )
 import Helpers (rmsNorm, matrixVectorMult, liftA4)
 
@@ -16,6 +16,8 @@ import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
 import qualified Model.Layers.Attention.AttentionHead (attendHead)
+import Data.Maybe (fromMaybe)
+import Model.Numeric.Types (ExpS)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttention.MultiHeadAttentionComponent
@@ -181,8 +183,7 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension Float)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
-fillOneBank
-  :: HiddenClockResetEnable dom
+fillOneBank :: HiddenClockResetEnable dom
   => Index NumLayers
   -> Signal dom ProcessingState
   -> Cache.KVRamOwner dom
@@ -196,7 +197,6 @@ fillOneBank
      , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
-    -- Stage predicates
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIx)
              psSig (pure ())
@@ -204,15 +204,14 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     isStage3Attention = stageEquals Stage3_Attend
     isStage2Write     = stageEquals Stage2_WriteKV
 
-    -- pos for this layer
     seqPosSignal = sequencePosition <$> psSig
 
-    -- Bank handles (we still instantiate/wire BRAM for Stage2 writes)
     bank   = Cache.kvBanks kvOwner !! kvIx
-    runKey = Cache.runKeyBank bank
-    runVal = Cache.runValueBank bank
+    runKm  = Cache.runKeyMantBank   bank
+    runKe  = Cache.runKeyExpBank    bank
+    runVm  = Cache.runValueMantBank bank
+    runVe  = Cache.runValueExpBank  bank
 
-    -- Which query heads map to this KV head
     qIdx0 = queryHeadIndex0 kvIx
     hasQ1 = hasSecondQueryHead kvIx
     qIdx1 = queryHeadIndex1 kvIx
@@ -220,32 +219,39 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     query0 = getQueryVector idSig qIdx0
     query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
 
-    keyVec   = getKeyVector   idSig kvIx    -- K(pos) row for this KV head (HeadDimension)
-    valueVec = getValueVector idSig kvIx    -- V(pos) row for this KV head
+    keyVec   = getKeyVector   idSig kvIx
+    valueVec = getValueVector idSig kvIx
 
-    -- Stage2: write K,V(pos) one element per cycle (unchanged wiring)
     keyValuePairSignal = liftA2 (,) keyVec valueVec
-    (writeAddrSig, keyWriteSig, valWriteSig, writeDoneThisBank) =
+
+    -- Quantize and generate writes
+    (writeAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, writeDoneThisBank) =
       Cache.writeSequencer isStage2Write seqPosSignal keyValuePairSignal
 
-    -- Dual-port BRAM wiring:
-    --   Stage3: park both ports (no reads)
-    --   Stage2: Port B <- write sequencer; Port A parked
-    addrA = pure 0
-    addrB = mux isStage2Write writeAddrSig (pure 0)
+    -- Wire BRAMs (Parked reads; Port B used for writes in Stage2)
+    addrMantA = pure 0
+    addrMantB = mux isStage2Write writeAddrSig (pure 0)
 
-    wrK_A = pure Nothing
-    wrV_A = pure Nothing
-    wrK_B = mux isStage2Write keyWriteSig (pure Nothing)
-    wrV_B = mux isStage2Write valWriteSig (pure Nothing)
+    wrMantA = pure Nothing
+    wrMantB_K = mux isStage2Write kMantWr (pure Nothing)
+    wrMantB_V = mux isStage2Write vMantWr (pure Nothing)
 
-    -- Instantiate bank BRAMs (we ignore their read data in Stage3)
-    (_keyOutA, _keyOutB) = runKey (addrA, wrK_A) (addrB, wrK_B)
-    (_valOutA, _valOutB) = runVal (addrA, wrV_A) (addrB, wrV_B)
+    addrExpA  = pure 0
+    -- Combine kExpWr and vExpWr, prioritizing kExpWr if both are Just
+    addrExpB = mux isStage2Write
+                   (fmap (maybe 0 fst) (liftA2 chooseWrite kExpWr vExpWr))
+                   (pure 0)
 
-    -- A tiny KV "mirror" in registers: for each pos, store the whole K(pos)/V(pos) row once.
-    -- This lets us call the pure attendHeadComb with the whole window 0..pos.
-    -- (Synthesis note: this costs SeqLen * HeadDimension registers per KV head.)
+    wrExpA    = pure Nothing
+    wrExpB_K  = mux isStage2Write kExpWr (pure Nothing)
+    wrExpB_V  = mux isStage2Write vExpWr (pure Nothing)
+
+    (_kMantRA, _kMantRB) = runKm (addrMantA, wrMantA) (addrMantB, wrMantB_K)
+    (_vMantRA, _vMantRB) = runVm (addrMantA, wrMantA) (addrMantB, wrMantB_V)
+    (_kExpRA,  _kExpRB ) = runKe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_K)
+    (_vExpRA,  _vExpRB ) = runVe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_V)
+
+    -- Existing register mirror: unchanged
     kvKeysAll = mealy
       (\mem (we, p, rowK) ->
          let mem' = if we then replace p rowK mem else mem
@@ -260,24 +266,29 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, valueVec))
 
-    -- Combinational attention per query head using the KV mirror
-    out0 = liftA4 Model.Layers.Attention.AttentionHead.attendHead query0 kvKeysAll kvValsAll seqPosSignal
-    out1raw = liftA4 Model.Layers.Attention.AttentionHead.attendHead query1 kvKeysAll kvValsAll seqPosSignal
+    out0 = liftA4 Model.Layers.Attention.AttentionHead.attendHead
+                     query0 kvKeysAll kvValsAll seqPosSignal
+    out1raw = liftA4 Model.Layers.Attention.AttentionHead.attendHead
+                       query1 kvKeysAll kvValsAll seqPosSignal
     out1 = if hasQ1 then out1raw else pure (repeat 0)
 
-    -- A single 1-cycle done pulse on the rising edge of Stage3_Attend
     attnPrev = register False isStage3Attention
     donePulse = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
 
-    -- For “both” heads, the done pulse is shared (they’re computed in the same cycle)
-    doneBoth = donePulse
-
-    -- Accumulate outputs and done pulses into the outer vectors
     headOutAcc0  = replace qIdx0 out0 headOutAcc
-    headDoneAcc0 = replace qIdx0 doneBoth headDoneAcc
+    headDoneAcc0 = replace qIdx0 donePulse headDoneAcc
     headOutAcc1  = if hasQ1 then replace qIdx1 out1 headOutAcc0 else headOutAcc0
-    headDoneAcc1 = if hasQ1 then replace qIdx1 doneBoth headDoneAcc0 else headDoneAcc0
+    headDoneAcc1 = if hasQ1 then replace qIdx1 donePulse headDoneAcc0 else headDoneAcc0
 
     writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
+
+-- Helper function to combine kExpWr and vExpWr
+chooseWrite
+  :: Maybe (Index SequenceLength, ExpS)
+  -> Maybe (Index SequenceLength, ExpS)
+  -> Maybe (Index SequenceLength, ExpS)
+chooseWrite kExp vExp = case kExp of
+  Just _  -> kExp  -- Prioritize kExpWr if it has a value
+  Nothing -> vExp  -- Fall back to vExpWr

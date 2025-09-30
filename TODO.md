@@ -164,6 +164,4 @@ F) Per‑layer controller skeleton (for prefill wavefront): Model.Core.LayerCont
 
 ## 8) Open Questions
 
-- Final numeric format (FXP vs FP IP) and corresponding scaling/activation tuning.
-- Off‑chip weight/KV options if on‑chip BRAM is insufficient.
 - Speculative decoding support for multi‑token‑in‑flight during decoding (future work).

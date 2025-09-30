@@ -1,4 +1,4 @@
-module Helpers.EnableWrappers (holdWhen) where
+module Model.Helpers.EnableWrappers (holdWhen) where
 
 import Clash.Prelude
 
