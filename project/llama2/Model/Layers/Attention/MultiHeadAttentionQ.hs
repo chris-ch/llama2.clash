@@ -16,7 +16,7 @@ import Model.Layers.Attention.MultiHeadAttention.InternalQ
   ( computeHeadKVF_Q
   , computeHeadQF_Q
   )
-import Model.Helpers.Fixed (rmsNormFwFix)
+import Model.Helpers.FixedPoint (rmsNormFwFix)
 
 projectQKVq
   :: MultiHeadAttentionComponentQ

@@ -8,7 +8,7 @@ import Model.Core.Types
   , RotaryPositionalEmbeddingDimension, RotaryEncodingComponent (..)
   , SequenceLength)
 import Model.Numeric.Types (FixedPoint)
-import Model.Helpers.Fixed (matrixVectorMultF)
+import Model.Helpers.FixedPoint (matrixVectorMultF)
 import Helpers (matrixVectorMult)
 
 applyRotaryPositionEncodingF :: Vec HeadDimension FixedPoint

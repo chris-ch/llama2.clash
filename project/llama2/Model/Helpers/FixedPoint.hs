@@ -1,4 +1,4 @@
-module Model.Helpers.Fixed
+module Model.Helpers.FixedPoint
   ( dotProductF
   , matrixVectorMultF
   , rmsNormF              -- Float-weighted (back-compat)

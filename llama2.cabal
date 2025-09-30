@@ -31,7 +31,7 @@ library
     , Model.Core.Types
     , Model.Embedding.PRNG
     , Model.Helpers.EnableWrappers
-    , Model.Helpers.Fixed
+    , Model.Helpers.FixedPoint
     , Model.Helpers.MatVecI8E
     , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttendSequential.Fixed

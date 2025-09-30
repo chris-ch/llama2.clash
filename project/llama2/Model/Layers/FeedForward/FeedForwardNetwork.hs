@@ -4,7 +4,7 @@ module Model.Layers.FeedForward.FeedForwardNetwork (
 
 import Clash.Prelude
 import Model.Layers.FeedForward.FeedForwardNetwork.Internal
-import Model.Helpers.Fixed (rmsNormF)
+import Model.Helpers.FixedPoint (rmsNormF)
 import Model.Core.Types (CArray2D, ModelDimemsion, HiddenDimension)
 import Model.Numeric.Types (FixedPoint)
 

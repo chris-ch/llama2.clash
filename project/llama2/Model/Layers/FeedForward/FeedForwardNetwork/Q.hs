@@ -6,7 +6,7 @@ import Model.Numeric.Types (FixedPoint)
 import Model.Core.Types (ModelDimemsion)
 import Model.Layers.FeedForward.FeedForwardNetwork.InternalQ
 import Model.Layers.Components.Quantized
-import Model.Helpers.Fixed (rmsNormFwFix)
+import Model.Helpers.FixedPoint (rmsNormFwFix)
 
 computeFeedForwardQ
   :: FeedForwardNetworkComponentQ

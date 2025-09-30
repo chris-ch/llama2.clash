@@ -9,7 +9,7 @@ import Model.Core.Types
   , ModelDimemsion )
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
-import Model.Helpers.Fixed (rmsNormFwFix)
+import Model.Helpers.FixedPoint (rmsNormFwFix)
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)

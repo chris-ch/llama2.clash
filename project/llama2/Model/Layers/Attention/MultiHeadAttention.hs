@@ -8,7 +8,7 @@ import Model.Core.Types
   ( NumQueryHeads, ModelDimemsion, NumKeyValueHeads
   , HeadDimension, CArray2D (..), SingleHeadComponent (..)
   , SequenceLength)
-import Model.Helpers.Fixed (rmsNormF)
+import Model.Helpers.FixedPoint (rmsNormF)
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Attention.MultiHeadAttention.Internal
   ( computeHeadKVF

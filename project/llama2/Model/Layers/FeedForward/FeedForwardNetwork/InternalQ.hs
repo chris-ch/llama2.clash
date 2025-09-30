@@ -6,7 +6,7 @@ module Model.Layers.FeedForward.FeedForwardNetwork.InternalQ
 import Clash.Prelude
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
-import Model.Helpers.Fixed (rmsNormF)
+import Model.Helpers.FixedPoint (rmsNormF)
 import Model.Core.Types (ModelDimemsion, HiddenDimension)
 import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ(..))
 import qualified Model.Numeric.Fixed

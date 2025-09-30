@@ -6,7 +6,7 @@ module Model.Helpers.MatVecI8E
 import Clash.Prelude
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
-import Model.Helpers.Fixed (dotProductF)
+import Model.Helpers.FixedPoint (dotProductF)
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
 dotRowI8E_Fixed :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint

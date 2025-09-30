@@ -11,7 +11,7 @@ import Model.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..) )
 import Model.Layers.Attention.MultiHeadAttention.InternalQ
   ( computeHeadQF_Q, computeHeadKVF_Q )
-import Model.Helpers.Fixed (rmsNormFwFix)
+import Model.Helpers.FixedPoint (rmsNormFwFix)
 
 -- Quantized MHA: normalize with FixedPoint RMS, compute Q/K/V using I8E mats,
 -- and apply rotary inside the per-head kernels.

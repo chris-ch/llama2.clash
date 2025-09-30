@@ -1,7 +1,7 @@
 module Model.Layers.FeedForward.FeedForwardNetwork.Internal  where
 
 import Clash.Prelude
-import Model.Helpers.Fixed (matrixVectorMultF, rmsNormF)
+import Model.Helpers.FixedPoint (matrixVectorMultF, rmsNormF)
 import Model.Core.Types (CArray2D, ModelDimemsion, HiddenDimension)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
