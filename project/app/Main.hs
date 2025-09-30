@@ -293,7 +293,6 @@ printToken tokenizer tokenId = do
 -- Token Generation with Clash Simulation
 --------------------------------------------------------------------------------
 
--- Input state = (current token, remaining prompt, still using prompt?)
 type DecoderInputState = (Token, [Token], Bool)
 
 -- | Autoregressive token generation, one token at a time.
@@ -310,24 +309,22 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
   hFlush stdout
 
   let
-
-    -- Initialize with BOS if no prompt is provided
-    (firstToken, initialPrompt) =
+    -- split prompt into first token + rest (BOS fallback)
+    (firstToken, restPrompt) =
       case promptTokens of
         (t:ts) -> (t, ts)
-        []     -> (1, [])  -- BOS fallback
+        []     -> (1, [])
 
-    initState :: DecoderInputState
-    initState = (firstToken, initialPrompt, True)
-
-    advanceInputState :: DecoderInputState -> (Bool, Token) -> DecoderInputState
-    advanceInputState (current, remPrompt, usingPrompt) (isReady, sampled)
+    -- state: (currentInputToken, remainingPrompt, stillUsingPrompt)
+    advanceState :: DecoderInputState -> (Bool, Token) -> DecoderInputState
+    advanceState (current, remPrompt, usingPrompt) (isReady, sampled)
       | not isReady = (current, remPrompt, usingPrompt)
       | otherwise   = case remPrompt of
-          (p:ps) -> (p, ps, True)
-          []     -> (sampled, [], False)
+                        (p:ps) -> (p, ps, True)
+                        []     -> (sampled, [], False)
 
-    -- Run simulation
+    -- lazy / circular definitions: outputs depends on inputTokens,
+    -- inputTokens depends on states which depends on outputs.
     outputs :: [(Token, Bool)]
     outputs =
       CS.simulate (bundledOutputs decoder)
@@ -335,27 +332,25 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
 
     (outputTokens, readyFlags) = unzip outputs
 
-    -- Build state evolution
-    statesTail :: [DecoderInputState]
-    statesTail = scanl advanceInputState initState
-                            (zip (drop 1 readyFlags) (drop 1 outputTokens))
+    -- build the evolution of the input-state using the future ready flags & outputs
+    states :: [DecoderInputState]
+    states = scanl advanceState (firstToken, restPrompt, True)
+                (zip (drop 1 readyFlags) (drop 1 outputTokens))
 
-    inputTokens     = firstToken : [ tok | (tok, _, _) <- statesTail ]
-    inputValidFlags = True       : [ usePrompt | (_, _, usePrompt) <- statesTail ]
+    -- inputs fed to the model (matches original structure)
+    inputTokens     = firstToken : [ tok | (tok, _, _) <- states ]
+    inputValidFlags = True       : [ usePrompt | (_, _, usePrompt) <- states ]
 
-    -- Sampled tokens are only valid when ready
+    -- collect sampled tokens (only where isReady == True)
     sampledTokens = [ tok | (tok, isReady) <- outputs, isReady ]
 
-    -- Figure out what to emit
-    promptLength         = length promptTokens
-    generatedTokens      = take stepCount (drop promptLength sampledTokens)
-    allEmittedTokens     = promptTokens ++ generatedTokens
-    limitedEmittedTokens = take (promptLength + stepCount) allEmittedTokens
+    promptLength    = length promptTokens
+    generatedTokens = take stepCount (drop promptLength sampledTokens)
+    emittedTokens   = promptTokens ++ generatedTokens
+    limitedEmitted  = take (promptLength + stepCount) emittedTokens
 
-  -- Print emitted tokens
-  mapM_ (printToken tokenizer) limitedEmittedTokens
+  mapM_ (printToken tokenizer) limitedEmitted
   putStrLn ""
-
   return stepCount
 
 bundledOutputs :: TransformerDecoderComponent
