@@ -6,7 +6,7 @@ module Model.Layers.TransformerLayer (
 
 import Clash.Prelude
 import Model.Core.Types
-  ( ModelDimemsion, EmbeddingComponent(..)
+  ( ModelDimemsion
   , NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..), SequenceLength
   )
@@ -15,7 +15,9 @@ import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.Attention.MultiHeadAttention.Q as MultiHeadAttentionQ (projectQKVQ)
 import Model.Layers.Components.Quantized
   ( FeedForwardNetworkComponentQ(..)
-  , MultiHeadAttentionComponentQ(..) )
+  , MultiHeadAttentionComponentQ(..)
+  , EmbeddingComponentQ(..)
+  )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork.Q as FeedForwardNetworkQ (computeFeedForwardQ)
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
@@ -29,7 +31,7 @@ data TransformerLayerComponent = TransformerLayerComponent
   } deriving (Show)
 
 data TransformerDecoderComponent = TransformerDecoderComponent
-  { modelEmbedding :: EmbeddingComponent
+  { modelEmbedding :: EmbeddingComponentQ
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 

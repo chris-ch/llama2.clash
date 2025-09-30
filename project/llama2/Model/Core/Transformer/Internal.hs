@@ -7,8 +7,6 @@ import Model.Core.Types
   , ProcessingState (..)
   , CycleStage (..)
   , NumLayers, Temperature, Seed
-  , EmbeddingComponent (..)
-  , CArray2D (..)
   , VocabularySize, Token, ModelDimemsion, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
@@ -25,6 +23,8 @@ import qualified Model.Core.PipelineController as PipelineController
   , PipelineOutputs (..)
   )
 import Model.Numeric.Types (FixedPoint)
+import Model.Layers.Components.Quantized (EmbeddingComponentQ(..))
+import qualified Model.Core.EmbeddingQ as EmbQ (embedQ)
 
 initialIntermediateData :: IntermediateData
 initialIntermediateData = IntermediateData
@@ -35,7 +35,6 @@ initialIntermediateData = IntermediateData
   , attentionOutput   = repeat 0
   , feedForwardOutput = repeat 0
   }
-
 
 outputTokenSignal
   :: forall dom
@@ -50,8 +49,9 @@ outputTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextInte
   regEn 0 readyPulseSignal
         (PRNG.sampledTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextIntermediateDataSignal)
 
-embed :: CArray2D VocabularySize ModelDimemsion -> Token -> Vec ModelDimemsion FixedPoint
-embed (CArray2D vocab) tokenCode = map realToFrac (vocab !! (fromIntegral tokenCode :: Int))
+-- Embedding lookup using quantized table (I8E row -> FixedPoint vec)
+embedFromComponent :: EmbeddingComponentQ -> Token -> Vec ModelDimemsion FixedPoint
+embedFromComponent emb = EmbQ.embedQ (vocabularyQ emb)
 
 firstJustV :: Vec n (Maybe a) -> Maybe a
 firstJustV = foldr (\m acc -> case m of { Just _ -> m; Nothing -> acc }) Nothing

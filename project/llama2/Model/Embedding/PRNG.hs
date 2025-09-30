@@ -6,12 +6,14 @@ import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Model.Core.Types
   ( Temperature, IntermediateData (..), Token, VocabularySize
-  , CArray2D (..), ModelDimemsion, EmbeddingComponent (..))
+  , ModelDimemsion )
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
-import Model.Helpers.Fixed (rmsNormF, dotProductF)
+import Model.Helpers.Fixed (rmsNormFwFix)
+import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
+import Model.Layers.Components.Quantized (EmbeddingComponentQ(..))
 
 -- xorshift32 unchanged
 xorshift32 :: Unsigned 32 -> Unsigned 32
@@ -21,17 +23,14 @@ xorshift32 s0 =
       s3 = s2 `xor` shiftL s2 5
   in s3
 
--- classifier logits in FixedPoint
+-- classifier logits in FixedPoint using quantized tied embeddings
 transformerLogitsF :: TransformerLayer.TransformerDecoderComponent
                    -> Vec ModelDimemsion FixedPoint
                    -> Vec VocabularySize FixedPoint
 transformerLogitsF decoder tokenVector =
-  let vocab = vocabulary (TransformerLayer.modelEmbedding decoder)
-      rmsWeight = rmsFinalWeight (TransformerLayer.modelEmbedding decoder)
-      tokenWithRms = rmsNormF tokenVector rmsWeight
-      CArray2D vocabRows = vocab
-      vocabRowsF = map (map realToFrac) vocabRows :: Vec VocabularySize (Vec ModelDimemsion FixedPoint)
-  in map (dotProductF tokenWithRms) vocabRowsF
+  let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ
+      tokenWithRms = rmsNormFwFix tokenVector (rmsFinalWeightF emb)
+  in matrixVectorMultI8E_Fixed (vocabularyQ emb) tokenWithRms
 
 logitsSignalF :: TransformerLayer.TransformerDecoderComponent
               -> Signal dom IntermediateData
@@ -39,7 +38,7 @@ logitsSignalF :: TransformerLayer.TransformerDecoderComponent
 logitsSignalF decoder nextIntermediateDataSignal =
   transformerLogitsF decoder . feedForwardOutput <$> nextIntermediateDataSignal
 
--- PRNG state (unchanged API, now returns FixedPoint uniform)
+-- PRNG state (unchanged API)
 firstPulseSignal :: forall dom. HiddenClockResetEnable dom
    => Signal dom Bool -> Signal dom Bool
 firstPulseSignal readyPulseSignal = regEn True readyPulseSignal (pure False)

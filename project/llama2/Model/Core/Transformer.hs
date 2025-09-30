@@ -11,8 +11,6 @@ import Model.Core.Types
   , ProcessingState (..)
   , CycleStage (..)
   , NumLayers, Temperature, Seed
-  , EmbeddingComponent (..)
-  , CArray2D (..)
   , VocabularySize, Token, ModelDimemsion, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
@@ -44,14 +42,11 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
   embeddingComponent = modelEmbedding decoder
   transformerLayers  = modelLayers decoder
 
-  -- Done flags are selected after layer fan-in (mutual recursion via registers is fine)
   writeDoneThisLayer = (!!) <$> sequenceA writeDoneVector <*> PipelineController.layerIndex ctrl
   attnDoneThisLayer  = (!!) <$> sequenceA attnDoneVector  <*> PipelineController.layerIndex ctrl
 
-  -- Controller now takes inputTokenValid to gate Stage1 at layer 0 every position
   ctrl = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
 
-  -- Feedback (sampled) token: latched on readyPulse
   feedbackTokenSignal :: Signal dom Token
   feedbackTokenSignal =
     outputTokenSignal (PipelineController.readyPulse ctrl)
@@ -60,17 +55,15 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
                       decoder
                       nextIntermediateDataSignal
 
-  -- External prompt overrides feedback whenever inputTokenValid is True
   selectedTokenSignal :: Signal dom Token
   selectedTokenSignal =
     mux inputTokenValid inputTokenSignal feedbackTokenSignal
 
-  tokenEmbeddingSignal = embed (vocabulary embeddingComponent) <$> selectedTokenSignal
+  -- Quantized embedding lookup
+  tokenEmbeddingSignal = embedFromComponent embeddingComponent <$> selectedTokenSignal
 
-  -- Per-position intermediate data register
   intermediateDataSignal = register initialIntermediateData nextIntermediateDataSignal
 
-  -- Load input for Stage1: L0 takes token embedding; higher layers take previous FFN
   inputLoadedSignal :: Signal dom IntermediateData
   inputLoadedSignal =
     liftA3
@@ -82,7 +75,6 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
            else current)
       (PipelineController.processingState ctrl) intermediateDataSignal tokenEmbeddingSignal
 
-  -- One layer step
   layerStep :: ( Signal dom IntermediateData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
@@ -115,5 +107,3 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
       foldl
         layerStep (inputLoadedSignal , repeat (pure False) , repeat (pure False))
         (zip3 transformerLayers cacheOwners indicesI)
-
-

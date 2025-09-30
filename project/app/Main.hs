@@ -210,7 +210,6 @@ readVec4D = do
 parseModelConfigFile :: BG.Get TransformerDecoderComponent
 parseModelConfigFile = do
   replicateM_ 7 BG.getInt32le
-
   tokenEmbeddingTable' <- readVec2D @VocabularySize @ModelDimemsion
   rmsAttWeight'        <- readVec2D @NumLayers @ModelDimemsion
   wq'                  <- readVec4D @NumLayers @NumQueryHeads     @HeadDimension  @ModelDimemsion
@@ -226,10 +225,12 @@ parseModelConfigFile = do
   freqCisImag'         <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
 
   let
-    embedding = EmbeddingComponent
+    -- Build Float embedding, then quantize
+    embeddingFloat = EmbeddingComponent
       { vocabulary     = CArray2D tokenEmbeddingTable'
       , rmsFinalWeight = rmsFinalWeight'
       }
+    embeddingQ = Q.quantizeEmbedding embeddingFloat
 
     layer :: C.Index NumLayers -> TransformerLayerComponent
     layer lIdx =
@@ -251,10 +252,8 @@ parseModelConfigFile = do
                    , freqSin = CArray2D freqCisImag'
                    }
                }
-
         woLayer :: C.Vec ModelDimemsion (C.Vec ModelDimemsion Float)
         woLayer = wo' C.!! lIdx
-
         headBlock :: C.Index NumQueryHeads -> CArray2D ModelDimemsion HeadDimension
         headBlock hIdx =
           let base :: Int
@@ -276,11 +275,9 @@ parseModelConfigFile = do
           , rmsAtt = rmsAttWeight' C.!! lIdx
           }
 
-        -- Quantize MHA weights (Wq/Wk/Wv/WO and RMS)
         mhaQ :: Q.MultiHeadAttentionComponentQ
         mhaQ = Q.quantizeMHA mhaFloat
 
-        -- Build Float FFN and quantize
         ffnFloat :: FFN.FeedForwardNetworkComponent
         ffnFloat = FFN.FeedForwardNetworkComponent
           { fW1     = CArray2D $ w1' C.!! lIdx
@@ -297,7 +294,7 @@ parseModelConfigFile = do
            }
 
     decoder = TransformerDecoderComponent
-      { modelEmbedding = embedding
+      { modelEmbedding = embeddingQ
       , modelLayers    = C.map layer (C.indicesI :: C.Vec NumLayers (C.Index NumLayers))
       }
 
