@@ -13,7 +13,7 @@ import Model.Core.Types
   , NumLayers, Temperature, Seed
   , EmbeddingComponent (..)
   , CArray2D (..)
-  , VocabSize, Token, ModelDim, SequenceLength
+  , VocabularySize, Token, ModelDimemsion, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer

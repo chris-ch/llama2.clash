@@ -1,4 +1,3 @@
-{-# LANGUAGE TypeApplications #-}
 module Model.Layers.TransformerLayerSpec (spec) where
 
 import Test.Hspec ( Spec, describe, it, shouldBe )

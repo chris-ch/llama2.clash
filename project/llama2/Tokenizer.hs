@@ -26,8 +26,8 @@ data Tokenizer = Tokenizer
 
 -- Parse tokenizer
 buildTokenizer :: BSL.ByteString -> Int -> Tokenizer
-buildTokenizer blob vocabSize =
-  let (maxTokLen, vocabScores, vocab) = BG.runGet (parser vocabSize) blob
+buildTokenizer blob vocabularySize =
+  let (maxTokLen, vocabScores, vocab) = BG.runGet (parser vocabularySize) blob
       vVec   = V.fromList vocab
       sVec   = V.fromList vocabScores
       m      = M.fromList (zip vocab [0..])

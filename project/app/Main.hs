@@ -30,13 +30,13 @@ import Model.Core.Types
       CArray2D(CArray2D),
       HeadDimension,
       SequenceLength,
-      VocabSize,
+      VocabularySize,
       NumQueryHeads,
       NumLayers,
       NumKeyValueHeads,
-      HiddenDim,
-      ModelDim,
-      FreqDim, Temperature, Seed )
+      HiddenDimension,
+      ModelDimemsion,
+      RotaryPositionalEmbeddingDimension, Temperature, Seed )
 import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
@@ -63,7 +63,7 @@ runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed
     randomSeed = fromIntegral $ fromMaybe (round currentTime) maybeSeed
     parseModel = BG.runGet parseModelConfigFile
     transformerConfig = parseModel modelBinary
-    tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabSize)
+    tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabularySize)
     
   -- Handle prompt tokenization more carefully
   initialTokens <- case maybePrompt of
@@ -207,19 +207,19 @@ readVec4D = do
 parseModelConfigFile :: BG.Get TransformerDecoderComponent
 parseModelConfigFile = do
   replicateM_ 7 BG.getInt32le
-  tokenEmbeddingTable' <- readVec2D @VocabSize @ModelDim
-  rmsAttWeight' <- readVec2D @NumLayers @ModelDim
-  wq' <- readVec4D @NumLayers @NumQueryHeads @HeadDimension @ModelDim
-  wk' <- readVec4D @NumLayers @NumKeyValueHeads @HeadDimension @ModelDim
-  wv' <- readVec4D @NumLayers @NumKeyValueHeads @HeadDimension @ModelDim
-  wo' <- readVec3D @NumLayers @ModelDim @ModelDim
-  rmsFfnWeight' <- readVec2D @NumLayers @ModelDim
-  w1' <- readVec3D @NumLayers @HiddenDim @ModelDim
-  w2' <- readVec3D @NumLayers @ModelDim @HiddenDim
-  w3' <- readVec3D @NumLayers @HiddenDim @ModelDim
-  rmsFinalWeight' <- readVec1D @ModelDim
-  freqCisReal' <- readVec2D @SequenceLength @FreqDim
-  freqCisImag' <- readVec2D @SequenceLength @FreqDim
+  tokenEmbeddingTable' <- readVec2D @VocabularySize @ModelDimemsion
+  rmsAttWeight' <- readVec2D @NumLayers @ModelDimemsion
+  wq' <- readVec4D @NumLayers @NumQueryHeads @HeadDimension @ModelDimemsion
+  wk' <- readVec4D @NumLayers @NumKeyValueHeads @HeadDimension @ModelDimemsion
+  wv' <- readVec4D @NumLayers @NumKeyValueHeads @HeadDimension @ModelDimemsion
+  wo' <- readVec3D @NumLayers @ModelDimemsion @ModelDimemsion
+  rmsFfnWeight' <- readVec2D @NumLayers @ModelDimemsion
+  w1' <- readVec3D @NumLayers @HiddenDimension @ModelDimemsion
+  w2' <- readVec3D @NumLayers @ModelDimemsion @HiddenDimension
+  w3' <- readVec3D @NumLayers @HiddenDimension @ModelDimemsion
+  rmsFinalWeight' <- readVec1D @ModelDimemsion
+  freqCisReal' <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
+  freqCisImag' <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
   let
     embedding = EmbeddingComponent
       { vocabulary     = CArray2D tokenEmbeddingTable'
@@ -246,21 +246,21 @@ parseModelConfigFile = do
                    , freqSin = CArray2D freqCisImag'
                    }
                }
-        woLayer :: C.Vec ModelDim (C.Vec ModelDim Float)
+        woLayer :: C.Vec ModelDimemsion (C.Vec ModelDimemsion Float)
         woLayer = wo' C.!! lIdx
-        headBlock :: C.Index NumQueryHeads -> CArray2D ModelDim HeadDimension
+        headBlock :: C.Index NumQueryHeads -> CArray2D ModelDimemsion HeadDimension
         headBlock hIdx =
           let base :: Int
               base = fromIntegral hIdx * C.snatToNum (C.SNat @HeadDimension)
-              -- for each output row (0..modelDim-1), pick the headDim columns:
-              rowSlice :: C.Vec ModelDim Float -> C.Vec HeadDimension Float
+              -- for each output row (0..ModelDimemsion-1), pick the headDim columns:
+              rowSlice :: C.Vec ModelDimemsion Float -> C.Vec HeadDimension Float
               rowSlice row =
                 C.map
-                  (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index ModelDim))
+                  (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index ModelDimemsion))
                   (C.indicesI @HeadDimension)
           in CArray2D (C.map rowSlice woLayer)
 
-        mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDim HeadDimension)
+        mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
         mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
       in TransformerLayerComponent

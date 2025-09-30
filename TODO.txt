@@ -2,7 +2,7 @@
 QKV/FFN micro‑FSMs (later, if you need area/timing)
 
     Q1. Time‑multiplex matrixVectorMult for Q/K/V and W_O
-        One MAC lane accumulates over HeadDimension/ModelDim with a “done” pulse.
+        One MAC lane accumulates over HeadDimension/ModelDimemsion with a “done” pulse.
         Turn qkvDoneSig/ffnDoneSig from True into the real pulses.
 
 

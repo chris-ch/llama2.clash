@@ -11,15 +11,15 @@ module Model.Core.Types
   , Token
   , Temperature
   , Seed
-  , HiddenDim
-  , ModelDim
+  , HiddenDimension
+  , ModelDimemsion
   , NumQueryHeads
   , NumLayers
   , NumKeyValueHeads
   , SequenceLength
   , HeadDimension
-  , FreqDim
-  , VocabSize
+  , RotaryPositionalEmbeddingDimension
+  , VocabularySize
   , SingleHeadComponent(..)
   , RotaryEncodingComponent(..)
   , EmbeddingComponent(..)
@@ -33,52 +33,93 @@ import GHC.Stack (HasCallStack)
 
 {- 
 -- model config 260K
-type ModelDim = 64
-type HiddenDim = 172
+type ModelDimemsion = 64
+type HiddenDimension = 172
 type NumLayers = 5
 type NumQueryHeads = 8
 type NumKeyValueHeads = 4
 type HeadDimension  = 8
-type FreqDim = 4
-type VocabSize = 512 :: Nat
-type SequenceLength  = 512
+type RotaryPositionalEmbeddingDimension = 4
+type VocabularySize = 512 :: Nat
+type SequenceLength = 512
 -}
 
 -- model config 15M
-type ModelDim = 288
-type HiddenDim = 768
+type ModelDimemsion = 288
+type HiddenDimension = 768
 type NumLayers = 6
 type NumQueryHeads = 6
 type NumKeyValueHeads = 6
 type HeadDimension  = 48
-type FreqDim = 24
-type VocabSize = 32000 :: Nat
+type RotaryPositionalEmbeddingDimension = 24
+type VocabularySize = 32000 :: Nat
 type SequenceLength = 256
 
 {- 
 -- model config 42M
-type ModelDim = 512
-type HiddenDim = 1376
+type ModelDimemsion = 512
+type HiddenDimension = 1376
 type NumLayers = 8
 type NumQueryHeads = 8
 type NumKeyValueHeads = 8
 type HeadDimension  = 64
-type FreqDim = 32
-type VocabSize = 32000 :: Nat
-type SequenthLength         = 1024
+type RotaryPositionalEmbeddingDimension = 32
+type VocabularySize = 32000 :: Nat
+type SequenthLength = 1024
  -}
+
 {-
 -- model config 110M
-type ModelDim = 768
-type HiddenDim = 2048
+type ModelDimemsion = 768
+type HiddenDimension = 2048
 type NumLayers = 12
 type NumQueryHeads = 12
 type NumKeyValueHeads = 12
 type HeadDimension  = 64
-type FreqDim = 32
-type VocabSize = 32000 :: Nat
-type SequenthLength         = 1024
+type RotaryPositionalEmbeddingDimension = 32
+type VocabularySize = 32000 :: Nat
+type SequenthLength = 1024
 -}
+
+{-
+-- LLaMA 2 7B
+type ModelDimemsion = 4096
+type HiddenDimension = 11008
+type NumLayers = 32
+type NumQueryHeads = 32
+type NumKeyValueHeads = 32
+type HeadDimension  = 128
+type RotaryPositionalEmbeddingDimension = 128
+type VocabularySize = 32000 :: Nat
+type SequenceLength = 4096
+-}
+
+{-
+-- LLaMA 2 13B
+type ModelDimemsion = 5120
+type HiddenDimension = 13824
+type NumLayers = 40
+type NumQueryHeads = 40
+type NumKeyValueHeads = 40
+type HeadDimension  = 128
+type RotaryPositionalEmbeddingDimension = 128
+type VocabularySize = 32000 :: Nat
+type SequenceLength = 4096
+-}
+
+{-
+-- LLaMA 2 70B
+type ModelDimemsion = 7168
+type HiddenDimension = 28672
+type NumLayers = 70
+type NumQueryHeads = 64
+type NumKeyValueHeads = 64
+type HeadDimension  = 112
+type RotaryPositionalEmbeddingDimension = 256
+type VocabularySize = 32000 :: Nat
+type SequenceLength = 4096
+-}
+
 
 -- ============================================================================
 -- Bank and Cache Geometry
@@ -136,12 +177,12 @@ data ProcessingState = ProcessingState
 -- Per-layer intermediate data vectors carried through the pipeline.
 -- Updated selectively depending on cycle stage.
 data IntermediateData = IntermediateData
-  { inputVector       :: Vec ModelDim Float
+  { inputVector       :: Vec ModelDimemsion Float
   , queryVectors      :: Vec NumQueryHeads (Vec HeadDimension Float)
   , keyVectors        :: Vec NumKeyValueHeads (Vec HeadDimension Float)
   , valueVectors      :: Vec NumKeyValueHeads (Vec HeadDimension Float)
-  , attentionOutput   :: Vec ModelDim Float
-  , feedForwardOutput :: Vec ModelDim Float
+  , attentionOutput   :: Vec ModelDimemsion Float
+  , feedForwardOutput :: Vec ModelDimemsion Float
   } deriving (Show, Generic, NFDataX, Eq)
 
 newtype CArray2D (n :: Nat) (m :: Nat) = CArray2D (Vec n (Vec m Float)) deriving (Show)
@@ -153,18 +194,18 @@ type Seed = Unsigned 32
 -- Data definitions for LLM architecture
 
 data EmbeddingComponent = EmbeddingComponent
-  { vocabulary :: CArray2D VocabSize ModelDim,
-    rmsFinalWeight :: Vec ModelDim Float
+  { vocabulary :: CArray2D VocabularySize ModelDimemsion,
+    rmsFinalWeight :: Vec ModelDimemsion Float
   } deriving (Show)
 
 data RotaryEncodingComponent = RotaryEncodingComponent
-  { freqCos :: CArray2D SequenceLength FreqDim,
-    freqSin :: CArray2D SequenceLength FreqDim
+  { freqCos :: CArray2D SequenceLength RotaryPositionalEmbeddingDimension,
+    freqSin :: CArray2D SequenceLength RotaryPositionalEmbeddingDimension
   } deriving (Show)
 
 data SingleHeadComponent = SingleHeadComponent
-  { wqHead :: CArray2D HeadDimension ModelDim
-  , wkHead :: CArray2D HeadDimension ModelDim
-  , wvHead :: CArray2D HeadDimension ModelDim
+  { wqHead :: CArray2D HeadDimension ModelDimemsion
+  , wkHead :: CArray2D HeadDimension ModelDimemsion
+  , wvHead :: CArray2D HeadDimension ModelDimemsion
   , rotary :: RotaryEncodingComponent
   } deriving (Show)

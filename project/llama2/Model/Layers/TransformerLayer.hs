@@ -6,7 +6,7 @@ module Model.Layers.TransformerLayer (
 
 import Clash.Prelude
 import Model.Core.Types
-  ( ModelDim, EmbeddingComponent(..)
+  ( ModelDimemsion, EmbeddingComponent(..)
   , NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..)
   )

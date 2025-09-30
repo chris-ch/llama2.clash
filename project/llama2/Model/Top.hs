@@ -5,7 +5,7 @@ module Model.Top
 import Clash.Prelude
 
 import Model.Core.Types
-  ( Temperature, Seed, ModelDim, NumLayers, SequenceLength, Token
+  ( Temperature, Seed, ModelDimemsion, NumLayers, SequenceLength, Token
   )
 
 import qualified Model.Memory.KVCacheBank as Cache

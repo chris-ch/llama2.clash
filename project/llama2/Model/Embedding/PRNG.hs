@@ -4,7 +4,7 @@ module Model.Embedding.PRNG (
 
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
-import Model.Core.Types (Temperature, IntermediateData (..), Token, VocabSize, CArray2D (..), ModelDim, EmbeddingComponent (..))
+import Model.Core.Types (Temperature, IntermediateData (..), Token, VocabularySize, CArray2D (..), ModelDimemsion, EmbeddingComponent (..))
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
 import Helpers (rmsNorm, dotProduct)
@@ -18,7 +18,7 @@ xorshift32 s0 =
   in s3
 
 -- classifier logits for a given token vector
-transformerLogits :: TransformerLayer.TransformerDecoderComponent -> Vec ModelDim Float -> Vec VocabSize Float
+transformerLogits :: TransformerLayer.TransformerDecoderComponent -> Vec ModelDimemsion Float -> Vec VocabularySize Float
 transformerLogits decoder tokenVector = logits where
     vocab = vocabulary (TransformerLayer.modelEmbedding decoder)
     rmsWeight = rmsFinalWeight (TransformerLayer.modelEmbedding decoder)
@@ -27,7 +27,7 @@ transformerLogits decoder tokenVector = logits where
     logits = map (dotProduct tokenWithRms) vocabRows
 
 -- logits from the current data
-logitsSignal :: TransformerLayer.TransformerDecoderComponent -> Signal dom IntermediateData -> Signal dom (Vec VocabSize Float)
+logitsSignal :: TransformerLayer.TransformerDecoderComponent -> Signal dom IntermediateData -> Signal dom (Vec VocabularySize Float)
 logitsSignal decoder nextIntermediateDataSignal = transformerLogits decoder . feedForwardOutput <$> nextIntermediateDataSignal
 
 -- Sampling on pulse

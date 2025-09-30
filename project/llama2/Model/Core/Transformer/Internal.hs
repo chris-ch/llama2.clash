@@ -9,7 +9,7 @@ import Model.Core.Types
   , NumLayers, Temperature, Seed
   , EmbeddingComponent (..)
   , CArray2D (..)
-  , VocabSize, Token, ModelDim, SequenceLength
+  , VocabularySize, Token, ModelDimemsion, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer
@@ -48,7 +48,7 @@ outputTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextInte
   regEn 0 readyPulseSignal
         (PRNG.sampledTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextIntermediateDataSignal)
 
-embed :: CArray2D VocabSize ModelDim -> Token -> Vec ModelDim Float
+embed :: CArray2D VocabularySize ModelDimemsion -> Token -> Vec ModelDimemsion Float
 embed (CArray2D vocab) tokenCode = vocab !! (fromIntegral tokenCode :: Int)
 
 firstJustV :: Vec n (Maybe a) -> Maybe a

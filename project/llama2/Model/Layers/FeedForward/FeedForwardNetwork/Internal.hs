@@ -2,17 +2,17 @@ module Model.Layers.FeedForward.FeedForwardNetwork.Internal  where
 
 import Clash.Prelude
 
-import Model.Core.Types (CArray2D, ModelDim, HiddenDim)
+import Model.Core.Types (CArray2D, ModelDimemsion, HiddenDimension)
 import Helpers (rmsNorm, matrixVectorMult)
 
 data FeedForwardNetworkComponent = FeedForwardNetworkComponent
-  { fW1 :: CArray2D HiddenDim ModelDim,
-    fW2 :: CArray2D ModelDim HiddenDim,
-    fW3 :: CArray2D HiddenDim ModelDim,
-    fRMSFfn :: Vec ModelDim Float
+  { fW1 :: CArray2D HiddenDimension ModelDimemsion,
+    fW2 :: CArray2D ModelDimemsion HiddenDimension,
+    fW3 :: CArray2D HiddenDimension ModelDimemsion,
+    fRMSFfn :: Vec ModelDimemsion Float
   } deriving (Show)
 
-runFeedForward :: FeedForwardNetworkComponent -> Vec ModelDim Float -> Vec ModelDim Float
+runFeedForward :: FeedForwardNetworkComponent -> Vec ModelDimemsion Float -> Vec ModelDimemsion Float
 runFeedForward ffn xHat =
   let gate = map sigmoidLinearUnit $ matrixVectorMult (fW1 ffn) xHat
       up   = matrixVectorMult (fW3 ffn) xHat

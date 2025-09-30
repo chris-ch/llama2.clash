@@ -19,7 +19,7 @@ matrixVectorMult :: forall n m. KnownNat m => CArray2D n m -> Vec m Float -> Vec
 matrixVectorMult (CArray2D mat) vec = map (dotProduct vec) mat
 
 -- RMS Norm
-rmsNorm :: Vec ModelDim Float -> Vec ModelDim Float -> Vec ModelDim Float
+rmsNorm :: Vec ModelDimemsion Float -> Vec ModelDimemsion Float -> Vec ModelDimemsion Float
 rmsNorm vec weights =
   let squareNorm = sum (map (\v -> v * v) vec)
       ss = (squareNorm / fromIntegral (length vec)) + 1e-5

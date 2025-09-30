@@ -4,7 +4,7 @@ import Test.Hspec
 import Clash.Prelude
 
 import Model.Layers.Attention.MultiHeadAttention.Internal (applyRotaryPositionEncoding)
-import Model.Core.Types ( HeadDimension, FreqDim )
+import Model.Core.Types ( HeadDimension, RotaryPositionalEmbeddingDimension )
 
 spec :: Spec
 spec = do
@@ -16,10 +16,10 @@ spec = do
         input = generate (SNat @HeadDimension) (+ 1) (1.0 :: Float)
         -- gives [1,2,3,...,HeadDimension] basically
 
-        cosV :: Vec FreqDim Float
+        cosV :: Vec RotaryPositionalEmbeddingDimension Float
         cosV = repeat 1.0
 
-        sinV :: Vec FreqDim Float
+        sinV :: Vec RotaryPositionalEmbeddingDimension Float
         sinV = repeat 0.0
 
       applyRotaryPositionEncoding input cosV sinV `shouldBe` input

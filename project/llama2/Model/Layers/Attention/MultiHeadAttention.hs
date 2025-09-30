@@ -4,9 +4,9 @@ module Model.Layers.Attention.MultiHeadAttention (
 
 import Clash.Prelude
 
-import Model.Core.Types (NumQueryHeads, ModelDim, NumKeyValueHeads,
+import Model.Core.Types (NumQueryHeads, ModelDimemsion, NumKeyValueHeads,
   HeadDimension, CArray2D (..), SingleHeadComponent (..),
-  FreqDim, RotaryEncodingComponent (..), SequenceLength)
+  RotaryPositionalEmbeddingDimension, RotaryEncodingComponent (..), SequenceLength)
 import Helpers (matrixVectorMult, rmsNorm)
 import qualified Prelude as P
 
@@ -17,7 +17,7 @@ import Model.Layers.Attention.MultiHeadAttention.Internal
 
 projectQKV :: MultiHeadAttentionComponent
   -> Index SequenceLength
-  -> Vec ModelDim Float
+  -> Vec ModelDimemsion Float
   -> (Vec NumQueryHeads (Vec HeadDimension Float), 
   Vec NumKeyValueHeads (Vec HeadDimension Float), 
   Vec NumKeyValueHeads (Vec HeadDimension Float))

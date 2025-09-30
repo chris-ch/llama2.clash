@@ -5,13 +5,13 @@ module Model.Layers.FeedForward.FeedForwardNetwork (
 import Clash.Prelude
 import Model.Layers.FeedForward.FeedForwardNetwork.Internal
 
-import Model.Core.Types (CArray2D, ModelDim, HiddenDim)
+import Model.Core.Types (CArray2D, ModelDimemsion, HiddenDimension)
 import Helpers (rmsNorm, matrixVectorMult)
 
 -- Pure feed-forward computation
 computeFeedForward :: FeedForwardNetworkComponent
-  -> Vec ModelDim Float
-  -> Vec ModelDim Float
+  -> Vec ModelDimemsion Float
+  -> Vec ModelDimemsion Float
 computeFeedForward ffn inputVector =
   let
     xHat     = rmsNorm inputVector (fRMSFfn ffn)        -- single pre-norm here
