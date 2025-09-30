@@ -1,10 +1,8 @@
-{-# LANGUAGE OverloadedStrings #-}
 module Tokenizer
   ( Tokenizer
   , buildTokenizer
-  , encodeTokens   -- encodeTokens tok text bos eos
-  , decodePiece    -- decodePiece tok prev token
-  , vocabVector    -- to expose vocab if you need it
+  , encodeTokens
+  , decodePiece
   ) where
 
 import Prelude
@@ -22,8 +20,8 @@ data Tokenizer = Tokenizer
   { vocabVector    :: V.Vector BSL.ByteString  -- size = vocab_size
   , scoresVector   :: V.Vector Float           -- size = vocab_size
   , sortedMap      :: M.Map BSL.ByteString Int -- str -> id (like sorted_vocab + bsearch)
-  , maxTokenLength :: !Int                     -- header field (not strictly needed)
-  , spaceId        :: !Int                     -- id of " " (dummy-prefix)
+  , maxTokenLength :: Int                      -- header field (not strictly needed)
+  , spaceId        :: Int                      -- id of " " (dummy-prefix)
   }
 
 -- Parse tokenizer

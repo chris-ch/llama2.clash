@@ -38,23 +38,16 @@ multiCycleTransformerLayer
      , Signal dom Bool                         -- writeDone (Stage2_WriteKV)
      , Signal dom Bool                         -- attnDone  (Stage3_Attend, rising)
      , Signal dom IntermediateData             -- commitCycle3 (gated write-back)
-     , Signal dom Bool                         -- tapPulse  (1-cycle on attnDone rising)
-     , Signal dom (Vec ModelDim Float)         -- dbgXHat
   )
 multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal intermediateDataSignal =
   ( nextIntermediateDataSignal
   , writeDoneThisLayerSignal
   , attentionDoneThisLayerSignal
   , commitCycle3Signal
-  , attentionDoneThisLayerSignal
-  , xHatSignalDbg
   )
  where
   mha  = multiHeadAttention layer
   ffn  = feedforwardNetwork layer
-
-  -- xHat = rmsnorm(x, rms_att) for debugging
-  xHatSignalDbg = (\idata -> rmsNorm (inputVector idata) (MultiHeadAttention.rmsAtt mha)) <$> intermediateDataSignal
 
   -- Drive all KV banks; collect per-head outputs, head-done pulses, and per-bank write-done
   (perHeadOutputSignalsVec, perHeadDoneSignalsVec, perBankWriteDoneVec) =
@@ -62,7 +55,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
         initHeadDone    = repeat (pure False)
         initWriteDone   = repeat (pure False)
     in  foldl
-          (fillOneBankComb layerIndex processingStateSignal kvRamOwner intermediateDataSignal)
+          (fillOneBank layerIndex processingStateSignal kvRamOwner intermediateDataSignal)
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
@@ -101,7 +94,6 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
           in summed)
         intermediateDataSignal
         woHeadsSignal
-
 
   -- Commit attention output on this layer’s attnDone pulse in Stage3_Attend.
   -- Print the exact vector being committed (first 8 elems) once per (L, P).
@@ -147,7 +139,6 @@ processStage mha ffn layerIndex ps idata
       Stage2_WriteKV -> idata
 
       -- Stage3: stream attention (sequenced outside).
-      -- NOTE: This prints the previous attentionOutput. The new value is printed at commit.
       Stage3_Attend -> idata
 
       -- Stage4: FFN
@@ -190,7 +181,7 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension Float)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
-fillOneBankComb
+fillOneBank
   :: HiddenClockResetEnable dom
   => Index NumLayers
   -> Signal dom ProcessingState
@@ -203,7 +194,7 @@ fillOneBankComb
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension Float))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
-fillOneBankComb layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
+fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
     -- Stage predicates
     stageEquals st =

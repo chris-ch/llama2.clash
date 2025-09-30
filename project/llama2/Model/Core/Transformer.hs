@@ -37,21 +37,9 @@ multiCycleTransformer :: forall dom
   -> Signal dom Bool            -- ^ inputTokenValid (True while external prompt is used)
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token
-     , Signal dom Bool
-     , Signal dom Bool
-     , Signal dom (Index NumLayers)
-     , Signal dom (Index SequenceLength)
-     , Signal dom (Vec ModelDim Float)
-     )
+  -> ( Signal dom Token , Signal dom Bool )
 multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid temperatureSignal seedSignal =
-  ( selectedTokenSignal
-  , PipelineController.readyPulse ctrl
-  , tapValid
-  , tapLayerIdxOut
-  , tapSeqPosOut
-  , dbgXHatOut
-  )
+  ( selectedTokenSignal, PipelineController.readyPulse ctrl)
  where
   embeddingComponent = modelEmbedding decoder
   transformerLayers  = modelLayers decoder
@@ -98,20 +86,16 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
   layerStep :: ( Signal dom IntermediateData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom (Vec ModelDim Float))
         )
     -> (TransformerLayer.TransformerLayerComponent, Cache.KVRamOwner dom, Index NumLayers)
     -> ( Signal dom IntermediateData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom (Vec ModelDim Float))
        )
-  layerStep (currData, wDoneVec, attnDoneVec, tapVecIn, xHatVecIn)
+  layerStep (currData, wDoneVec, attnDoneVec)
             (layerComp, cacheOwner, lIx) =
     let
-      (newData, wDone, attnDone, commitC3, tapPulse, dbgXHat) =
+      (newData, wDone, attnDone, commitC3) =
           TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner lIx (PipelineController.processingState ctrl) currData
       selectedData =
           liftA4
@@ -125,41 +109,11 @@ multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid tempe
     in  ( selectedData
         , replace lIx wDone    wDoneVec
         , replace lIx attnDone attnDoneVec
-        , replace lIx tapPulse tapVecIn
-        , replace lIx dbgXHat  xHatVecIn
         )
 
-  ( nextIntermediateDataSignal
-    , writeDoneVector
-    , attnDoneVector
-    , tapVec
-    , xHatVec
-    ) =
-      foldl layerStep ( inputLoadedSignal
-                      , repeat (pure False)
-                      , repeat (pure False)
-                      , repeat (pure False)
-                      , repeat (pure (repeat 0))
-                      )
-            (zip3 transformerLayers cacheOwners indicesI)
+  ( nextIntermediateDataSignal , writeDoneVector , attnDoneVector ) =
+      foldl
+        layerStep (inputLoadedSignal , repeat (pure False) , repeat (pure False))
+        (zip3 transformerLayers cacheOwners indicesI)
 
-  -- =================== Layer-accurate tap fan-in ====================
-  tapPayloadPerLayer :: Vec NumLayers (Signal dom (Maybe ( Index NumLayers
-                                        , Index SequenceLength
-                                        , Vec ModelDim Float
-                                        )))
-  tapPayloadPerLayer =
-    map (\lIx ->
-          let pulse = tapVec    !! lIx
-              xh    = xHatVec   !! lIx
-              tup   = bundle (pure lIx, PipelineController.seqPos ctrl, xh)
-          in mux pulse (Just <$> tup) (pure Nothing)
-        )
-        indicesI
 
-  tapSelected = firstJustV <$> sequenceA tapPayloadPerLayer
-  tapValid    = isJust <$> tapSelected
-
-  tapLayerIdxOut    = regEn 0           tapValid ((\(l,_,_) -> l) . fromJustX <$> tapSelected)
-  tapSeqPosOut      = regEn 0           tapValid ((\(_,p,_) -> p) . fromJustX <$> tapSelected)
-  dbgXHatOut        = regEn (repeat 0)  tapValid ((\(_,_,xh) -> xh) . fromJustX <$> tapSelected)
