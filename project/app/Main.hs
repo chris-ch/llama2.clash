@@ -40,12 +40,10 @@ import Model.Core.Types
 import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
-import qualified Model.Layers.FeedForward.FeedForwardNetwork.Internal as FeedForwardNetwork
 import Model.Numeric.Types (FixedPoint)
 import qualified Model.Layers.Components.Quantized as Q
-import qualified Model.Layers.FeedForward.FeedForwardNetwork as FFN
 import Model.Layers.Components.Quantized
-    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..) )
+    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..) )
 
 
 --------------------------------------------------------------------------------
@@ -279,8 +277,8 @@ parseModelConfigFile = do
         mhaQ :: Q.MultiHeadAttentionComponentQ
         mhaQ = Q.quantizeMHA mhaFloat
 
-        ffnFloat :: FFN.FeedForwardNetworkComponent
-        ffnFloat = FFN.FeedForwardNetworkComponent
+        ffnFloat :: FeedForwardNetworkComponent
+        ffnFloat = FeedForwardNetworkComponent
           { fW1     = CArray2D $ w1' C.!! lIdx
           , fW2     = CArray2D $ w2' C.!! lIdx
           , fW3     = CArray2D $ w3' C.!! lIdx

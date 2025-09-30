@@ -1,4 +1,3 @@
--- ===== project/llama2/Model/Memory/KVCacheBank.hs =====
 module Model.Memory.KVCacheBank (
     KvBank(..)
   , KVRamOwner(..)

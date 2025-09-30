@@ -13,7 +13,6 @@ import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer
   ( TransformerLayerComponent(..)
   , TransformerDecoderComponent(..)
-  , multiCycleTransformerLayer
   )
 import Model.Layers.TransformerLayer (TransformerDecoderComponent(..))
 import Data.Maybe (isJust)

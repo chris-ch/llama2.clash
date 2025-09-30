@@ -38,15 +38,12 @@ library
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.AttentionHead.Fixed
     , Model.Layers.Attention.MultiHeadAttention
-    , Model.Layers.Attention.MultiHeadAttention.Q
     , Model.Layers.Attention.MultiHeadAttention.Internal
     , Model.Layers.Attention.OnlineSoftmax
     , Model.Layers.Attention.OnlineSoftmax.Fixed
     , Model.Layers.Components.Quantized
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
-    , Model.Layers.FeedForward.FeedForwardNetwork.InternalQ
-    , Model.Layers.FeedForward.FeedForwardNetwork.Q
     , Model.Layers.TransformerLayer
     , Model.Memory.Addressing
     , Model.Memory.KVCacheBank

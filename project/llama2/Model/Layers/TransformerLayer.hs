@@ -12,14 +12,14 @@ import Model.Core.Types
   )
 import qualified Model.Memory.KVCacheBank as Cache
 
-import qualified Model.Layers.Attention.MultiHeadAttention.Q as MultiHeadAttentionQ (projectQKVQ)
+import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention (projectQKV)
 import Model.Layers.Components.Quantized
   ( FeedForwardNetworkComponentQ(..)
   , MultiHeadAttentionComponentQ(..)
   , EmbeddingComponentQ(..)
   )
 
-import qualified Model.Layers.FeedForward.FeedForwardNetwork.Q as FeedForwardNetworkQ (computeFeedForwardQ)
+import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
 import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
 import Model.Numeric.Types (ExpS, FixedPoint)
 import Helpers (liftA4)
@@ -129,14 +129,14 @@ processStage mhaQ ffnQ layerIndex ps idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->
         let
-          (qs, ks, vs) = MultiHeadAttentionQ.projectQKVQ mhaQ (sequencePosition ps) (inputVector idata)
+          (qs, ks, vs) = MultiHeadAttention.projectQKV mhaQ (sequencePosition ps) (inputVector idata)
         in idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
 
       Stage2_WriteKV     -> idata
       Stage3_Attend      -> idata
 
       Stage4_FeedForward ->
-        let ffnOut = FeedForwardNetworkQ.computeFeedForwardQ ffnQ (attentionOutput idata)
+        let ffnOut = FeedForwardNetwork.computeFeedForward ffnQ (attentionOutput idata)
         in  idata { feedForwardOutput = ffnOut }
 
       Stage5_Bookkeeping -> idata

@@ -5,6 +5,7 @@ module Model.Layers.Components.Quantized
   , FeedForwardNetworkComponentQ(..)
   , EmbeddingComponentQ(..)
   , MultiHeadAttentionComponent (..)
+  , FeedForwardNetworkComponent (..)
     -- Converters (elaboration-time)
   , quantizeSingleHead
   , quantizeMHA
@@ -25,11 +26,8 @@ import Model.Core.Types
   , RotaryEncodingComponent(..)
   , EmbeddingComponent(..), SingleHeadComponent (..)
   )
-import Model.Layers.FeedForward.FeedForwardNetwork.Internal
-  ( FeedForwardNetworkComponent(..) )
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.ParamPack (QArray2D(..), quantizeMatI8E)
-
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent
@@ -37,6 +35,12 @@ data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   , rmsAtt :: Vec ModelDimemsion Float
   } deriving (Show)
 
+data FeedForwardNetworkComponent = FeedForwardNetworkComponent
+  { fW1 :: CArray2D HiddenDimension ModelDimemsion
+  , fW2 :: CArray2D ModelDimemsion HiddenDimension
+  , fW3 :: CArray2D HiddenDimension ModelDimemsion
+  , fRMSFfn :: Vec ModelDimemsion Float
+  } deriving (Show)
 
 -- Float-free, quantized single head (per-row I8E weights).
 data SingleHeadComponentQ = SingleHeadComponentQ
@@ -100,3 +104,4 @@ quantizeEmbedding e =
     { vocabularyQ     = quantizeMatI8E (vocabulary e)
     , rmsFinalWeightF = map realToFrac (rmsFinalWeight e)
     }
+
