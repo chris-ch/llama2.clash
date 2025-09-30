@@ -40,10 +40,11 @@ import Model.Core.Types
 import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
-import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
+import qualified Model.Layers.FeedForward.FeedForwardNetwork.Internal as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
 import Model.Numeric.Types (FixedPoint)
 import qualified Model.Layers.Components.Quantized as Q
+import qualified Model.Layers.FeedForward.FeedForwardNetwork as FFN
 
 
 --------------------------------------------------------------------------------
@@ -208,10 +209,8 @@ readVec4D = do
 
 parseModelConfigFile :: BG.Get TransformerDecoderComponent
 parseModelConfigFile = do
-  -- Header or metadata (unchanged)
   replicateM_ 7 BG.getInt32le
 
-  -- Tensors (Float) from file
   tokenEmbeddingTable' <- readVec2D @VocabularySize @ModelDimemsion
   rmsAttWeight'        <- readVec2D @NumLayers @ModelDimemsion
   wq'                  <- readVec4D @NumLayers @NumQueryHeads     @HeadDimension  @ModelDimemsion
@@ -226,80 +225,83 @@ parseModelConfigFile = do
   freqCisReal'         <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
   freqCisImag'         <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
 
-  -- Embedding stays Float-based for now
-  let embedding = EmbeddingComponent
-        { vocabulary     = CArray2D tokenEmbeddingTable'
-        , rmsFinalWeight = rmsFinalWeight'
-        }
+  let
+    embedding = EmbeddingComponent
+      { vocabulary     = CArray2D tokenEmbeddingTable'
+      , rmsFinalWeight = rmsFinalWeight'
+      }
 
-      -- Build one layer, quantizing FFN only
-      layer :: C.Index NumLayers -> TransformerLayerComponent
-      layer lIdx =
-        let
-          -- Heads: Float params (unchanged)
-          sha :: C.Index NumQueryHeads -> SingleHeadComponent
-          sha hIdx =
-            let nQ   = C.snatToNum (C.SNat @NumQueryHeads)     :: Int
-                nKV  = C.snatToNum (C.SNat @NumKeyValueHeads)  :: Int
-                kvMul = max 1 (nQ `div` nKV)
-                kvIdxInt = fromIntegral hIdx `div` kvMul
-                kvIdx :: C.Index NumKeyValueHeads
-                kvIdx = fromInteger (toInteger kvIdxInt)
-            in SingleHeadComponent
-                 { wqHead = CArray2D $ (wq' C.!! lIdx) C.!! hIdx
-                 , wkHead = CArray2D $ (wk' C.!! lIdx) C.!! kvIdx
-                 , wvHead = CArray2D $ (wv' C.!! lIdx) C.!! kvIdx
-                 , rotary = RotaryEncodingComponent
-                     { freqCos = CArray2D freqCisReal'
-                     , freqSin = CArray2D freqCisImag'
-                     }
-                 }
+    layer :: C.Index NumLayers -> TransformerLayerComponent
+    layer lIdx =
+      let
+        sha :: C.Index NumQueryHeads -> SingleHeadComponent
+        sha hIdx =
+          let nQ  = C.snatToNum (C.SNat @NumQueryHeads)     :: Int
+              nKV = C.snatToNum (C.SNat @NumKeyValueHeads)  :: Int
+              kvMul = max 1 (nQ `div` nKV)
+              kvIdxInt = fromIntegral hIdx `div` kvMul
+              kvIdx :: C.Index NumKeyValueHeads
+              kvIdx = fromInteger (toInteger kvIdxInt)
+          in SingleHeadComponent
+               { wqHead = CArray2D $ (wq' C.!! lIdx) C.!! hIdx
+               , wkHead = CArray2D $ (wk' C.!! lIdx) C.!! kvIdx
+               , wvHead = CArray2D $ (wv' C.!! lIdx) C.!! kvIdx
+               , rotary  = RotaryEncodingComponent
+                   { freqCos = CArray2D freqCisReal'
+                   , freqSin = CArray2D freqCisImag'
+                   }
+               }
 
-          -- Slice WO into per-head blocks (Float; unchanged)
-          woLayer :: C.Vec ModelDimemsion (C.Vec ModelDimemsion Float)
-          woLayer = wo' C.!! lIdx
+        woLayer :: C.Vec ModelDimemsion (C.Vec ModelDimemsion Float)
+        woLayer = wo' C.!! lIdx
 
-          headBlock :: C.Index NumQueryHeads -> CArray2D ModelDimemsion HeadDimension
-          headBlock hIdx =
-            let base :: Int
-                base = fromIntegral hIdx * C.snatToNum (C.SNat @HeadDimension)
-                rowSlice :: C.Vec ModelDimemsion Float -> C.Vec HeadDimension Float
-                rowSlice row =
-                  C.map (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index ModelDimemsion))
-                        (C.indicesI @HeadDimension)
-            in CArray2D (C.map rowSlice woLayer)
+        headBlock :: C.Index NumQueryHeads -> CArray2D ModelDimemsion HeadDimension
+        headBlock hIdx =
+          let base :: Int
+              base = fromIntegral hIdx * C.snatToNum (C.SNat @HeadDimension)
+              rowSlice :: C.Vec ModelDimemsion Float -> C.Vec HeadDimension Float
+              rowSlice row =
+                C.map
+                  (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index ModelDimemsion))
+                  (C.indicesI @HeadDimension)
+          in CArray2D (C.map rowSlice woLayer)
 
-          mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
-          mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
+        mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
+        mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
-          -- Build Float FFN for this layer from file tensors
-          ffnFloat :: FeedForwardNetwork.FeedForwardNetworkComponent
-          ffnFloat = FeedForwardNetwork.FeedForwardNetworkComponent
-            { fW1      = CArray2D $ w1' C.!! lIdx
-            , fW2      = CArray2D $ w2' C.!! lIdx
-            , fW3      = CArray2D $ w3' C.!! lIdx
-            , fRMSFfn  = rmsFfnWeight' C.!! lIdx
-            }
+        mhaFloat :: MultiHeadAttention.MultiHeadAttentionComponent
+        mhaFloat = MultiHeadAttention.MultiHeadAttentionComponent
+          { heads  = C.map sha (C.indicesI :: C.Vec NumQueryHeads (C.Index NumQueryHeads))
+          , mWo    = mWoVec
+          , rmsAtt = rmsAttWeight' C.!! lIdx
+          }
 
-          -- Quantize FFN once at load time
-          ffnQ :: Q.FeedForwardNetworkComponentQ
-          ffnQ = Q.quantizeFFN ffnFloat
+        -- Quantize MHA weights (Wq/Wk/Wv/WO and RMS)
+        mhaQ :: Q.MultiHeadAttentionComponentQ
+        mhaQ = Q.quantizeMHA mhaFloat
 
-        in TransformerLayerComponent
-             { multiHeadAttention = MultiHeadAttention.MultiHeadAttentionComponent
-                 { heads  = C.map sha (C.indicesI :: C.Vec NumQueryHeads (C.Index NumQueryHeads))
-                 , mWo    = mWoVec
-                 , rmsAtt = rmsAttWeight' C.!! lIdx
-                 }
-             , feedforwardNetwork = ffnQ
-             }
+        -- Build Float FFN and quantize
+        ffnFloat :: FFN.FeedForwardNetworkComponent
+        ffnFloat = FFN.FeedForwardNetworkComponent
+          { fW1     = CArray2D $ w1' C.!! lIdx
+          , fW2     = CArray2D $ w2' C.!! lIdx
+          , fW3     = CArray2D $ w3' C.!! lIdx
+          , fRMSFfn = rmsFfnWeight' C.!! lIdx
+          }
+        ffnQ :: Q.FeedForwardNetworkComponentQ
+        ffnQ = Q.quantizeFFN ffnFloat
 
-      decoder = TransformerDecoderComponent
-        { modelEmbedding = embedding
-        , modelLayers    = C.map layer (C.indicesI :: C.Vec NumLayers (C.Index NumLayers))
-        }
+      in TransformerLayerComponent
+           { multiHeadAttention = mhaQ
+           , feedforwardNetwork = ffnQ
+           }
 
-  pure decoder
+    decoder = TransformerDecoderComponent
+      { modelEmbedding = embedding
+      , modelLayers    = C.map layer (C.indicesI :: C.Vec NumLayers (C.Index NumLayers))
+      }
+
+  return decoder
 
 printToken :: T.Tokenizer -> Token -> IO ()
 printToken tokenizer tokenId = do

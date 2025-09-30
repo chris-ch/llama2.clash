@@ -10,19 +10,21 @@ import Model.Core.Types
   , NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..), SequenceLength
   )
-import Model.Helpers.Fixed (rmsNormF, matrixVectorMultF)
-
 import qualified Model.Memory.KVCacheBank as Cache
-import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
-import qualified Model.Layers.FeedForward.FeedForwardNetwork.Q as FeedForwardNetworkQ (computeFeedForwardQ)
-import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ(..))
 
+import qualified Model.Layers.Attention.MultiHeadAttention.Q as MultiHeadAttentionQ (projectQKVQ)
+import Model.Layers.Components.Quantized
+  ( FeedForwardNetworkComponentQ(..)
+  , MultiHeadAttentionComponentQ(..) )
+
+import qualified Model.Layers.FeedForward.FeedForwardNetwork.Q as FeedForwardNetworkQ (computeFeedForwardQ)
+import Model.Helpers.MatVecI8E (matrixVectorMultI8E_Fixed)
 import Model.Numeric.Types (ExpS, FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead.Fixed (attendHeadF)
 
 data TransformerLayerComponent = TransformerLayerComponent
-  { multiHeadAttention :: MultiHeadAttention.MultiHeadAttentionComponent
+  { multiHeadAttention :: MultiHeadAttentionComponentQ
   , feedforwardNetwork :: FeedForwardNetworkComponentQ
   } deriving (Show)
 
@@ -39,9 +41,9 @@ multiCycleTransformerLayer
   -> Signal dom ProcessingState
   -> Signal dom IntermediateData
   -> ( Signal dom IntermediateData
-     , Signal dom Bool                         -- writeDone (Stage2_WriteKV)
-     , Signal dom Bool                         -- attnDone  (Stage3_Attend, rising)
-     , Signal dom IntermediateData             -- commitCycle3 (gated write-back)
+     , Signal dom Bool
+     , Signal dom Bool
+     , Signal dom IntermediateData
   )
 multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal intermediateDataSignal =
   ( nextIntermediateDataSignal
@@ -50,10 +52,9 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
   , commitCycle3Signal
   )
  where
-  mha  = multiHeadAttention layer
-  ffn  = feedforwardNetwork layer
+  mhaQ = multiHeadAttention layer
+  ffnQ = feedforwardNetwork layer
 
-  -- Drive all KV banks; collect per-head outputs, head-done pulses, and per-bank write-done
   (perHeadOutputSignalsVec, perHeadDoneSignalsVec, perBankWriteDoneVec) =
     let initHeadOutputs = repeat (pure (repeat 0))
         initHeadDone    = repeat (pure False)
@@ -63,17 +64,14 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
-  -- Attention done: rising edge once all heads finish for this layer
   allHeadsDoneSignal     = fmap and (sequenceA perHeadDoneSignalsVec)
   allHeadsDonePrevSignal = register False allHeadsDoneSignal
   attentionDoneThisLayerSignal =
     liftA2 (\now prev -> now && not prev) allHeadsDoneSignal allHeadsDonePrevSignal
 
-  -- Default per-stage work within this layer
   baseNextIntermediateDataSignal =
-    liftA2 (processStage mha ffn layerIndex) processingStateSignal intermediateDataSignal
+    liftA2 (processStage mhaQ ffnQ layerIndex) processingStateSignal intermediateDataSignal
 
-  -- Layer write-done = AND across banks (Stage2_WriteKV)
   writeDoneThisLayerSignal =
     let allBanksDoneSignal = fmap and (sequenceA perBankWriteDoneVec)
     in  (\ps banksDone ->
@@ -82,24 +80,21 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
         && banksDone)
         <$> processingStateSignal <*> allBanksDoneSignal
 
-  -- Per-head WO @ head, then sum across heads (equivalent to WO @ concatHeads)
+  -- Per-head WO projection now uses quantized WO blocks (I8E) -> FixedPoint
   perHeadProjectedSignalsVec =
-    zipWith (\wo hSig -> matrixVectorMultF wo <$> hSig) (MultiHeadAttention.mWo mha) perHeadOutputSignalsVec
+    zipWith (\woQ hSig -> matrixVectorMultI8E_Fixed woQ <$> hSig) (mWoQ mhaQ) perHeadOutputSignalsVec
 
   perHeadProjectedSignal = sequenceA perHeadProjectedSignalsVec
   woHeadsSignal          = fmap (foldl1 (zipWith (+))) perHeadProjectedSignal
 
-  -- x_after_attn = x + WO@heads
   xAfterAttnSignal =
       liftA2
         (\idata woHeads ->
           let xInput = inputVector idata
-              summed = zipWith (+) xInput woHeads
-          in summed)
+          in zipWith (+) xInput woHeads)
         intermediateDataSignal
         woHeadsSignal
 
-  -- Commit attention output on this layer’s attnDone pulse in Stage3_Attend.
   nextIntermediateDataSignal =
     liftA4
       (\ps cur attOut done ->
@@ -110,7 +105,6 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
            else cur)
       processingStateSignal baseNextIntermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
 
-  -- The same gated-commit view, exposed as a tap at Cycle3
   commitCycle3Signal =
     liftA4
       (\ps cur attOut done ->
@@ -122,35 +116,27 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
       processingStateSignal intermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
 
 processStage
-  :: MultiHeadAttention.MultiHeadAttentionComponent
+  :: MultiHeadAttentionComponentQ
   -> FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
   -> IntermediateData
   -> IntermediateData
-processStage mha ffn layerIndex ps idata
+processStage mhaQ ffnQ layerIndex ps idata
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
-
-      -- Stage1: compute Q,K,V for current layer/pos
       Stage1_ProjectQKV ->
         let
-          (qs, ks, vs) = MultiHeadAttention.projectQKV mha (sequencePosition ps) (inputVector idata)
+          (qs, ks, vs) = MultiHeadAttentionQ.projectQKVQ mhaQ (sequencePosition ps) (inputVector idata)
         in idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
 
-      -- Stage2: write K,V(pos) to cache
-      Stage2_WriteKV -> idata
+      Stage2_WriteKV     -> idata
+      Stage3_Attend      -> idata
 
-      -- Stage3: stream attention (sequenced outside).
-      Stage3_Attend -> idata
-
-      -- Stage4: FFN (quantized)
       Stage4_FeedForward ->
-        let
-          ffnOut = FeedForwardNetworkQ.computeFeedForwardQ ffn (attentionOutput idata)
-        in idata { feedForwardOutput = ffnOut }
+        let ffnOut = FeedForwardNetworkQ.computeFeedForwardQ ffnQ (attentionOutput idata)
+        in  idata { feedForwardOutput = ffnOut }
 
-      -- Stage5: bookkeeping only
       Stage5_Bookkeeping -> idata
 
 
@@ -174,7 +160,6 @@ queryHeadIndex1 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex1 kvIx =
   if hasSecondQueryHead kvIx then toEnum (baseQueryIndex kvIx + 1) else queryHeadIndex0 kvIx
 
--- Access per-head vectors from IntermediateData
 getQueryVector :: Signal dom IntermediateData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getQueryVector idSig qIx = (\i -> queryVectors i !! qIx) <$> idSig
 
@@ -225,11 +210,9 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
 
     keyValuePairSignal = liftA2 (,) keyVec valueVec
 
-    -- Quantize and generate writes
     (writeAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, writeDoneThisBank) =
       Cache.writeSequencer isStage2Write seqPosSignal keyValuePairSignal
 
-    -- Wire BRAMs (Parked reads; Port B used for writes in Stage2)
     addrMantA = pure 0
     addrMantB = mux isStage2Write writeAddrSig (pure 0)
 
@@ -238,7 +221,6 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     wrMantB_V = mux isStage2Write vMantWr (pure Nothing)
 
     addrExpA  = pure 0
-    -- Combine kExpWr and vExpWr, prioritizing kExpWr if both are Just
     addrExpB = mux isStage2Write
                    (fmap (maybe 0 fst) (liftA2 chooseWrite kExpWr vExpWr))
                    (pure 0)
@@ -252,7 +234,6 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     (_kExpRA,  _kExpRB ) = runKe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_K)
     (_vExpRA,  _vExpRB ) = runVe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_V)
 
-    -- Existing register mirror: unchanged
     kvKeysAll = mealy
       (\mem (we, p, rowK) ->
          let mem' = if we then replace p rowK mem else mem
@@ -285,11 +266,10 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
 
--- Helper function to combine kExpWr and vExpWr
 chooseWrite
   :: Maybe (Index SequenceLength, ExpS)
   -> Maybe (Index SequenceLength, ExpS)
   -> Maybe (Index SequenceLength, ExpS)
 chooseWrite kExp vExp = case kExp of
-  Just _  -> kExp  -- Prioritize kExpWr if it has a value
-  Nothing -> vExp  -- Fall back to vExpWr
+  Just _  -> kExp
+  Nothing -> vExp
