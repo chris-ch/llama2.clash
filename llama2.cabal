@@ -41,7 +41,6 @@ library
     , Model.Layers.Attention.MultiHeadAttention.Q
     , Model.Layers.Attention.MultiHeadAttentionQ
     , Model.Layers.Attention.MultiHeadAttention.Internal
-    , Model.Layers.Attention.MultiHeadAttention.InternalQ
     , Model.Layers.Attention.OnlineSoftmax
     , Model.Layers.Attention.OnlineSoftmax.Fixed
     , Model.Layers.Components.Quantized

@@ -9,7 +9,7 @@ import Model.Core.Types
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..) )
-import Model.Layers.Attention.MultiHeadAttention.InternalQ
+import Model.Layers.Attention.MultiHeadAttention.Internal
   ( computeHeadQF_Q, computeHeadKVF_Q )
 import Model.Helpers.FixedPoint (rmsNormFwFix)
 
