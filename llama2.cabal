@@ -39,7 +39,6 @@ library
     , Model.Layers.Attention.AttentionHead.Fixed
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Q
-    , Model.Layers.Attention.MultiHeadAttentionQ
     , Model.Layers.Attention.MultiHeadAttention.Internal
     , Model.Layers.Attention.OnlineSoftmax
     , Model.Layers.Attention.OnlineSoftmax.Fixed

@@ -41,10 +41,11 @@ import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
 import qualified Model.Layers.FeedForward.FeedForwardNetwork.Internal as FeedForwardNetwork
-import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
 import Model.Numeric.Types (FixedPoint)
 import qualified Model.Layers.Components.Quantized as Q
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FFN
+import Model.Layers.Components.Quantized
+    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..) )
 
 
 --------------------------------------------------------------------------------
@@ -67,7 +68,7 @@ runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed
     parseModel = BG.runGet parseModelConfigFile
     transformerConfig = parseModel modelBinary
     tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabularySize)
-    
+
   -- Handle prompt tokenization more carefully
   initialTokens <- case maybePrompt of
     Nothing -> do
@@ -93,7 +94,7 @@ runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed
   putStrLn "✅ model loaded successfully"
   startTime <- getPOSIXTime
 
-  countTokens <- 
+  countTokens <-
     generateTokensSimAutoregressive
       transformerConfig
       tokenizer
@@ -268,8 +269,8 @@ parseModelConfigFile = do
         mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
         mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
-        mhaFloat :: MultiHeadAttention.MultiHeadAttentionComponent
-        mhaFloat = MultiHeadAttention.MultiHeadAttentionComponent
+        mhaFloat :: MultiHeadAttentionComponent
+        mhaFloat = MultiHeadAttentionComponent
           { heads  = C.map sha (C.indicesI :: C.Vec NumQueryHeads (C.Index NumQueryHeads))
           , mWo    = mWoVec
           , rmsAtt = rmsAttWeight' C.!! lIdx
@@ -340,7 +341,7 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
                         []     -> (sampled, [], False)
 
     temperature' = realToFrac temperature :: FixedPoint
-    
+
     outputs :: [(Token, Bool)]
     outputs =
       CS.simulate (bundledOutputs decoder)
