@@ -43,6 +43,7 @@ import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), Transfor
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
 
+
 --------------------------------------------------------------------------------
 -- Main entry point
 --------------------------------------------------------------------------------
@@ -89,7 +90,7 @@ runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed
   putStrLn "✅ model loaded successfully"
   startTime <- getPOSIXTime
 
-  (_, MultiHeadAttention.StepCount countTokens) <- 
+  countTokens <- 
     generateTokensSimAutoregressive
       transformerConfig
       tokenizer
@@ -292,90 +293,79 @@ printToken tokenizer tokenId = do
 -- Token Generation with Clash Simulation
 --------------------------------------------------------------------------------
 
+-- Input state = (current token, remaining prompt, still using prompt?)
+type DecoderInputState = (Token, [Token], Bool)
+
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
   :: TransformerDecoderComponent
   -> T.Tokenizer
-  -> Int
-  -> [Token]
+  -> Int             -- ^ Number of tokens to generate
+  -> [Token]         -- ^ Prompt tokens
   -> Temperature
   -> Seed
-  -> IO ([Token], MultiHeadAttention.StepCount)
-generateTokensSimAutoregressive decoder tokenizer nSteps promptTokens temperature seed = do
+  -> IO Int
+generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens temperature seed = do
   putStrLn $ "✅ Prompt: " ++ show promptTokens
   hFlush stdout
 
-  let temps = repeat temperature
-      seeds = repeat seed
+  let
 
-      (cur0, restPrompt0) =
-        case promptTokens of
-          (t0:ts) -> (t0, ts)
-          []      -> (1,  [])  -- BOS fallback
+    -- Initialize with BOS if no prompt is provided
+    (firstToken, initialPrompt) =
+      case promptTokens of
+        (t:ts) -> (t, ts)
+        []     -> (1, [])  -- BOS fallback
 
-      -- Run DUT; inputs depend on outputs only through tails (breaks <<loop>>)
-      outputs :: [( Token, Bool)]
-      outputs =
-        CS.simulate (bundledOutputs decoder) (DL.zip4 tokenStream inputValids temps seeds)
+    initState :: DecoderInputState
+    initState = (firstToken, initialPrompt, True)
 
-      outTokens  = [ t | (t,_) <- outputs ]
-      readyFlags = [ r | (_,r) <- outputs ]
+    advanceInputState :: DecoderInputState -> (Bool, Token) -> DecoderInputState
+    advanceInputState (current, remPrompt, usingPrompt) (isReady, sampled)
+      | not isReady = (current, remPrompt, usingPrompt)
+      | otherwise   = case remPrompt of
+          (p:ps) -> (p, ps, True)
+          []     -> (sampled, [], False)
 
-      -- State per cycle n>=0: (currentToken, remainingPrompt, usingPrompt?)
-      rTail = drop 1 readyFlags
-      oTail = drop 1 outTokens
+    -- Run simulation
+    outputs :: [(Token, Bool)]
+    outputs =
+      CS.simulate (bundledOutputs decoder)
+                  (DL.zip4 inputTokens inputValidFlags (repeat temperature) (repeat seed))
 
-      step :: (Token, [Token], Bool) -> (Bool, Token) -> (Token, [Token], Bool)
-      step (cur, ps, usingP) (r, o)
-        | not r     = (cur, ps, usingP)                  -- hold until ready
-        | otherwise = case ps of
-            (p:ps') -> (p, ps', True)                    -- still consuming prompt
-            []      -> (o, [],  False)                   -- switch to sampled
+    (outputTokens, readyFlags) = unzip outputs
 
-      statesTail = Prelude.scanl step (cur0, restPrompt0, True) (Prelude.zip rTail oTail)
+    -- Build state evolution
+    statesTail :: [DecoderInputState]
+    statesTail = scanl advanceInputState initState
+                            (zip (drop 1 readyFlags) (drop 1 outputTokens))
 
-      tokenStream  = cur0  : [ cur  | (cur,_,_) <- statesTail ]
-      inputValids  = True  : [ useP | (_,_,useP) <- statesTail ]
+    inputTokens     = firstToken : [ tok | (tok, _, _) <- statesTail ]
+    inputValidFlags = True       : [ usePrompt | (_, _, usePrompt) <- statesTail ]
 
-      sampledAll :: [Token]
-      sampledAll = [ t | (t,r) <- outputs, r ]
+    -- Sampled tokens are only valid when ready
+    sampledTokens = [ tok | (tok, isReady) <- outputs, isReady ]
 
-      promptLen = length promptTokens
+    -- Figure out what to emit
+    promptLength         = length promptTokens
+    generatedTokens      = take stepCount (drop promptLength sampledTokens)
+    allEmittedTokens     = promptTokens ++ generatedTokens
+    limitedEmittedTokens = take (promptLength + stepCount) allEmittedTokens
 
-  -- Emit prompt verbatim, then sampled tokens after the prompt
-  let forcedEmitted      = promptTokens
-      sampledAfterPrompt = take nSteps (drop promptLen sampledAll)
-      emittedAll         = forcedEmitted ++ sampledAfterPrompt
-      totalWanted        = promptLen + nSteps
-      emittedLimited     = take totalWanted emittedAll
-
-  let streamTokens :: [Token] -> IO ()
-      streamTokens []     = pure ()
-      streamTokens (tokenId:tokenIds) = printToken tokenizer tokenId >> streamTokens tokenIds
-
-  streamTokens emittedLimited
+  -- Print emitted tokens
+  mapM_ (printToken tokenizer) limitedEmittedTokens
   putStrLn ""
 
-  let generated = take nSteps (drop promptLen emittedLimited)
-  pure (generated, MultiHeadAttention.StepCount (fromIntegral nSteps))
+  return stepCount
 
-bundledOutputs
-  :: TransformerDecoderComponent
+bundledOutputs :: TransformerDecoderComponent
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> C.Signal C.System  ( Token , Bool )
-bundledOutputs decoder =
-  C.bundle . C.exposeClockResetEnable
-    (topEntityBundled @CS.System decoder)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
-
--- Helper function to create a bundled version of topEntity
-topEntityBundled :: CS.HiddenClockResetEnable dom
-  => TransformerDecoderComponent
-  -> C.Signal dom (Token, Bool, Temperature, Seed)
-  -> ( C.Signal dom Token , C.Signal dom Bool )
-topEntityBundled decoder bundledInputs =
-  Top.topEntity decoder inputToken tokenReadyPulse temp rngSeed
+  -> C.Signal C.System (Token, Bool)
+bundledOutputs decoder bundledInputs =
+  C.bundle $
+    C.exposeClockResetEnable (Top.topEntity decoder token isValid temperature seed)
+                             CS.systemClockGen
+                             CS.resetGen
+                             CS.enableGen
   where
-    (inputToken, tokenReadyPulse, temp, rngSeed) = C.unbundle bundledInputs
+    (token, isValid, temperature, seed) = C.unbundle bundledInputs

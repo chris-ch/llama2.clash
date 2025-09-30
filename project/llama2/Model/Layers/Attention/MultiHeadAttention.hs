@@ -1,5 +1,5 @@
 module Model.Layers.Attention.MultiHeadAttention (
-    MultiHeadAttentionComponent(..), projectQKV, StepCount(..)
+    MultiHeadAttentionComponent(..), projectQKV
 ) where
 
 import Clash.Prelude
@@ -12,7 +12,6 @@ import qualified Prelude as P
 
 import Model.Layers.Attention.MultiHeadAttention.Internal
     ( MultiHeadAttentionComponent(..),
-      StepCount(..),
       computeHeadKV,
       computeHeadQ )
 

@@ -8,8 +8,6 @@ import Model.Core.Types (NumQueryHeads, ModelDim, NumKeyValueHeads,
 import Helpers (matrixVectorMult, rmsNorm)
 import qualified Prelude as P
 
-newtype StepCount = StepCount (Unsigned 32) deriving (Show, Eq, Ord)
-
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent
   -- | Per-head output projection matrix W_O (shape HeadDim × ModelDim)
