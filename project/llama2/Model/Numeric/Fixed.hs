@@ -15,47 +15,82 @@ import Model.Numeric.Types (FixedPoint, Act, ExpS, scalePow2F, clampExp, satRoun
 -- ===========================
 
 -- Quantize a vector to Signed 8 mantissas with a shared Signed 7 exponent.
--- We choose e = floor(log2(maxAbs)) - 7 so that magnitudes roughly fit in [-127,127].
+-- Nearest-PoT exponent (reduces MSE vs floor-PoT)
 -- No Floating is used to find the exponent: we compare against a ROM of 2^i.
 quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
 quantizeI8E xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
 
-      -- 2^i for i in [-32 .. 31]
+      -- log2 via your PoT table (same as before)
       pow2 :: Vec 64 FixedPoint
       pow2 = map (\(i :: Index 64) ->
                     let iS :: ExpS
                         iS = fromInteger (toInteger (fromEnum i) - 32)
                     in scalePow2F iS 1)
                  indicesI
-
-      -- flags[i] = True if 2^i <= maxAbs
       flags :: Vec 64 Bool
       flags = map (<= maxAbs) pow2
-
-      -- last True index (or 0 if all False)
       pIdx :: Index 64
-      pIdx = fst (foldl
-                    (\(best, seen) (i,b) -> if b then (i,True) else (best,seen))
-                    (minBound, False)
-                    (zip indicesI flags))
-
+      pIdx = fst (foldl (\(best, seen) (i,b) -> if b then (i,True) else (best,seen))
+                        (minBound, False)
+                        (zip indicesI flags))
       pInt :: Integer
       pInt = toInteger (fromEnum pIdx) - 32
 
-      e :: ExpS
-      e = clampExp (fromInteger (pInt - 7))
+      -- nearest: compare p vs p+1 to maxAbs
+      -- target scale ~ maxAbs / 127 => exponent target et = log2(maxAbs) - log2(127) ~= pInt - 6.988...
+      -- We approximate by testing both floor-7 and ceil-7
+      eFloor :: ExpS
+      eFloor = clampExp (fromInteger (pInt - 7))
+      eCeil  :: ExpS
+      eCeil  = clampExp (fromInteger (pInt - 6))  -- next higher PoT
 
-      k :: FixedPoint  -- 2^-e
-      k = scalePow2F (negate e) 1
+      errFor :: ExpS -> FixedPoint
+      errFor e =
+        let s  = scalePow2F (negate e) 1
+            qf x = fromIntegral (satRoundToI8 (round (x * s)))
+            rec x = fromIntegral (qf x) * scalePow2F e 1
+        in sum (map (\x -> let d = x - rec x in d*d) xs)
 
-      qElem :: FixedPoint -> Act
+      (eBest :: ExpS) =
+        if errFor eFloor <= errFor eCeil then eFloor else eCeil
+
+      k = scalePow2F (negate eBest) 1
       qElem x =
         let y  = x * k
             yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
         in satRoundToI8 yr
-  in (map qElem xs, e)
+  in (map qElem xs, eBest)
+
+-- Nearest power-of-two exponent for a positive FixedPoint a.
+-- Searches e in [-64 .. 63] and returns the argmin_e |2^e - a|.
+nearestPow2Exp :: FixedPoint -> ExpS
+nearestPow2Exp aIn =
+  let a = max epsF (abs aIn)  -- ensure positive, non-zero
+      pow2Vec :: Vec 128 (ExpS, FixedPoint)
+      pow2Vec =
+        map
+          (\(i :: Index 128) ->
+             let e :: ExpS
+                 e = fromInteger (toInteger (fromEnum i) - 64)
+             in  (e, scalePow2F e 1))
+          indicesI
+      -- initialize with first element and fold the tail
+      (e0, v0) = head pow2Vec
+      d0       = abs (v0 - a)
+      pickBest (bestE, bestV, bestD) (e, v) =
+        let d = abs (v - a)
+        in if d < bestD then (e, v, d) else (bestE, bestV, bestD)
+      (bestE, _, _) = foldl pickBest (e0, v0, d0) (tail pow2Vec)
+  in bestE
+
+-- Round x/s to nearest integer (symmetric), saturate to int8 [-127,127].
+qElemWithScale :: FixedPoint -> FixedPoint -> Act
+qElemWithScale s x =
+  let y  = x / s
+      yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
+  in satRoundToI8 yr
 
 dequantizeI8E :: (Vec n Act, ExpS) -> Vec n FixedPoint
 dequantizeI8E (qs, e) =

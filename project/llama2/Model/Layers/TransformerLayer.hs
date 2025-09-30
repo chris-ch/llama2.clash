@@ -13,17 +13,17 @@ import Model.Core.Types
 import Model.Helpers.Fixed (rmsNormF, matrixVectorMultF)
 
 import qualified Model.Memory.KVCacheBank as Cache
-import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
+import qualified Model.Layers.FeedForward.FeedForwardNetwork.Q as FeedForwardNetworkQ (computeFeedForwardQ)
+import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ(..))
 
-import Data.Maybe (fromMaybe)
 import Model.Numeric.Types (ExpS, FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead.Fixed (attendHeadF)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttention.MultiHeadAttentionComponent
-  , feedforwardNetwork :: FeedForwardNetwork.FeedForwardNetworkComponent
+  , feedforwardNetwork :: FeedForwardNetworkComponentQ
   } deriving (Show)
 
 data TransformerDecoderComponent = TransformerDecoderComponent
@@ -100,7 +100,6 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
         woHeadsSignal
 
   -- Commit attention output on this layer’s attnDone pulse in Stage3_Attend.
-  -- Print the exact vector being committed (first 8 elems) once per (L, P).
   nextIntermediateDataSignal =
     liftA4
       (\ps cur attOut done ->
@@ -111,7 +110,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
            else cur)
       processingStateSignal baseNextIntermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
 
-  -- The same gated-commit view, exposed as a tap at Cycle3 (no trace here to avoid duplicate prints)
+  -- The same gated-commit view, exposed as a tap at Cycle3
   commitCycle3Signal =
     liftA4
       (\ps cur attOut done ->
@@ -124,7 +123,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
 
 processStage
   :: MultiHeadAttention.MultiHeadAttentionComponent
-  -> FeedForwardNetwork.FeedForwardNetworkComponent
+  -> FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
   -> IntermediateData
@@ -145,10 +144,10 @@ processStage mha ffn layerIndex ps idata
       -- Stage3: stream attention (sequenced outside).
       Stage3_Attend -> idata
 
-      -- Stage4: FFN
+      -- Stage4: FFN (quantized)
       Stage4_FeedForward ->
         let
-          ffnOut = FeedForwardNetwork.computeFeedForward ffn (attentionOutput idata)
+          ffnOut = FeedForwardNetworkQ.computeFeedForwardQ ffn (attentionOutput idata)
         in idata { feedForwardOutput = ffnOut }
 
       -- Stage5: bookkeeping only

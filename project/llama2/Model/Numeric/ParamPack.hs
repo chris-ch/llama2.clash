@@ -37,8 +37,7 @@ quantizeMatI8E
   => CArray2D rows cols                 -- Float params baked in the netlist
   -> QArray2D rows cols                 -- Float-free carrier for hardware
 quantizeMatI8E (CArray2D rowsF) =
-  let
-      rowsFtoF = map (map realToFrac) rowsF
+  let rowsFtoF = map (map realToFrac) rowsF
   in QArray2D { unQ2D = map quantizeI8E rowsFtoF }
 
 -- Lightweight dequantization to FixedPoint for reuse of F-kernels.
