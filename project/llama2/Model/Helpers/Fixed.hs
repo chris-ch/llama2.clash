@@ -1,25 +1,26 @@
 module Model.Helpers.Fixed
   ( dotProductF
   , matrixVectorMultF
-  , rmsNormF
+  , rmsNormF              -- Float-weighted (back-compat)
+  , rmsNormFwFix          -- FixedPoint-weighted (for Q path)
   , invSqrtF
   ) where
 
 import Clash.Prelude
-import Model.Core.Types (CArray2D(..))        -- Reuse the existing CArray2D
+import Model.Core.Types (CArray2D(..))
 import Model.Numeric.Types (FixedPoint, ExpS, epsF, scalePow2F)
 import Model.Numeric.Fixed (expF)
 
--- Dot product (F)
+-- Dot product in FixedPoint
 dotProductF :: KnownNat n => Vec n FixedPoint -> Vec n FixedPoint -> FixedPoint
 dotProductF a b = sum (zipWith (*) a b)
 
--- Matrix @ vector where matrix rows are Float params, converted to FixedPoint once.
--- This avoids any FP in hardware; the conversion is elaboration-time.
-matrixVectorMultF :: forall rows cols. (KnownNat rows, KnownNat cols)
-                  => CArray2D rows cols
-                  -> Vec cols FixedPoint
-                  -> Vec rows FixedPoint
+-- Matrix @ vector where matrix rows are Float params, converted once to FixedPoint.
+matrixVectorMultF
+  :: forall rows cols. (KnownNat rows, KnownNat cols)
+  => CArray2D rows cols
+  -> Vec cols FixedPoint
+  -> Vec rows FixedPoint
 matrixVectorMultF (CArray2D rowsF) xF =
   let rows = map (map realToFrac) rowsF :: Vec rows (Vec cols FixedPoint)
   in map (`dotProductF` xF) rows
@@ -82,14 +83,23 @@ invSqrtF a0 =
       y0 = seedMant * scale
   in nrImproveInvSqrt a y0
 
+-- Variant 1: weights provided as Float (legacy call sites).
 rmsNormF :: forall n. KnownNat n
          => Vec n FixedPoint           -- x
-         -> Vec n Float       -- w (Float params; converted once)
+         -> Vec n Float                -- w (Float params; converted once)
          -> Vec n FixedPoint
 rmsNormF x wFloat =
   let w = map realToFrac wFloat :: Vec n FixedPoint
-      n = fromInteger (natToNum @n) :: FixedPoint
+  in rmsNormFwFix x w
+
+-- Variant 2: weights provided as FixedPoint (Q path).
+rmsNormFwFix :: forall n. KnownNat n
+              => Vec n FixedPoint           -- x
+              -> Vec n FixedPoint           -- w (already in FixedPoint)
+              -> Vec n FixedPoint
+rmsNormFwFix x wF =
+  let n      = fromInteger (natToNum @n) :: FixedPoint
       meanSq = sum (map (\xi -> xi*xi) x) / n + epsF
       invR   = invSqrtF meanSq
-      scale  = map (* invR) w
+      scale  = map (* invR) wF
   in zipWith (*) x scale

@@ -185,7 +185,7 @@ data IntermediateData = IntermediateData
   , feedForwardOutput :: Vec ModelDimemsion FixedPoint
   } deriving (Show, Generic, NFDataX, Eq)
 
-newtype CArray2D (n :: Nat) (m :: Nat) = CArray2D (Vec n (Vec m Float)) deriving (Show)
+newtype CArray2D (n :: Nat) (m :: Nat) = CArray2D (Vec n (Vec m Float)) deriving (Show, Eq)
 
 type Token = Unsigned 32
 type Temperature = FixedPoint
@@ -201,7 +201,7 @@ data EmbeddingComponent = EmbeddingComponent
 data RotaryEncodingComponent = RotaryEncodingComponent
   { freqCos :: CArray2D SequenceLength RotaryPositionalEmbeddingDimension,
     freqSin :: CArray2D SequenceLength RotaryPositionalEmbeddingDimension
-  } deriving (Show)
+  } deriving (Show, Generic, Eq)
 
 data SingleHeadComponent = SingleHeadComponent
   { wqHead :: CArray2D HeadDimension ModelDimemsion

@@ -49,6 +49,21 @@ cabal run -- llama2 --model-file data/stories15M.bin --temperature 0 "Hi"
 Hippy was a very happy dog. He loved to play in the park with his friends. One day, he saw a big, red ball. He wanted to play with it, but he was too shy to ask.[...]"
 ```
 
+For debugging / testing with the 260K model:
+
+```shell
+cabal run -- llama2 --model-file data/stories260K.bin --temperature 0 "Hi"
+```
+
+```text
+<s>
+Hi com j F mer " h C ` $ S { iscode #es reigdees rend { anad jment are withment a whch th thnd =);ing th th thdeleameameameameameameameameame v comnd com sdeet com com com com com com com com com com com com com com com com s         witherndle {nd         ` th thag { { { { {nd { { { {ubag {ubdendndndnd thesame isame
+<s>
+ateateateame isiregeg com is pro ` ` ` ` `ag thede pro conerver b s s s s sagerag sag {vernd a {verle {esthagver pro
+<s>
+vernderverameagagagesver kagesver pro {cevereg is is is is is is is is is isvertererver        veralveralveralveralveralveralver the {ver the conesagver theverle sesagverleverle {verlever proes {ver proia {ver pro con lver pro con lesver proes be l { lver
+```
+
 ## C Version
 
 ```shell

@@ -22,6 +22,7 @@ source-repository head
 library
   exposed-modules:
       Helpers
+    , Model.Core.EmbeddingQ
     , Model.Core.PipelineController
     , Model.Core.LayerController
     , Model.Core.StageEnable
@@ -31,16 +32,21 @@ library
     , Model.Embedding.PRNG
     , Model.Helpers.EnableWrappers
     , Model.Helpers.Fixed
+    , Model.Helpers.MatVecI8E
     , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttendSequential.Fixed
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.AttentionHead.Fixed
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Internal
+    , Model.Layers.Attention.MultiHeadAttention.InternalQ
     , Model.Layers.Attention.OnlineSoftmax
     , Model.Layers.Attention.OnlineSoftmax.Fixed
+    , Model.Layers.Components.Quantized
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
+    , Model.Layers.FeedForward.FeedForwardNetwork.InternalQ
+    , Model.Layers.FeedForward.FeedForwardNetwork.Q
     , Model.Layers.TransformerLayer
     , Model.Memory.Addressing
     , Model.Memory.KVCacheBank
@@ -48,6 +54,7 @@ library
     , Model.Memory.RamOps
     , Model.Numeric.Types
     , Model.Numeric.Fixed
+    , Model.Numeric.ParamPack
     , Model.Top
     , Tokenizer
   hs-source-dirs:
@@ -76,6 +83,7 @@ library
     MonoLocalBinds
     NamedFieldPuns
     NoImplicitPrelude
+    NumericUnderscores
     OverloadedStrings
     RecordWildCards
     ScopedTypeVariables
@@ -126,6 +134,7 @@ executable llama2
     MonoLocalBinds
     NamedFieldPuns
     NoImplicitPrelude
+    NumericUnderscores
     OverloadedStrings
     RecordWildCards
     ScopedTypeVariables
@@ -167,6 +176,7 @@ test-suite llama2-test
     MonoLocalBinds
     NamedFieldPuns
     NoImplicitPrelude
+    NumericUnderscores
     OverloadedStrings
     RecordWildCards
     ScopedTypeVariables
