@@ -20,11 +20,10 @@ mapKVPorts
 mapKVPorts (rdAddr, rdEn, wrAddr, wrKm, wrKe, wrVm, wrVe, bank) =
   (kOutF, vOutF)
  where
-  -- Split bank
-  letK  = runKeyMantBank bank
-  letKe = runKeyExpBank  bank
+  letK  = runKeyMantBank   bank
+  letKe = runKeyExpBank    bank
   letV  = runValueMantBank bank
-  letVe = runValueExpBank bank
+  letVe = runValueExpBank  bank
 
   -- Addresses
   addrMantA = mux rdEn rdAddr (pure 0)
@@ -36,22 +35,23 @@ mapKVPorts (rdAddr, rdEn, wrAddr, wrKm, wrKe, wrVm, wrVe, bank) =
             in toEnum (fromEnum a `div` hd))
           <$> addrMantA
 
-  addrExpA = mux rdEn seqIx (pure 0)
-  addrExpB = maybe 0 fst <$> wrKe  -- write side provides (pos, exp)
+  addrExpA   = mux rdEn seqIx (pure 0)
+  addrExpB_K = maybe 0 fst <$> wrKe
+  addrExpB_V = maybe 0 fst <$> wrVe
 
   wrMantA = pure Nothing
   wrMantB_K = wrKm
   wrMantB_V = wrVm
 
-  wrExpA = pure Nothing
+  wrExpA   = pure Nothing
   wrExpB_K = wrKe
   wrExpB_V = wrVe
 
   (kMantA, _) = letK  (addrMantA, wrMantA) (addrMantB, wrMantB_K)
   (vMantA, _) = letV  (addrMantA, wrMantA) (addrMantB, wrMantB_V)
-  (kExpA,  _) = letKe (addrExpA,  wrExpA)  (addrExpB,  wrExpB_K)
-  (vExpA,  _) = letVe (addrExpA,  wrExpA)  (addrExpB,  wrExpB_V)
+  (kExpA,  _) = letKe (addrExpA,  wrExpA)  (addrExpB_K, wrExpB_K)
+  (vExpA,  _) = letVe (addrExpA,  wrExpA)  (addrExpB_V, wrExpB_V)
 
-  -- Dequantize element-wise: out = mant * 2^exp (staying in FixedPoint)
+  -- Dequantize element-wise: out = mant * 2^exp
   kOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> kMantA <*> kExpA
   vOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> vMantA <*> vExpA

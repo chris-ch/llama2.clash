@@ -17,7 +17,7 @@ data AttnMode = AttnBaseline | AttnShadowBRAM | AttnReplaceBRAMF | AttnReplaceBR
 
 -- Start progressively: BRAM-F replacement first (no quantization difference).
 attnMode :: AttnMode
-attnMode = AttnReplaceBRAMF
+attnMode = AttnShadowBRAM
 
 -- Tolerance for comparing baseline vs streamed head outputs (SFixed 12.20).
 attnEps :: FixedPoint

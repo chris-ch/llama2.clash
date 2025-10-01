@@ -24,6 +24,7 @@ library
       Helpers
     , Model.Config
     , Model.Config.Debug
+    , Model.Config.Quant
     , Model.Core.Embedding
     , Model.Core.PipelineController
     , Model.Core.LayerController

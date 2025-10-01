@@ -1,5 +1,6 @@
 module Model.Numeric.Fixed
   ( quantizeI8E
+  , quantizeI8E_ceilSafe
   , expF
   ) where
 
@@ -18,8 +19,6 @@ quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
 quantizeI8E xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
-
-      -- log2 via your PoT table (same as before)
       pow2 :: Vec 64 FixedPoint
       pow2 = map (\(i :: Index 64) ->
                     let iS :: ExpS
@@ -34,31 +33,50 @@ quantizeI8E xs =
                         (zip indicesI flags))
       pInt :: Integer
       pInt = toInteger (fromEnum pIdx) - 32
-
-      -- nearest: compare p vs p+1 to maxAbs
-      -- target scale ~ maxAbs / 127 => exponent target et = log2(maxAbs) - log2(127) ~= pInt - 6.988...
-      -- We approximate by testing both floor-7 and ceil-7
       eFloor :: ExpS
       eFloor = clampExp (fromInteger (pInt - 7))
       eCeil  :: ExpS
-      eCeil  = clampExp (fromInteger (pInt - 6))  -- next higher PoT
-
+      eCeil  = clampExp (fromInteger (pInt - 6))
       errFor :: ExpS -> FixedPoint
       errFor e =
         let s  = scalePow2F (negate e) 1
             qf x = fromIntegral (satRoundToI8 (round (x * s)))
             rec x = fromIntegral (qf x) * scalePow2F e 1
         in sum (map (\x -> let d = x - rec x in d*d) xs)
-
-      (eBest :: ExpS) =
-        if errFor eFloor <= errFor eCeil then eFloor else eCeil
-
+      eBest = if errFor eFloor <= errFor eCeil then eFloor else eCeil
       k = scalePow2F (negate eBest) 1
       qElem x =
         let y  = x * k
             yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
         in satRoundToI8 yr
   in (map qElem xs, eBest)
+
+-- Ceil-safe exponent: guarantees no clipping, i.e., |q| <= 127 for all elements
+quantizeI8E_ceilSafe :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
+quantizeI8E_ceilSafe xs =
+  let maxAbs :: FixedPoint
+      maxAbs = foldl max 0 (map abs xs)
+      -- Find integer p such that 2^p <= maxAbs < 2^(p+1)
+      pow2 :: Vec 64 (ExpS, FixedPoint)
+      pow2 = map (\(i :: Index 64) ->
+                    let e :: ExpS = fromInteger (toInteger (fromEnum i) - 32)
+                    in (e, scalePow2F e 1))
+                 indicesI
+      (pE, pV) =
+        foldl
+          (\(bestE, bestV) (e, v) -> if v <= maxAbs && v > bestV then (e, v) else (bestE, bestV))
+          (minBound, 0)
+          pow2
+      -- If maxAbs <= 127 * 2^p, we can use e = p-7; else e = p-6
+      th = 127 * pV
+      eRaw :: ExpS
+      eRaw = if maxAbs <= th then clampExp (pE - 7) else clampExp (pE - 6)
+      sInv = scalePow2F (negate eRaw) 1
+      qElem x =
+        let y  = x * sInv
+            yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
+        in satRoundToI8 yr
+  in (map qElem xs, eRaw)
 
 -- Nearest power-of-two exponent for a positive FixedPoint a.
 -- Searches e in [-64 .. 63] and returns the argmin_e |2^e - a|.
@@ -128,4 +146,19 @@ expF x =
       b  = exp2Frac f
       nC :: ExpS
       nC = clampExp (fromInteger nI)
+  in scalePow2F nC b
+
+expF' :: FixedPoint -> FixedPoint
+expF' x =
+  let ln2InvF = realToFrac (1.4426950408889634 :: Double)
+      exp2FracLUT :: Vec 256 FixedPoint
+      exp2FracLUT = map (\(i :: Index 256) -> realToFrac (2 ** (fromIntegral (fromEnum i) / 256 :: Double))) indicesI
+      exp2Frac f =
+        let idx :: Unsigned 8 = fromInteger (floor (max 0 (min (1 - (2 ^^ (-20))) f) * 256))
+        in exp2FracLUT !! idx
+      y  = x * ln2InvF
+      nI = floor y :: Integer
+      f  = y - fromInteger nI
+      b  = exp2Frac f
+      nC :: ExpS = clampExp (fromInteger nI)
   in scalePow2F nC b

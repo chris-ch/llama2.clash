@@ -324,10 +324,21 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
         AttnReplaceBRAMQ -> (out0_seqQ,     out1_seqQ,     done0_seqQ,   done1_seqQ)
 
     -- Optional diagnostics (safe to keep; low footprint)
+
+    -- Row error monitors (max-abs diff per row)
     maxAbs v = foldl max 0 (map abs v)
 
     diffTooBig = liftA2
         (\a b -> maxAbs (zipWith (-) a b) > attnEps)
+
+    kRowErr  = diffTooBig kRowQ kRowF_A
+    vRowErr  = diffTooBig vRowQ vRowF_A
+    -- Latch last errors at lastTQ (end of stream)
+    lastKRowErr = regEn (False :: Bool) lastTQ kRowErr
+    lastVRowErr = regEn (False :: Bool) lastTQ vRowErr
+    !_probeK = lastKRowErr
+    !_probeV = lastVRowErr
+
 
     !_bramQCnt0 = mealy (\c m -> let c' = if m then c+1 else c in (c', c')) (0 :: Unsigned 16)
                         (diffTooBig out0_baseline out0_seqQ)
