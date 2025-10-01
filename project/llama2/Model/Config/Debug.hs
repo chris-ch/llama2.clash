@@ -7,18 +7,18 @@ module Model.Config.Debug
 import Clash.Prelude
 import Model.Numeric.Types (FixedPoint)
 
--- How Stage3 attention output is chosen:
---   AttnBaseline     : original register-mirror + combinational attendHead.
---   AttnStreamShadow : compute streamed attention in parallel for comparison,
---                      but still drive the layer with AttnBaseline.
---   AttnStreamReplace: use the streamed attention to drive the layer.
-data AttnMode = AttnBaseline | AttnStreamShadow | AttnStreamReplace
+-- Progressive bring-up modes for Stage3 attention:
+--   AttnBaseline        : original combinational attend over register mirror drives the layer.
+--   AttnShadowBRAM      : baseline drives; also compute sequential BRAM(I8E)-streamed attention (for compare).
+--   AttnReplaceBRAM_F   : replace Stage3 by streaming from BRAM rows that store UNQUANTIZED K/V (FixedPoint).
+--   AttnReplaceBRAM_Q   : replace Stage3 by streaming from BRAM(I8E) with dequantization (final target).
+data AttnMode = AttnBaseline | AttnShadowBRAM | AttnReplaceBRAMF | AttnReplaceBRAMQ
   deriving (Show, Eq)
 
--- Set this to the mode you want during bring-up.
+-- Start progressively: BRAM-F replacement first (no quantization difference).
 attnMode :: AttnMode
-attnMode = AttnBaseline
+attnMode = AttnReplaceBRAMF
 
--- Tolerance for comparing baseline vs streamed head outputs.
+-- Tolerance for comparing baseline vs streamed head outputs (SFixed 12.20).
 attnEps :: FixedPoint
-attnEps = 2 ^^ (-12)  -- ~2.4e-4 in your SFixed 12.20
+attnEps = 2 ^^ (-12)  -- about 2.4e-4

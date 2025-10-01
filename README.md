@@ -57,11 +57,7 @@ cabal run -- llama2 --model-file data/stories260K.bin --temperature 0 "Hi"
 
 ```text
 <s>
-Hi com j F mer " h C ` $ S { iscode #es reigdees rend { anad jment are withment a whch th thnd =);ing th th thdeleameameameameameameameameame v comnd com sdeet com com com com com com com com com com com com com com com com s         witherndle {nd         ` th thag { { { { {nd { { { {ubag {ubdendndndnd thesame isame
-<s>
-ateateateame isiregeg com is pro ` ` ` ` `ag thede pro conerver b s s s s sagerag sag {vernd a {verle {esthagver pro
-<s>
-vernderverameagagagesver kagesver pro {cevereg is is is is is is is is is isvertererver        veralveralveralveralveralveralver the {ver the conesagver theverle sesagverleverle {verlever proes {ver proia {ver pro con lver pro con lesver proes be l { lver
+Hi com j F mer " h C ` $ S { iscode #es reigdees rendes rend { anad jment a whch th th th thndes { \ { th th thde  ameameameameameameameameameameameamendndndnd com Tpt com with com com com com com com comantantantantant y y y y y y yle { { { { { { { ` s s s s {ndndndndndndndndndndesdededede proassegame is proth is...
 ```
 
 ## C Version

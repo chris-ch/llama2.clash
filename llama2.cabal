@@ -48,6 +48,7 @@ library
     , Model.Memory.KVCacheBank
     , Model.Memory.KVCacheBank.Ports
     , Model.Memory.KVCacheBank.RowStreamer
+    , Model.Memory.KVCacheBank.RowFromRegs
     , Model.Memory.RamOps
     , Model.Numeric.Types
     , Model.Numeric.Fixed
@@ -116,7 +117,10 @@ executable llama2
     -Wredundant-constraints
     -O2
     -threaded
+    -fllvm
     -haddock
+    -rtsopts
+    -with-rtsopts=-N
   default-extensions:
     BangPatterns
     DataKinds

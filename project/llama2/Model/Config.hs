@@ -27,6 +27,7 @@ type HeadDimension  = 8
 type RotaryPositionalEmbeddingDimension = 4
 type VocabularySize = 512 :: Nat
 type SequenceLength = 512
+
 -}
 
 -- model config 15M

@@ -1,4 +1,3 @@
--- ===== project/llama2/Model/Layers/Attention/AttendSequential.hs =====
 module Model.Layers.Attention.AttendSequential
   ( attendHeadSeq ) where
 
@@ -8,33 +7,22 @@ import qualified Model.Layers.Attention.OnlineSoftmax as OnlineSoftmax
   ( softInit, softResult, softStep )
 import Model.Numeric.Types (FixedPoint)
 
--- Dot product in FixedPoint
 dotF :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
 dotF a b = sum (zipWith (*) a b)
 
--- Sequential attention for one head:
--- - clear: one-cycle pulse when entering Stage3 (resets softmax state)
--- - stepEn: high exactly when a full (K,V) row is ready (rowValid)
--- - q, kRow, vRow sampled when stepEn is high
--- - lastT: asserted together with stepEn for the last row (t == pos)
---
--- Output:
--- - out: final attended vector (stable except when lastT was just asserted)
--- - done: one-cycle pulse aligned with lastT
 attendHeadSeq
   :: HiddenClockResetEnable dom
-  => Signal dom Bool                          -- clear
-  -> Signal dom Bool                          -- stepEn (rowValid)
-  -> Signal dom (Vec HeadDimension FixedPoint)         -- q
-  -> Signal dom (Vec HeadDimension FixedPoint)         -- kRow
-  -> Signal dom (Vec HeadDimension FixedPoint)         -- vRow
-  -> Signal dom Bool                          -- lastT (valid only when stepEn)
-  -> ( Signal dom (Vec HeadDimension FixedPoint)       -- out
-     , Signal dom Bool )                      -- done
+  => Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom Bool
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool )
 attendHeadSeq clear stepEn qSig kSig vSig lastT =
-  (OnlineSoftmax.softResult <$> st, done)
+  (OnlineSoftmax.softResult <$> st, stepEn .&&. lastT)
  where
-  -- Same scale as combinational attention
   scale :: FixedPoint
   scale = realToFrac (1.0 / sqrt (fromIntegral (natToNum @HeadDimension) :: Double))
 
@@ -52,5 +40,3 @@ attendHeadSeq clear stepEn qSig kSig vSig lastT =
                              in  (s1, s1))
         OnlineSoftmax.softInit
         (bundle (clear, stepInput))
-
-  done = stepEn .&&. lastT
