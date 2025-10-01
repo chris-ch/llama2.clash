@@ -89,3 +89,19 @@ achieved tok/s: 15.105312
         Page size (bytes): 4096
         Exit status: 0
 ```
+# Verilog / VHDL generation
+
+Install:
+
+```shell
+cabal install clash-ghc --overwrite-policy=always
+```
+
+Run:
+
+```shell
+cabal exec -- clash --verilog -package llama2 -v3 project/llama2/Model/Top.hs
+```
+
+
+

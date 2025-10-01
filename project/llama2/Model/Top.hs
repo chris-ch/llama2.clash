@@ -15,16 +15,13 @@ import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent)
 import qualified Model.Core.Transformer as Transformer
 
--- ====== top with attention tap out ======
-topEntity
-  :: forall dom
-   . HiddenClockResetEnable dom
+topEntity :: HiddenClockResetEnable System
   => TransformerLayer.TransformerDecoderComponent
-  -> Signal dom Token  -- Input token
-  -> Signal dom Bool           -- ^ inputTokenValid: high when inputTokenSignal carries the prompt token (pos 0)
-  -> Signal dom Temperature
-  -> Signal dom Seed
-  -> ( Signal dom Token                -- sampled token
-     , Signal dom Bool                 -- ready pulse (end of last FFN)
+  -> Signal System Token  -- Input token
+  -> Signal System Bool           -- ^ inputTokenValid: high when inputTokenSignal carries the prompt token (pos 0)
+  -> Signal System Temperature
+  -> Signal System Seed
+  -> ( Signal System Token                -- sampled token
+     , Signal System Bool                 -- ready pulse (end of last FFN)
      )
 topEntity decoder = Transformer.multiCycleTransformer decoder (repeat Cache.makeRamOwnerKV)

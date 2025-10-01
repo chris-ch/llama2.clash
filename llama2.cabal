@@ -63,6 +63,7 @@ library
     , binary
     , bytestring
     , clash-prelude
+    , clash-lib
     , containers
     , mtl
     , random
@@ -89,6 +90,7 @@ library
     TemplateHaskell
     TupleSections
     TypeApplications
+    TypeFamilies
     TypeOperators
     UndecidableInstances
 
@@ -101,6 +103,7 @@ executable llama2
     , binary
     , bytestring
     , clash-prelude
+    , clash-lib
     , containers
     , llama2
     , optparse-applicative
@@ -143,6 +146,7 @@ executable llama2
     TemplateHaskell
     TupleSections
     TypeApplications
+    TypeFamilies
     TypeOperators
     UndecidableInstances
 

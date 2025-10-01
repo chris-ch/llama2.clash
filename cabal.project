@@ -1,0 +1,4 @@
+packages: .
+with-compiler: ghc-9.2.8
+constraints: ghc == 9.2.8
+index-state: 2025-10-01T19:08:20Z
