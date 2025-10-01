@@ -6,7 +6,7 @@ import Clash.Prelude
 import GHC.Generics (Generic)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
-import Model.Core.Types (HeadDimension)
+import Model.Config (HeadDimension)
 
 data SoftState = SoftStateF
   { mMaxF  :: FixedPoint

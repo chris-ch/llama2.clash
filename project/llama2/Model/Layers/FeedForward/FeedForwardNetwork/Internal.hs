@@ -1,11 +1,12 @@
 module Model.Layers.FeedForward.FeedForwardNetwork.Internal  where
 
 import Clash.Prelude
-import Model.Core.Types
-    ( CArray2D,
-      ModelDimemsion,
+import Model.Core.Types ( CArray2D )
+import Model.Config
+    (
+      ModelDimension,
       HiddenDimension,
-      ModelDimemsion,
+      ModelDimension,
       HiddenDimension )
 
 import Model.Numeric.Types (FixedPoint)
@@ -16,8 +17,8 @@ import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
 -- Same topology as before, but weights are I8E and mat-vec is quantized.
 runFeedForward
   :: FeedForwardNetworkComponentQ
-  -> Vec ModelDimemsion FixedPoint
-  -> Vec ModelDimemsion FixedPoint
+  -> Vec ModelDimension FixedPoint
+  -> Vec ModelDimension FixedPoint
 runFeedForward ffn xHat =
   let gate = map sigmoidLinearUnitF $ matrixVectorMult (fW1Q ffn) xHat
       up   =                           matrixVectorMult (fW3Q ffn) xHat

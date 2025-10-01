@@ -18,57 +18,59 @@ import GHC.Generics (Generic)
 
 import Model.Core.Types
   ( CArray2D(..)
-  , ModelDimemsion
+  , RotaryEncodingComponent(..)
+  , EmbeddingComponent(..), SingleHeadComponent (..)
+  )
+import Model.Config (
+  ModelDimension
   , HiddenDimension
   , NumQueryHeads
   , HeadDimension
   , VocabularySize
-  , RotaryEncodingComponent(..)
-  , EmbeddingComponent(..), SingleHeadComponent (..)
   )
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.ParamPack (QArray2D(..), quantizeMatI8E)
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent
-  , mWo    :: Vec NumQueryHeads (CArray2D ModelDimemsion HeadDimension)
-  , rmsAtt :: Vec ModelDimemsion Float
+  , mWo    :: Vec NumQueryHeads (CArray2D ModelDimension HeadDimension)
+  , rmsAtt :: Vec ModelDimension Float
   } deriving (Show)
 
 data FeedForwardNetworkComponent = FeedForwardNetworkComponent
-  { fW1 :: CArray2D HiddenDimension ModelDimemsion
-  , fW2 :: CArray2D ModelDimemsion HiddenDimension
-  , fW3 :: CArray2D HiddenDimension ModelDimemsion
-  , fRMSFfn :: Vec ModelDimemsion Float
+  { fW1 :: CArray2D HiddenDimension ModelDimension
+  , fW2 :: CArray2D ModelDimension HiddenDimension
+  , fW3 :: CArray2D HiddenDimension ModelDimension
+  , fRMSFfn :: Vec ModelDimension Float
   } deriving (Show)
 
 -- Float-free, quantized single head (per-row I8E weights).
 data SingleHeadComponentQ = SingleHeadComponentQ
-  { wqHeadQ :: QArray2D HeadDimension ModelDimemsion
-  , wkHeadQ :: QArray2D HeadDimension ModelDimemsion
-  , wvHeadQ :: QArray2D HeadDimension ModelDimemsion
+  { wqHeadQ :: QArray2D HeadDimension ModelDimension
+  , wkHeadQ :: QArray2D HeadDimension ModelDimension
+  , wvHeadQ :: QArray2D HeadDimension ModelDimension
   , rotaryQ :: RotaryEncodingComponent
   } deriving (Generic, Show, Eq)
 
 -- MHA with quantized per-head WO and preconverted RMS weights.
 data MultiHeadAttentionComponentQ = MultiHeadAttentionComponentQ
   { headsQ  :: Vec NumQueryHeads SingleHeadComponentQ
-  , mWoQ    :: Vec NumQueryHeads (QArray2D ModelDimemsion HeadDimension)
-  , rmsAttF :: Vec ModelDimemsion FixedPoint
+  , mWoQ    :: Vec NumQueryHeads (QArray2D ModelDimension HeadDimension)
+  , rmsAttF :: Vec ModelDimension FixedPoint
   } deriving (Generic, Show, Eq)
 
 -- FFN with quantized matrices and preconverted RMS.
 data FeedForwardNetworkComponentQ = FeedForwardNetworkComponentQ
-  { fW1Q     :: QArray2D HiddenDimension ModelDimemsion
-  , fW2Q     :: QArray2D ModelDimemsion HiddenDimension
-  , fW3Q     :: QArray2D HiddenDimension ModelDimemsion
-  , fRMSFfnF :: Vec ModelDimemsion FixedPoint
+  { fW1Q     :: QArray2D HiddenDimension ModelDimension
+  , fW2Q     :: QArray2D ModelDimension HiddenDimension
+  , fW3Q     :: QArray2D HiddenDimension ModelDimension
+  , fRMSFfnF :: Vec ModelDimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- Embedding with quantized vocabulary sized by the active VocabularySize alias.
 data EmbeddingComponentQ = EmbeddingComponentQ
-  { vocabularyQ     :: QArray2D VocabularySize ModelDimemsion
-  , rmsFinalWeightF :: Vec ModelDimemsion FixedPoint
+  { vocabularyQ     :: QArray2D VocabularySize ModelDimension
+  , rmsFinalWeightF :: Vec ModelDimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- Elaborate-time converters (no Float in hardware).

@@ -4,7 +4,8 @@ module Model.Core.PipelineController
   ) where
 
 import Clash.Prelude
-import Model.Core.Types (NumLayers, SequenceLength, ProcessingState(..), CycleStage(..))
+import Model.Core.Types (ProcessingState(..), CycleStage(..))
+import Model.Config (NumLayers, SequenceLength)
 
 initialProcessingState :: ProcessingState
 initialProcessingState = ProcessingState

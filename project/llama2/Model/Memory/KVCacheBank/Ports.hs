@@ -1,7 +1,7 @@
 module Model.Memory.KVCacheBank.Ports (mapKVPorts) where
 
 import Clash.Prelude
-import Model.Core.Types (BankDepth, SequenceLength, HeadDimension)
+import Model.Config (BankDepth, SequenceLength, HeadDimension)
 import Model.Memory.KVCacheBank (KvBank(..))
 import Model.Numeric.Types ( FixedPoint, Act, ExpS, scalePow2F )
 

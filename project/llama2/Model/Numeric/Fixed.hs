@@ -1,4 +1,3 @@
--- ===== project/llama2/Model/Numeric/Fixed.hs =====
 module Model.Numeric.Fixed
   ( quantizeI8E
   , expF

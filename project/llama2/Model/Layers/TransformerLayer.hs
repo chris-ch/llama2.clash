@@ -6,9 +6,12 @@ module Model.Layers.TransformerLayer (
 
 import Clash.Prelude
 import Model.Core.Types
-  ( ModelDimemsion
+  ( ProcessingState(..), IntermediateData(..), CycleStage(..)
+  )
+import Model.Config
+  ( ModelDimension
   , NumLayers, NumQueryHeads, NumKeyValueHeads
-  , HeadDimension, ProcessingState(..), IntermediateData(..), CycleStage(..), SequenceLength
+  , HeadDimension,  SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
 
@@ -24,6 +27,9 @@ import Model.Helpers.MatVecI8E (matrixVectorMult)
 import Model.Numeric.Types (ExpS, FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
+import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
+import Model.Layers.Attention.AttendSequential (attendHeadSeq)
+import Model.Config.Debug (AttnMode(..), attnMode, attnEps)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -185,21 +191,23 @@ fillOneBank :: HiddenClockResetEnable dom
      , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
+    -- Stage predicates for this layer
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIx)
              psSig (pure ())
-
     isStage3Attention = stageEquals Stage3_Attend
     isStage2Write     = stageEquals Stage2_WriteKV
 
+    -- Rising edge on entering Stage3 (used for clear)
+    attnPrev = register False isStage3Attention
+    clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
+
     seqPosSignal = sequencePosition <$> psSig
 
-    bank   = Cache.kvBanks kvOwner !! kvIx
-    runKm  = Cache.runKeyMantBank   bank
-    runKe  = Cache.runKeyExpBank    bank
-    runVm  = Cache.runValueMantBank bank
-    runVe  = Cache.runValueExpBank  bank
+    -- Bank selection
+    bank = Cache.kvBanks kvOwner !! kvIx
 
+    -- Query head mapping (unchanged)
     qIdx0 = queryHeadIndex0 kvIx
     hasQ1 = hasSecondQueryHead kvIx
     qIdx1 = queryHeadIndex1 kvIx
@@ -207,35 +215,21 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     query0 = getQueryVector idSig qIdx0
     query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
 
+    -- ========== Stage2: write KV in quantized I8E (unchanged) ==========
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    keyValuePairSignal = liftA2 (,) keyVec valueVec
+    (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) =
+      Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
 
-    (writeAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, writeDoneThisBank) =
-      Cache.writeSequencer isStage2Write seqPosSignal keyValuePairSignal
+    wrAddrS = mux isStage2Write writeAddrSig (pure 0)
+    kMantWr = mux isStage2Write kMantWrRaw (pure Nothing)
+    vMantWr = mux isStage2Write vMantWrRaw (pure Nothing)
+    kExpWr  = mux isStage2Write kExpWrRaw  (pure Nothing)
+    vExpWr  = mux isStage2Write vExpWrRaw  (pure Nothing)
 
-    addrMantA = pure 0
-    addrMantB = mux isStage2Write writeAddrSig (pure 0)
-
-    wrMantA = pure Nothing
-    wrMantB_K = mux isStage2Write kMantWr (pure Nothing)
-    wrMantB_V = mux isStage2Write vMantWr (pure Nothing)
-
-    addrExpA  = pure 0
-    addrExpB = mux isStage2Write
-                   (fmap (maybe 0 fst) (liftA2 chooseWrite kExpWr vExpWr))
-                   (pure 0)
-
-    wrExpA    = pure Nothing
-    wrExpB_K  = mux isStage2Write kExpWr (pure Nothing)
-    wrExpB_V  = mux isStage2Write vExpWr (pure Nothing)
-
-    (_kMantRA, _kMantRB) = runKm (addrMantA, wrMantA) (addrMantB, wrMantB_K)
-    (_vMantRA, _vMantRB) = runVm (addrMantA, wrMantA) (addrMantB, wrMantB_V)
-    (_kExpRA,  _kExpRB ) = runKe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_K)
-    (_vExpRA,  _vExpRB ) = runVe (addrExpA,  wrExpA ) (addrExpB,  wrExpB_V)
-
+    -- ========== BASELINE attention path (drives tokens in Baseline/Shadow) ==========
+    -- Register "mirror" written only during Stage2 (original behavior)
     kvKeysAll = mealy
       (\mem (we, p, rowK) ->
          let mem' = if we then replace p rowK mem else mem
@@ -250,21 +244,67 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, valueVec))
 
-    out0 = liftA4 attendHead
-                     query0 kvKeysAll kvValsAll seqPosSignal
-    out1raw = liftA4 attendHead
-                       query1 kvKeysAll kvValsAll seqPosSignal
-    out1 = if hasQ1 then out1raw else pure (repeat 0)
+    -- Combinational attend across 0..pos (original)
+    out0_baseline = liftA4 attendHead query0 kvKeysAll kvValsAll seqPosSignal
+    out1_baseline =
+      if hasQ1
+        then liftA4 attendHead query1 kvKeysAll kvValsAll seqPosSignal
+        else pure (repeat 0)
 
-    attnPrev = register False isStage3Attention
-    donePulse = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
+    -- Done pulse: 1-cycle at Stage3 entry (original combinational completion)
+    donePulseBaseline = clearS3
 
-    headOutAcc0  = replace qIdx0 out0 headOutAcc
-    headDoneAcc0 = replace qIdx0 donePulse headDoneAcc
-    headOutAcc1  = if hasQ1 then replace qIdx1 out1 headOutAcc0 else headOutAcc0
-    headDoneAcc1 = if hasQ1 then replace qIdx1 donePulse headDoneAcc0 else headDoneAcc0
+    -- ========== STREAMED attention path (shadow; does not change control) ==========
+    (kRow, vRow, rowValid, lastT) =
+      kvRowStreamer bank clearS3 isStage3Attention seqPosSignal
+                    wrAddrS kMantWr kExpWr vMantWr vExpWr
+
+    (out0_stream, done0_stream) = attendHeadSeq clearS3 rowValid query0 kRow vRow lastT
+    (out1_stream, done1_stream) =
+      if hasQ1
+        then attendHeadSeq clearS3 rowValid query1 kRow vRow lastT
+        else (pure (repeat 0), pure False)
+
+    -- ========== Selection and debug ==========
+    chooseOut oBase oStr =
+      case attnMode of
+        AttnBaseline     -> oBase
+        AttnStreamShadow -> oBase
+        AttnStreamReplace-> oStr
+
+    chooseDone dBase dStr =
+      case attnMode of
+        AttnBaseline     -> dBase
+        AttnStreamShadow -> dBase
+        AttnStreamReplace-> dStr
+
+    out0_sel  = chooseOut  out0_baseline  out0_stream
+    out1_sel  = chooseOut  out1_baseline  out1_stream
+    done0_sel = chooseDone donePulseBaseline done0_stream
+    done1_sel = chooseDone donePulseBaseline done1_stream
+
+    -- Simple per-head mismatch detector (kept local; inspect in sim)
+    maxAbs v = foldl max 0 (map abs v)
+    diffTooBig :: (Applicative f, Foldable (Vec n)) => f (Vec n FixedPoint) -> f (Vec n FixedPoint) -> f Bool
+
+    mismatch0 = diffTooBig out0_baseline out0_stream
+    mismatch1 = if hasQ1 then diffTooBig out1_baseline out1_stream else pure False
+
+    -- Local counters to probe in simulation if desired
+    mismatchCnt0 = mealy (\c m -> let c' = if m then c+1 else c in (c', c')) (0 :: Unsigned 16) mismatch0
+    mismatchCnt1 = mealy (\c m -> let c' = if m then c+1 else c in (c', c')) (0 :: Unsigned 16) mismatch1
+    !_keep0 = mismatchCnt0
+    !_keep1 = mismatchCnt1
+
+    -- Write-done bookkeeping unchanged
+    headOutAcc0  = replace qIdx0 out0_sel headOutAcc
+    headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
+    headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
+    headDoneAcc1 = if hasQ1 then replace qIdx1 done1_sel headDoneAcc0 else headDoneAcc0
 
     writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
+    diffTooBig = liftA2
+        (\a b -> maxAbs (zipWith (-) a b) > attnEps)
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
 

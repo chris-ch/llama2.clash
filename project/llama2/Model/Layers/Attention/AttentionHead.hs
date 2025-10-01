@@ -2,7 +2,7 @@ module Model.Layers.Attention.AttentionHead
   ( attendHead ) where
 
 import Clash.Prelude
-import Model.Core.Types (HeadDimension, SequenceLength)
+import Model.Config (HeadDimension, SequenceLength)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.Fixed (expF)
 

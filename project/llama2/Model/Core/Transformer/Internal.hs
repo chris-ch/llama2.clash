@@ -6,8 +6,11 @@ import Model.Core.Types
   ( IntermediateData(..)
   , ProcessingState (..)
   , CycleStage (..)
-  , NumLayers, Temperature, Seed
-  , VocabularySize, Token, ModelDimemsion, SequenceLength
+  , Temperature, Seed
+  , Token
+  )
+import Model.Config
+  ( NumLayers, VocabularySize, ModelDimension, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer
@@ -49,5 +52,5 @@ outputTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextInte
         (PRNG.sampledTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextIntermediateDataSignal)
 
 -- Embedding lookup using quantized table (I8E row -> FixedPoint vec)
-embedFromComponent :: EmbeddingComponentQ -> Token -> Vec ModelDimemsion FixedPoint
+embedFromComponent :: EmbeddingComponentQ -> Token -> Vec ModelDimension FixedPoint
 embedFromComponent emb = Embedding.embed (vocabularyQ emb)

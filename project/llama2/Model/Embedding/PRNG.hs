@@ -5,8 +5,9 @@ module Model.Embedding.PRNG (
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Model.Core.Types
-  ( Temperature, IntermediateData (..), Token, VocabularySize
-  , ModelDimemsion )
+  ( Temperature, IntermediateData (..), Token)
+import Model.Config ( VocabularySize , ModelDimension )
+
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
 import Model.Helpers.FixedPoint (rmsNormFwFix)
@@ -25,7 +26,7 @@ xorshift32 s0 =
 
 -- classifier logits in FixedPoint using quantized tied embeddings
 transformerLogitsF :: TransformerLayer.TransformerDecoderComponent
-                   -> Vec ModelDimemsion FixedPoint
+                   -> Vec ModelDimension FixedPoint
                    -> Vec VocabularySize FixedPoint
 transformerLogitsF decoder tokenVector =
   let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ

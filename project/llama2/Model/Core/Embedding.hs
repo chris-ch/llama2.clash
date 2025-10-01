@@ -4,13 +4,14 @@ module Model.Core.Embedding
 import Clash.Prelude
 import Model.Numeric.Types (FixedPoint, scalePow2F, Act, ExpS)
 import Model.Numeric.ParamPack (QArray2D(..))
-import Model.Core.Types (Token, ModelDimemsion, VocabularySize)
+import Model.Core.Types (Token)
+import Model.Config (ModelDimension, VocabularySize)
 
 -- Dequantize-on-read: mant * 2^exp -> FixedPoint vector
 embed
-  :: QArray2D VocabularySize ModelDimemsion
+  :: QArray2D VocabularySize ModelDimension
   -> Token
-  -> Vec ModelDimemsion FixedPoint
+  -> Vec ModelDimension FixedPoint
 embed (QArray2D table) tok =
   let (mant, e) = table !! (fromIntegral tok :: Int)
       s         = scalePow2F e 1

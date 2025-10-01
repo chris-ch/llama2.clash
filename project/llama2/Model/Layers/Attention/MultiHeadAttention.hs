@@ -7,19 +7,11 @@ module Model.Layers.Attention.MultiHeadAttention (
 import Clash.Prelude
 import qualified Prelude as P
 import Model.Core.Types
-  ( NumQueryHeads, ModelDimemsion, NumKeyValueHeads
-  , HeadDimension, CArray2D (..), SingleHeadComponent (..)
-  , SequenceLength)
+  ( CArray2D (..), SingleHeadComponent (..) )
+import Model.Config
+  ( NumQueryHeads, ModelDimension, NumKeyValueHeads
+  , HeadDimension, SequenceLength)
 
-import Clash.Prelude
-import qualified Prelude as P
-
-
-import Clash.Prelude
-
-import Model.Core.Types
-  ( NumQueryHeads, NumKeyValueHeads, HeadDimension
-  , ModelDimemsion, SequenceLength )
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..) )
@@ -32,7 +24,7 @@ import Model.Helpers.FixedPoint (rmsNormFwFix)
 projectQKV
   :: MultiHeadAttentionComponentQ
   -> Index SequenceLength
-  -> Vec ModelDimemsion FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint) )

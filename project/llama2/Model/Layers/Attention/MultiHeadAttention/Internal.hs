@@ -3,21 +3,22 @@ module Model.Layers.Attention.MultiHeadAttention.Internal where
 import Clash.Prelude
 import qualified Prelude as P
 import Model.Core.Types
+    ( CArray2D(..),
+      SingleHeadComponent(..),
+      RotaryEncodingComponent(..),
+      RotaryEncodingComponent(..),
+      CArray2D(..) )
+import Model.Config
     ( NumQueryHeads,
-      ModelDimemsion,
+      ModelDimension,
       NumKeyValueHeads,
       HeadDimension,
-      CArray2D(..),
-      SingleHeadComponent(..),
       RotaryPositionalEmbeddingDimension,
-      RotaryEncodingComponent(..),
       SequenceLength,
-      ModelDimemsion,
+      ModelDimension,
       HeadDimension,
-      RotaryEncodingComponent(..),
       RotaryPositionalEmbeddingDimension,
-      SequenceLength,
-      CArray2D(..) )
+      SequenceLength  )
 import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
@@ -42,7 +43,7 @@ applyRotaryPositionEncodingF inputVec cosVecF sinVecF =
 computeHeadQ
   :: SingleHeadComponentQ
   -> Index SequenceLength
-  -> Vec ModelDimemsion FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> Vec HeadDimension FixedPoint
 computeHeadQ headComp stepCount xHat =
   let q   = matrixVectorMult (wqHeadQ headComp) xHat
@@ -52,7 +53,7 @@ computeHeadQ headComp stepCount xHat =
 computeHeadKV
   :: SingleHeadComponentQ
   -> Index SequenceLength
-  -> Vec ModelDimemsion FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
 computeHeadKV headComp stepCount xHat =
   let k   = matrixVectorMult (wkHeadQ headComp) xHat
