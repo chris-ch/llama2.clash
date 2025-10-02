@@ -6,7 +6,6 @@ module Model.Memory.KVCacheBank (
 ) where
 
 import Clash.Prelude
-import qualified Prelude as P
 
 import Model.Core.Types ( TrueDualPortRunner )
 import Model.Config

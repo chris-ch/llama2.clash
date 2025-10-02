@@ -1,4 +1,3 @@
-{-# LANGUAGE DoAndIfThenElse #-}
 module Main (main) where
 
 import Prelude

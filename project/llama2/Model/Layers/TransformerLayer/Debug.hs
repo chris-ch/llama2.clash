@@ -5,8 +5,7 @@ module Model.Layers.TransformerLayer.Debug (
 import Clash.Prelude
 import Model.Core.Types (ProcessingState(..), LayerData(..), CycleStage(..))
 import Model.Config
-  ( ModelDimension
-  , NumLayers, NumQueryHeads, NumKeyValueHeads
+  ( NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension, SequenceLength
   )
 import qualified Model.Memory.KVCacheBank as Cache
@@ -17,7 +16,6 @@ import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention
 import Model.Layers.Components.Quantized
   ( FeedForwardNetworkComponentQ(..)
   , MultiHeadAttentionComponentQ(..)
-  , EmbeddingComponentQ(..)
   )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
@@ -184,7 +182,7 @@ fillOneBankDbg layerIx psSig kvOwner idSig
     qIdx1 :: Index NumQueryHeads
     qIdx1 = if hasQ1 then succ qIdx0 else qIdx0
 
-    hasQ1 = (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads) >= 2
+    hasQ1 = (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads) >= (2 :: Int)
              && (fromEnum kvIx * (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads) + 1 <= natToNum @NumQueryHeads - 1)
 
     query0 = (\d -> queryVectors d !! qIdx0) <$> idSig
@@ -290,8 +288,8 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
       let
         tStart = if clearPulse then 0 else t
         step   = stageActive
-        last   = step && tStart == pos
-        tNext  = if not step || last then tStart else succ tStart
+        isLast   = step && tStart == pos
+        tNext  = if not step || isLast then tStart else succ tStart
       in (tNext, tStart)
 
     -- === Step 2: detect step enable ===

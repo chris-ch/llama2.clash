@@ -1,0 +1,12 @@
+cradle:
+  cabal:
+    cabalProject: "/workspaces/llama2.clash/cabal.project"
+    components:
+      - path: "project/llama2"
+        component: "lib:llama2"
+      - path: "project/app"
+        component: "exe:llama2-260K"
+      - path: "project/app"
+        component: "exe:llama2-15M"
+      - path: "test"
+        component: "test:llama2-test"

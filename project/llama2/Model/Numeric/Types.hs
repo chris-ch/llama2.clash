@@ -15,7 +15,6 @@ module Model.Numeric.Types
   ) where
 
 import Clash.Prelude
-import GHC.Generics (Generic)
 
 -- Fixed-point scalar: range ~[-2048,2048), 20 fractional bits.
 type FixedPoint = SFixed 12 20

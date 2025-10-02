@@ -29,7 +29,6 @@ import qualified Model.Embedding.PRNG as PRNG
 import qualified Model.Core.Embedding as Embedding
 import qualified Model.Layers.Components.Quantized as Quantized
   ( EmbeddingComponentQ(..) )
-import Model.Numeric.ParamPack (QArray2D)
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent(..))
 
@@ -102,9 +101,6 @@ multiCycleTransformerDebug decoder cacheOwners inputToken inputTokenValid temper
 --------------------------------------------------------------------------------
 -- Debug pipeline processor
 --------------------------------------------------------------------------------
-
-type LayerProcessorDataDbg dom =
-  (Signal dom LayerData, (Signal dom Bool, Signal dom Bool), Signal dom Bool, Signal dom Bool)
 
 pipelineProcessorDbg :: forall dom
    . HiddenClockResetEnable dom

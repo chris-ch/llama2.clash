@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Model.Config (
     ModelDimension,
     HiddenDimension,
@@ -17,7 +18,7 @@ import Clash.Prelude
 import qualified GHC.TypeNats as TN
 
 
-{- 
+#ifdef MODEL_260K
 -- model config 260K
 type ModelDimension = 64
 type HiddenDimension = 172
@@ -28,8 +29,8 @@ type HeadDimension  = 8
 type RotaryPositionalEmbeddingDimension = 4
 type VocabularySize = 512 :: Nat
 type SequenceLength = 512
--}
 
+#elif MODEL_15M
 -- model config 15M
 type ModelDimension = 288
 type HiddenDimension = 768
@@ -41,7 +42,7 @@ type RotaryPositionalEmbeddingDimension = 24
 type VocabularySize = 32000 :: Nat
 type SequenceLength = 256
 
-{- 
+#elif MODEL_42M
 -- model config 42M
 type ModelDimension = 512
 type HiddenDimension = 1376
@@ -51,10 +52,9 @@ type NumKeyValueHeads = 8
 type HeadDimension  = 64
 type RotaryPositionalEmbeddingDimension = 32
 type VocabularySize = 32000 :: Nat
-type SequenthLength = 1024
- -}
+type SequenceLength = 1024
 
-{-
+#elif MODEL_110M
 -- model config 110M
 type ModelDimension = 768
 type HiddenDimension = 2048
@@ -64,8 +64,22 @@ type NumKeyValueHeads = 12
 type HeadDimension  = 64
 type RotaryPositionalEmbeddingDimension = 32
 type VocabularySize = 32000 :: Nat
-type SequenthLength = 1024
--}
+type SequenceLength = 1024
+
+#else
+-- defaults to model config 260K
+type ModelDimension = 64
+type HiddenDimension = 172
+type NumLayers = 5
+type NumQueryHeads = 8
+type NumKeyValueHeads = 4
+type HeadDimension  = 8
+type RotaryPositionalEmbeddingDimension = 4
+type VocabularySize = 512 :: Nat
+type SequenceLength = 512
+
+#endif
+
 
 {-
 -- LLaMA 2 7B

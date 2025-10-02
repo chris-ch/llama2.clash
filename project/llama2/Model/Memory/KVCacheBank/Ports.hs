@@ -6,8 +6,7 @@ import Model.Memory.KVCacheBank (KVBank(..))
 import Model.Numeric.Types ( FixedPoint, Activation, Exponent, scalePow2F )
 
 mapKVPorts
-  :: HiddenClockResetEnable dom
-  => ( Signal dom (Index BankDepth)      -- read addr (Stage3)
+  :: ( Signal dom (Index BankDepth)      -- read addr (Stage3)
      , Signal dom Bool                   -- read enable
      , Signal dom (Index BankDepth)      -- write addr (Stage2)
      , Signal dom (Maybe (Index BankDepth, Activation))   -- K mant write

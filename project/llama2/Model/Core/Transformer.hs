@@ -14,16 +14,14 @@ import Model.Core.Types
   , Token
   )
 import Model.Config
-  (  NumLayers, VocabularySize, ModelDimension, SequenceLength
+  (  NumLayers, VocabularySize, ModelDimension
   )
 import qualified Model.Memory.KVCacheBank as Cache (KVRamOwner)
 import qualified Model.Layers.TransformerLayer as TransformerLayer
-  ( TransformerLayerComponent(..)
-  , TransformerDecoderComponent(..)
+  ( TransformerDecoderComponent(..)
   , multiCycleTransformerLayer
   )
 import Model.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent)
-import Data.Maybe (isJust)
 import qualified Model.Embedding.PRNG as PRNG (tokenSampler)
 import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController
@@ -83,9 +81,9 @@ multiCycleTransformer decoder cacheOwners inputToken inputTokenValid temperature
   layerDataRegister = register initialLayerData nextLayerData
 
   layerInputSelector :: ProcessingState -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
-  layerInputSelector ps currentLayerData tokenEmbedding
+  layerInputSelector ps currentLayerData tokenEmbed
     | processingStage ps /= Stage1_ProjectQKV = currentLayerData
-    | processingLayer ps == 0                 = currentLayerData { inputVector = tokenEmbedding }
+    | processingLayer ps == 0                 = currentLayerData { inputVector = tokenEmbed }
     | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
@@ -108,12 +106,12 @@ pipelineProcessor :: forall dom
   -> Vec NumLayers (Cache.KVRamOwner dom)
   -> Vec NumLayers TransformerLayerComponent
   -> LayerProcessorData dom
-pipelineProcessor processingState initialLayerData cacheOwners transformerLayers =
+pipelineProcessor processingState initLayerData cacheOwners transformerLayers =
   let
     indexedLayers :: Vec NumLayers (Index NumLayers, TransformerLayerComponent, Cache.KVRamOwner dom)
     indexedLayers = imap (\i (comp, owner) -> (i, comp, owner)) (zip transformerLayers cacheOwners)
 
-    (finalLayerData, doneFlags) = mapAccumL (layerProcessor processingState) initialLayerData indexedLayers
+    (finalLayerData, doneFlags) = mapAccumL (layerProcessor processingState) initLayerData indexedLayers
 
   in
     (finalLayerData, doneFlags)

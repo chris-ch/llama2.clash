@@ -7,9 +7,6 @@ import Clash.Prelude
 import Model.Core.Types
   ( Temperature, Seed, Token
   )
-import Model.Config
-  ( ModelDimension, NumLayers, SequenceLength
-  )
 
 import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent)

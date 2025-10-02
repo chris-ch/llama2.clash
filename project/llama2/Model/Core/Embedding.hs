@@ -2,7 +2,7 @@ module Model.Core.Embedding
   ( embedder ) where
 
 import Clash.Prelude
-import Model.Numeric.Types (FixedPoint, scalePow2F, Activation, Exponent)
+import Model.Numeric.Types (FixedPoint, scalePow2F)
 import Model.Numeric.ParamPack (QArray2D(..))
 import Model.Core.Types (Token)
 import Model.Config (ModelDimension, VocabularySize)

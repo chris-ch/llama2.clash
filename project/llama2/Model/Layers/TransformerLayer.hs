@@ -24,13 +24,12 @@ import Model.Layers.Components.Quantized
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
 import Model.Helpers.MatVecI8E (matrixVectorMult)
-import Model.Numeric.Types (Exponent, FixedPoint)
+import Model.Numeric.Types (FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
 import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
 import Model.Config.Debug (AttnMode(..), attnMode, attnEps)
-import Model.Memory.KVCacheBank.RowFromRegs (rowsFromRegs)
 import Model.Memory.RamOps (toRamOperation)
 
 data TransformerLayerComponent = TransformerLayerComponent
@@ -398,8 +397,8 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
       let
         tStart = if clearPulse then 0 else t
         step   = stageActive
-        last   = step && tStart == pos
-        tNext  = if not step || last then tStart else succ tStart
+        isLast   = step && tStart == pos
+        tNext  = if not step || isLast then tStart else succ tStart
       in (tNext, tStart)
 
     -- === Step 2: detect step enable ===

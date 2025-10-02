@@ -6,7 +6,6 @@ module Model.Core.LayerController
 
 import Clash.Prelude
 import Model.Core.Types (ProcessingState(..), CycleStage(..))
-import Model.Config (SequenceLength)
 
 data LayerIO = LayerIO
   { writeDone :: Bool   -- Stage2 done

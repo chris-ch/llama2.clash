@@ -5,7 +5,6 @@ module Model.Numeric.Fixed
   ) where
 
 import Clash.Prelude
-import GHC.Generics (Generic)
 import Model.Numeric.Types (FixedPoint, Activation, Exponent, scalePow2F, clampExp, satRoundToI8, epsF)
 
 -- ===========================
@@ -40,7 +39,7 @@ quantizeI8E xs =
       errFor :: Exponent -> FixedPoint
       errFor e =
         let s  = scalePow2F (negate e) 1
-            qf x = fromIntegral (satRoundToI8 (round (x * s)))
+            qf x = satRoundToI8 (round (x * s))
             rec x = fromIntegral (qf x) * scalePow2F e 1
         in sum (map (\x -> let d = x - rec x in d*d) xs)
       eBest = if errFor eFloor <= errFor eCeil then eFloor else eCeil
@@ -52,7 +51,7 @@ quantizeI8E xs =
   in (map qElem xs, eBest)
 
 -- Ceil-safe exponent: guarantees no clipping, i.e., |q| <= 127 for all elements
-quantizeI8E_ceilSafe :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Activation, Exponent)
+quantizeI8E_ceilSafe :: forall n. Vec n FixedPoint -> (Vec n Activation, Exponent)
 quantizeI8E_ceilSafe xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
@@ -93,11 +92,11 @@ nearestPow2Exp aIn =
           indicesI
       -- initialize with first element and fold the tail
       (e0, v0) = head pow2Vec
-      d0       = abs (v0 - a)
-      pickBest (bestE, bestV, bestD) (e, v) =
+      d0'       = abs (v0 - a)
+      pickBest (bestE', bestV, bestD) (e, v) =
         let d = abs (v - a)
-        in if d < bestD then (e, v, d) else (bestE, bestV, bestD)
-      (bestE, _, _) = foldl pickBest (e0, v0, d0) (tail pow2Vec)
+        in if d < bestD then (e, v, d) else (bestE', bestV, bestD)
+      (bestE, _, _) = foldl pickBest (e0, v0, d0') (tail pow2Vec)
   in bestE
 
 -- Round x/s to nearest integer (symmetric), saturate to int8 [-127,127].
@@ -150,15 +149,15 @@ expF x =
 
 expF' :: FixedPoint -> FixedPoint
 expF' x =
-  let ln2InvF = realToFrac (1.4426950408889634 :: Double)
-      exp2FracLUT :: Vec 256 FixedPoint
-      exp2FracLUT = map (\(i :: Index 256) -> realToFrac (2 ** (fromIntegral (fromEnum i) / 256 :: Double))) indicesI
-      exp2Frac f =
-        let idx :: Unsigned 8 = fromInteger (floor (max 0 (min (1 - (2 ^^ (-20))) f) * 256))
-        in exp2FracLUT !! idx
-      y  = x * ln2InvF
+  let ln2InvF' = realToFrac (1.4426950408889634 :: Double)
+      exp2FracLUT' :: Vec 256 FixedPoint
+      exp2FracLUT' = map (\(i :: Index 256) -> realToFrac (2 ** (fromIntegral (fromEnum i) / 256 :: Double))) indicesI
+      exp2Frac' f' =
+        let idx :: Unsigned 8 = fromInteger (floor (max 0 (min (1 - (2 ^^ (-20 :: Int))) f') * 256))
+        in exp2FracLUT' !! idx
+      y  = x * ln2InvF'
       nI = floor y :: Integer
       f  = y - fromInteger nI
-      b  = exp2Frac f
+      b  = exp2Frac' f
       nC :: Exponent = clampExp (fromInteger nI)
   in scalePow2F nC b

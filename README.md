@@ -46,7 +46,8 @@ cabal run -- llama2 --model-file data/stories15M.bin --temperature 0 "Hi"
 ```
 
 ```text
-Hippy was a very happy dog. He loved to play in the park with his friends. One day, he saw a big, red ball. He wanted to play with it, but he was too shy to ask.[...]"
+ Hippy was a very happy dog. He loved to play in the park with his friends. One day, he was playing with a ball and he was running around with his friends. Suddenly, he saw a big, scary dog. He was so scared that he started to bark and growl.
+Hippy's friends were scared too and they ran away. [...]"
 ```
 
 For debugging / testing with the 260K model:

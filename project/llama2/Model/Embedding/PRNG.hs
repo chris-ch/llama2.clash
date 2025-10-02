@@ -70,9 +70,9 @@ tokenSampler :: forall dom
   -> Signal dom Token
 tokenSampler readyPulse temperature seed decoder nextLayerData =
   liftA3
-    (\temperature logits u ->
-        if temperature <= 0 then argMax logits
-        else let probabilities = softmax temperature logits
+    (\temperature' logits u ->
+        if temperature' <= 0 then argMax logits
+        else let probabilities = softmax temperature' logits
              in sampleFromProbs u probabilities)
     temperature (logitsConverter decoder nextLayerData) (uniformRandom01Generator readyPulse seed)
 

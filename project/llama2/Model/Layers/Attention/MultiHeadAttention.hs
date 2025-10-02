@@ -5,16 +5,13 @@ module Model.Layers.Attention.MultiHeadAttention (
 ) where
 
 import Clash.Prelude
-import qualified Prelude as P
-import Model.Core.Types
-  ( CArray2D (..), SingleHeadComponent (..) )
 import Model.Config
   ( NumQueryHeads, ModelDimension, NumKeyValueHeads
   , HeadDimension, SequenceLength)
 
 import Model.Numeric.Types (FixedPoint)
 import Model.Layers.Components.Quantized
-  ( MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..) )
+  ( MultiHeadAttentionComponentQ(..) )
 import Model.Layers.Attention.MultiHeadAttention.Internal
   ( computeHeadQ, computeHeadKV )
 import Model.Helpers.FixedPoint (rmsNormFwFix)

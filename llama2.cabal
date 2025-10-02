@@ -19,7 +19,65 @@ source-repository head
   type: git
   location: https://github.com/chris-ch/llama2.clash
 
+-- package-wide defaults
+common project-defaults
+  default-language: Haskell2010
+  default-extensions:
+    BangPatterns
+    DataKinds
+    DeriveAnyClass
+    DeriveGeneric
+    DoAndIfThenElse
+    FlexibleContexts
+    GeneralizedNewtypeDeriving
+    ImplicitParams
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    MonoLocalBinds
+    NamedFieldPuns
+    NoImplicitPrelude
+    NumericUnderscores
+    OverloadedStrings
+    RecordWildCards
+    ScopedTypeVariables
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+    UndecidableInstances
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -O2
+    -threaded
+    -fllvm
+    -haddock
+    -rtsopts
+    -with-rtsopts=-N
+  build-depends:
+      base
+    , binary
+    , bytestring
+    , clash-prelude
+    , clash-lib
+    , containers
+    , mtl
+    , random
+    , vector
+    , optparse-applicative
+    , time
+
 library
+  import: project-defaults
   exposed-modules:
       Helpers
     , Model.Config
@@ -62,99 +120,23 @@ library
     , Tokenizer
   hs-source-dirs:
       project/llama2
-  build-depends:
-      base
-    , binary
-    , bytestring
-    , clash-prelude
-    , clash-lib
-    , containers
-    , mtl
-    , random
-    , vector
-  default-language: Haskell2010
-  default-extensions:
-    BangPatterns
-    DataKinds
-    DeriveAnyClass
-    DeriveGeneric
-    FlexibleContexts
-    GeneralizedNewtypeDeriving
-    ImplicitParams
-    InstanceSigs
-    KindSignatures
-    LambdaCase
-    MonoLocalBinds
-    NamedFieldPuns
-    NoImplicitPrelude
-    NumericUnderscores
-    OverloadedStrings
-    RecordWildCards
-    ScopedTypeVariables
-    TemplateHaskell
-    TupleSections
-    TypeApplications
-    TypeFamilies
-    TypeOperators
-    UndecidableInstances
 
-executable llama2
+executable llama2-260K
+  import: project-defaults
   main-is: Main.hs
-  hs-source-dirs:
-    project/app
-  build-depends:
-      base
-    , binary
-    , bytestring
-    , clash-prelude
-    , clash-lib
-    , containers
-    , llama2
-    , optparse-applicative
-    , time
-    , vector
-  ghc-options:
-    -Wall
-    -Wcompat
-    -Widentities
-    -Wincomplete-record-updates
-    -Wincomplete-uni-patterns
-    -Wmissing-export-lists
-    -Wmissing-home-modules
-    -Wpartial-fields
-    -Wredundant-constraints
-    -O2
-    -threaded
-    -fllvm
-    -haddock
-    -rtsopts
-    -with-rtsopts=-N
-  default-extensions:
-    BangPatterns
-    DataKinds
-    DeriveAnyClass
-    DeriveGeneric
-    FlexibleContexts
-    GeneralizedNewtypeDeriving
-    ImplicitParams
-    InstanceSigs
-    KindSignatures
-    LambdaCase
-    MonoLocalBinds
-    NamedFieldPuns
-    NoImplicitPrelude
-    NumericUnderscores
-    OverloadedStrings
-    RecordWildCards
-    ScopedTypeVariables
-    TemplateHaskell
-    TupleSections
-    TypeApplications
-    TypeFamilies
-    TypeOperators
-    UndecidableInstances
+  hs-source-dirs: project/app
+  build-depends: llama2
+  ghc-options: -DMODEL_260K
+
+executable llama2-15M
+  import: project-defaults
+  main-is: Main.hs
+  hs-source-dirs: project/app
+  build-depends: llama2
+  ghc-options: -DMODEL_15m
 
 test-suite llama2-test
+  import: project-defaults
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
@@ -171,27 +153,3 @@ test-suite llama2-test
     , llama2
     , QuickCheck
   ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N -main-is Spec.main
-  default-language: Haskell2010
-  default-extensions:
-    BangPatterns
-    DataKinds
-    DeriveAnyClass
-    DeriveGeneric
-    FlexibleContexts
-    GeneralizedNewtypeDeriving
-    ImplicitParams
-    InstanceSigs
-    KindSignatures
-    LambdaCase
-    MonoLocalBinds
-    NamedFieldPuns
-    NoImplicitPrelude
-    NumericUnderscores
-    OverloadedStrings
-    RecordWildCards
-    ScopedTypeVariables
-    TemplateHaskell
-    TupleSections
-    TypeApplications
-    TypeOperators
-    UndecidableInstances

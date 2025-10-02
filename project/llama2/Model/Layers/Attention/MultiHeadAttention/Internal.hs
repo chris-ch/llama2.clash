@@ -1,17 +1,13 @@
 module Model.Layers.Attention.MultiHeadAttention.Internal where
 
 import Clash.Prelude
-import qualified Prelude as P
 import Model.Core.Types
     ( CArray2D(..),
-      SingleHeadComponent(..),
       RotaryEncodingComponent(..),
       RotaryEncodingComponent(..),
       CArray2D(..) )
 import Model.Config
-    ( NumQueryHeads,
-      ModelDimension,
-      NumKeyValueHeads,
+    ( ModelDimension,
       HeadDimension,
       RotaryPositionalEmbeddingDimension,
       SequenceLength,

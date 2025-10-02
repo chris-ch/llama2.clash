@@ -3,30 +3,21 @@ module Parser (parseModelConfigFile) where
 import Prelude
 
 import qualified Data.Binary.Get as BG
-import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy.Char8 as BSC
-import qualified Data.List as DL
 import qualified Foreign as F
 import qualified Data.Vector.Unboxed as V
 import qualified Clash.Sized.Vector as CV
 import qualified Clash.Prelude as C
-import qualified Clash.Signal as CS
 
 import GHC.IO (unsafePerformIO)
-import Data.Maybe (fromMaybe)
-import System.IO (hFlush, stdout)
-import Control.Monad (replicateM_, unless)
-import Text.Printf (printf)
+import Control.Monad (replicateM_)
 import Model.Core.Types
     (
       SingleHeadComponent(SingleHeadComponent, rotary, wqHead, wkHead,
                           wvHead),
       RotaryEncodingComponent(RotaryEncodingComponent, freqSin, freqCos),
       EmbeddingComponent(EmbeddingComponent, rmsFinalWeight, vocabulary),
-      Token,
-      CArray2D(CArray2D),
-      Temperature, Seed )
+      CArray2D(CArray2D) )
 
 import Model.Config
     (
@@ -40,13 +31,9 @@ import Model.Config
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import qualified Model.Top as Top ( topEntity )
-import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
-import Model.Numeric.Types (FixedPoint)
 import qualified Model.Layers.Components.Quantized as Quantized
     ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding )
-import qualified Model.TopDebug as TopDebug
 
 
 -- ============================================================================
@@ -214,8 +201,3 @@ parseModelConfigFile = do
       }
 
   return decoder
-
-printToken :: T.Tokenizer -> Token -> IO ()
-printToken tokenizer tokenId = do
-    BSC.putStr (T.decodePiece tokenizer (fromIntegral tokenId) (fromIntegral tokenId))
-    hFlush stdout

@@ -17,11 +17,7 @@ where
 import Clash.Prelude
 import GHC.Stack (HasCallStack)
 import Model.Config
-  ( BankAddress,
-    BankDepth,
-    CacheDepth,
-    HeadDimension,
-    HiddenDimension,
+  ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,
     NumLayers,

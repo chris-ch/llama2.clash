@@ -7,11 +7,9 @@ module Model.Numeric.ParamPack
   ) where
 
 import Clash.Prelude
-import GHC.Generics (Generic)
 import Model.Core.Types (CArray2D(..))
 import Model.Numeric.Types (FixedPoint, Activation, Exponent, scalePow2F)
 import Model.Numeric.Fixed (quantizeI8E)
-import qualified GHC.Stack as GHC.Stack.Types
 
 -- One row of parameters as (int8 mantissas, shared exponent).
 type RowI8E n = (Vec n Activation, Exponent)
@@ -25,16 +23,16 @@ newtype QArray2D (rows :: Nat) (cols :: Nat) =
   deriving (Generic, Show, Eq)
 
 instance NFDataX (MatI8E rows cols) => NFDataX (QArray2D rows cols) where
-  deepErrorX :: (NFDataX (MatI8E rows cols), GHC.Stack.Types.HasCallStack) => String -> QArray2D rows cols
+  deepErrorX :: String -> QArray2D rows cols
   deepErrorX s = QArray2D (deepErrorX s)
-  rnfX :: NFDataX (MatI8E rows cols) => QArray2D rows cols -> ()
+  rnfX ::QArray2D rows cols -> ()
   rnfX (QArray2D m) = rnfX m
 
 -- Elaborate-time quantization: Float -> FixedPoint -> I8E per row.
 -- Safe for synthesis because inputs are structural constants.
 quantizeMatI8E
-  :: (KnownNat rows, KnownNat cols)
-  => CArray2D rows cols                 -- Float params baked in the netlist
+  :: ( KnownNat cols)
+  =>CArray2D rows cols                 -- Float params baked in the netlist
   -> QArray2D rows cols                 -- Float-free carrier for hardware
 quantizeMatI8E (CArray2D rowsF) =
   let rowsFtoF = map (map realToFrac) rowsF
