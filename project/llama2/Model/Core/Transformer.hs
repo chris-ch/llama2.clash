@@ -16,7 +16,7 @@ import Model.Core.Types
 import Model.Config
   (  NumLayers, VocabularySize, ModelDimension, SequenceLength
   )
-import qualified Model.Memory.KVCacheBank as Cache
+import qualified Model.Memory.KVCacheBank as Cache (KVRamOwner)
 import qualified Model.Layers.TransformerLayer as TransformerLayer
   ( TransformerLayerComponent(..)
   , TransformerDecoderComponent(..)
@@ -24,12 +24,12 @@ import qualified Model.Layers.TransformerLayer as TransformerLayer
   )
 import Model.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent)
 import Data.Maybe (isJust)
-import qualified Model.Embedding.PRNG as PRNG
+import qualified Model.Embedding.PRNG as PRNG (tokenSampler)
 import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
   )
-import qualified Model.Core.Embedding as Embedding
+import qualified Model.Core.Embedding as Embedding (embedder)
 import qualified Model.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import Model.Numeric.ParamPack (QArray2D)
 import Model.Numeric.Types (FixedPoint)

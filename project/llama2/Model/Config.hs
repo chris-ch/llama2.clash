@@ -16,6 +16,7 @@ module Model.Config (
 import Clash.Prelude
 import qualified GHC.TypeNats as TN
 
+
 {- 
 -- model config 260K
 type ModelDimension = 64
@@ -27,7 +28,6 @@ type HeadDimension  = 8
 type RotaryPositionalEmbeddingDimension = 4
 type VocabularySize = 512 :: Nat
 type SequenceLength = 512
-
 -}
 
 -- model config 15M
