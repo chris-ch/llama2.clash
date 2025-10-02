@@ -34,6 +34,8 @@ import qualified Model.Layers.Components.Quantized as Quantized (EmbeddingCompon
 import Model.Numeric.ParamPack (QArray2D)
 import Model.Numeric.Types (FixedPoint)
 
+type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool))
+
 multiCycleTransformer :: forall dom
    . HiddenClockResetEnable dom
   => TransformerLayer.TransformerDecoderComponent
@@ -81,50 +83,70 @@ multiCycleTransformer decoder cacheOwners inputToken inputTokenValid temperature
   layerDataRegister = register initialLayerData nextLayerData
 
   layerInputSelector :: ProcessingState -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
-  layerInputSelector ps currentLayerData tokenEmbedding = if processingStage ps == Stage1_ProjectQKV
-           then if processingLayer ps == 0
-                  then currentLayerData { inputVector = tokenEmbedding }
-                  else currentLayerData { inputVector = feedForwardOutput currentLayerData }
-           else currentLayerData
+  layerInputSelector ps currentLayerData tokenEmbedding
+    | processingStage ps /= Stage1_ProjectQKV = currentLayerData
+    | processingLayer ps == 0                 = currentLayerData { inputVector = tokenEmbedding }
+    | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
   selectedInput = liftA3 layerInputSelector processingState layerDataRegister tokenEmbedding
 
-  transformerLayerProcessor :: ( Signal dom LayerData
-       , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom Bool)
-        )
-    -> (TransformerLayer.TransformerLayerComponent, Cache.KVRamOwner dom, Index NumLayers)
-    -> ( Signal dom LayerData
-       , Vec NumLayers (Signal dom Bool)
-       , Vec NumLayers (Signal dom Bool)
-       )
-  transformerLayerProcessor (currentLayerData, wDoneVec, attnDoneVec)
-            (layerComp, cacheOwner, layerIndex) =
-    let
-      (newLayerData, wDone, attnDone, commitC3) =
-          TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner layerIndex processingState currentLayerData
-      layerDataSelector :: ProcessingState -> LayerData -> LayerData -> LayerData -> LayerData
-      layerDataSelector state currentData newD c3D = 
-               if processingLayer state == layerIndex
-                  then if processingStage state == Stage3_Attend
-                         then c3D
-                         else newD
-                  else currentData
-      selectedLayerData :: Signal dom LayerData
-      selectedLayerData = liftA4 layerDataSelector processingState currentLayerData newLayerData commitC3
-    in  ( selectedLayerData
-        , replace layerIndex wDone    wDoneVec
-        , replace layerIndex attnDone attnDoneVec
-        )
+  (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput cacheOwners transformerLayers
 
-  ( nextLayerData, writeDone , attnDone ) =
-      foldl
-        transformerLayerProcessor (selectedInput , repeat (pure False) , repeat (pure False))
-        (zip3 transformerLayers cacheOwners indicesI)
+  (writeDone, attnDone) = unzip doneFlags
 
   writeDoneThisLayer :: Signal dom Bool
   writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex
 
   attnDoneThisLayer :: Signal dom Bool
   attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> layerIndex
+
+pipelineProcessor :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom ProcessingState
+  -> Signal dom LayerData
+  -> Vec NumLayers (Cache.KVRamOwner dom)
+  -> Vec NumLayers TransformerLayerComponent
+  -> LayerProcessorData dom
+pipelineProcessor processingState initialLayerData cacheOwners transformerLayers =
+  let
+    indexedLayers :: Vec NumLayers (Index NumLayers, TransformerLayerComponent, Cache.KVRamOwner dom)
+    indexedLayers = imap (\i (comp, owner) -> (i, comp, owner)) (zip transformerLayers cacheOwners)
+
+    (finalLayerData, doneFlags) = mapAccumL (layerProcessor processingState) initialLayerData indexedLayers
+
+  in
+    (finalLayerData, doneFlags)
+
+layerProcessor :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom ProcessingState
+  -> Signal dom LayerData
+  -> (Index NumLayers, TransformerLayerComponent, Cache.KVRamOwner dom)
+  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool))
+layerProcessor processingState currentLayerData (layerIndex, layerComp, cacheOwner) =
+  let
+    (newLayerData, writeDone, attnDone, commitC3) =
+      TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner layerIndex processingState currentLayerData
+
+    selectedLayerData =
+      liftA4 (layerDataSelector layerIndex) processingState currentLayerData newLayerData commitC3
+
+  in
+    (selectedLayerData, (writeDone, attnDone))
+
+layerDataSelector :: Index NumLayers
+                  -> ProcessingState
+                  -> LayerData
+                  -> LayerData
+                  -> LayerData
+                  -> LayerData
+layerDataSelector layerIndex state currentData newData stage3Data =
+  let
+    curLayer = processingLayer state
+    curStage = processingStage state
+  in
+    case () of
+      _ | curLayer /= layerIndex       -> currentData
+        | curStage == Stage3_Attend    -> stage3Data
+        | otherwise                    -> newData

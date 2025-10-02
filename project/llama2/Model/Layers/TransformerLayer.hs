@@ -43,8 +43,9 @@ data TransformerDecoderComponent = TransformerDecoderComponent
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
-multiCycleTransformerLayer
-  :: HiddenClockResetEnable dom
+multiCycleTransformerLayer ::
+  forall dom .
+  HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Cache.KVRamOwner dom
   -> Index NumLayers
@@ -55,84 +56,93 @@ multiCycleTransformerLayer
      , Signal dom Bool
      , Signal dom LayerData
   )
-multiCycleTransformerLayer layer kvRamOwner layerIndex processingState intermediateData =
-  ( nextLayerDataSignal
-  , writeDoneThisLayerSignal
-  , attentionDoneThisLayerSignal
-  , commitCycle3Signal
+multiCycleTransformerLayer layer kvRamOwner layerIndex processingState layerData =
+  ( nextLayerData
+  , writeDone
+  , attentionDone
+  , commitStage3
   )
  where
-  mhaQ = multiHeadAttention layer
-  ffnQ = feedforwardNetwork layer
+  mha = multiHeadAttention layer
+  ffn = feedforwardNetwork layer
 
-  (perHeadOutputSignalsVec, perHeadDoneSignalsVec, perBankWriteDoneVec) =
+  (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     let initHeadOutputs = repeat (pure (repeat 0))
         initHeadDone    = repeat (pure False)
         initWriteDone   = repeat (pure False)
     in  foldl
-          (fillOneBank layerIndex processingState kvRamOwner intermediateData)
+          (fillOneBank layerIndex processingState kvRamOwner layerData)
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
-  allHeadsDoneSignal     = fmap and (sequenceA perHeadDoneSignalsVec)
-  allHeadsDonePrevSignal = register False allHeadsDoneSignal
-  attentionDoneThisLayerSignal =
-    liftA2 (\now prev -> now && not prev) allHeadsDoneSignal allHeadsDonePrevSignal
+  allHeadsDone :: Signal dom Bool
+  allHeadsDone = and <$> sequenceA perHeadDoneFlags
 
-  baseNextLayerDataSignal =
-    liftA2 (processStage mhaQ ffnQ layerIndex) processingState intermediateData
+  allHeadsDonePrev :: Signal dom Bool
+  allHeadsDonePrev = register False allHeadsDone
 
-  writeDoneThisLayerSignal =
-    let allBanksDoneSignal = fmap and (sequenceA perBankWriteDoneVec)
-    in  (\ps banksDone ->
-           processingStage ps == Stage2_WriteKV
-        && processingLayer ps == layerIndex
-        && banksDone)
-        <$> processingState <*> allBanksDoneSignal
+  attentionDone :: Signal dom Bool
+  attentionDone =
+    liftA2 (\now prev -> now && not prev) allHeadsDone allHeadsDonePrev
 
-  -- Per-head WO projection now uses quantized WO blocks (I8E) -> FixedPoint
+  baseNextLayerData :: Signal dom LayerData
+  baseNextLayerData =
+    liftA2 (stageProcessor mha ffn layerIndex) processingState layerData
+
+  allBanksDone :: Signal dom Bool
+  allBanksDone = and <$> sequenceA perBankWriteDoneFlags
+
+  writeDone :: Signal dom Bool
+  writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
+
+  -- Per-head WO projection uses quantized WO blocks (I8E) -> FixedPoint
+  perHeadProjectedSignalsVec :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
   perHeadProjectedSignalsVec =
-    zipWith (\woQ hSig -> matrixVectorMult woQ <$> hSig) (mWoQ mhaQ) perHeadOutputSignalsVec
+    zipWith (\woQ hSig -> matrixVectorMult woQ <$> hSig) (mWoQ mha) perHeadOutputs
 
-  perHeadProjectedSignal = sequenceA perHeadProjectedSignalsVec
-  woHeadsSignal          = fmap (foldl1 (zipWith (+))) perHeadProjectedSignal
+  perHeadProjected :: Signal dom (Vec NumQueryHeads (Vec ModelDimension FixedPoint))
+  perHeadProjected = sequenceA perHeadProjectedSignalsVec
+  
+  woHeads :: Signal dom (Vec ModelDimension FixedPoint)
+  woHeads    = foldl1 (zipWith (+)) <$> perHeadProjected
 
-  xAfterAttnSignal =
-      liftA2
-        (\idata woHeads ->
-          let xInput = inputVector idata
-          in zipWith (+) xInput woHeads)
-        intermediateData
-        woHeadsSignal
+  xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
+  xAfterAttn = liftA2 inputsAggregator layerData woHeads
 
-  nextLayerDataSignal =
-    liftA4
-      (\ps cur attOut done ->
-         if processingLayer ps == layerIndex
-            && processingStage ps == Stage3_Attend
-            && done
-           then cur { attentionOutput = attOut }
-           else cur)
-      processingState baseNextLayerDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
+  nextLayerData :: Signal dom LayerData
+  nextLayerData = liftA4 (layerDataAttnDone layerIndex) processingState baseNextLayerData xAfterAttn attentionDone
 
-  commitCycle3Signal =
-    liftA4
-      (\ps cur attOut done ->
-         if processingLayer ps == layerIndex
-            && processingStage ps == Stage3_Attend
-            && done
-           then cur { attentionOutput = attOut }
-           else cur)
-      processingState intermediateData xAfterAttnSignal attentionDoneThisLayerSignal
+  commitStage3 :: Signal dom LayerData
+  commitStage3 = liftA4 (layerDataAttnDone layerIndex)  processingState layerData xAfterAttn attentionDone
 
-processStage
-  :: MultiHeadAttentionComponentQ
+kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
+kvWriteDoneCond layerIndex state banksDone = processingStage state == Stage2_WriteKV
+      && processingLayer state == layerIndex
+      && banksDone
+
+inputsAggregator :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
+inputsAggregator layerData = zipWith (+) (inputVector layerData)
+
+layerDataAttnDone :: Index NumLayers
+  -> ProcessingState
+  -> LayerData
+  -> Vec ModelDimension FixedPoint
+  -> Bool
+  -> LayerData
+layerDataAttnDone layerIndex stage cur attOut attnDone =
+        if processingLayer stage == layerIndex
+          && processingStage stage == Stage3_Attend
+          && attnDone
+          then cur { attentionOutput = attOut }
+          else cur
+
+stageProcessor :: MultiHeadAttentionComponentQ
   -> FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
   -> LayerData
   -> LayerData
-processStage mhaQ ffnQ layerIndex ps idata
+stageProcessor mhaQ ffnQ layerIndex ps idata
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->
@@ -148,7 +158,6 @@ processStage mhaQ ffnQ layerIndex ps idata
         in  idata { feedForwardOutput = ffnOut }
 
       Stage5_Bookkeeping -> idata
-
 
 -- Query heads per KV head
 queryHeadsPerKeyValueHead :: Int
@@ -191,11 +200,11 @@ fillOneBank :: HiddenClockResetEnable dom
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
-fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
+fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
     -- Stage predicates for this layer
     stageEquals st =
-      liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIx)
+      liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
              psSig (pure ())
     isStage3Attention = stageEquals Stage3_Attend
     isStage2Write     = stageEquals Stage2_WriteKV
@@ -219,7 +228,7 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     valueVec = getValueVector idSig kvIx
 
     -- ========== Stage2: writes ==========
-    -- Quantized write to the I8E KV bank (unchanged)
+    -- Quantized write to the I8E KV bank
     (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) =
       Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
     wrAddrS = mux isStage2Write writeAddrSig (pure 0)
@@ -228,7 +237,7 @@ fillOneBank layerIx psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) 
     kExpWr  = mux isStage2Write kExpWrRaw  (pure Nothing)
     vExpWr  = mux isStage2Write vExpWrRaw  (pure Nothing)
 
-    -- NEW: Unquantized row BRAMs (FixedPoint) used only for progressive replacement:
+    -- Unquantized row BRAMs (FixedPoint) used only for progressive replacement:
     -- Two true-dual-port BRAMs with (depth = SequenceLength, payload = Vec HeadDimension FixedPoint)
     -- Port A: Stage3 reads; Port B: Stage2 writes current row at (seqPos)
     -- Address/Write streams for BRAM-F
