@@ -5,7 +5,7 @@ module Model.Helpers.FixedPoint
 
 import Clash.Prelude
 import Model.Core.Types (CArray2D(..))
-import Model.Numeric.Types (FixedPoint, ExpS, epsF, scalePow2F)
+import Model.Numeric.Types (FixedPoint, Exponent, epsF, scalePow2F)
 import Model.Numeric.Fixed (expF)
 
 -- Dot product in FixedPoint
@@ -30,7 +30,7 @@ invSqrt2 :: FixedPoint
 invSqrt2 = realToFrac (1.0 / sqrt 2.0 :: Double)
 
 -- Decompose x = m * 2^e, with m in [1,2)
-log2Decompose :: FixedPoint -> (ExpS, FixedPoint)
+log2Decompose :: FixedPoint -> (Exponent, FixedPoint)
 log2Decompose xIn =
   let x = max xIn epsF
       pow2 :: Vec 64 FixedPoint

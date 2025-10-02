@@ -6,7 +6,7 @@ module Model.Numeric.Fixed
 
 import Clash.Prelude
 import GHC.Generics (Generic)
-import Model.Numeric.Types (FixedPoint, Act, ExpS, scalePow2F, clampExp, satRoundToI8, epsF)
+import Model.Numeric.Types (FixedPoint, Activation, Exponent, scalePow2F, clampExp, satRoundToI8, epsF)
 
 -- ===========================
 -- Quantization: F <-> I8E (PoT)
@@ -15,13 +15,13 @@ import Model.Numeric.Types (FixedPoint, Act, ExpS, scalePow2F, clampExp, satRoun
 -- Quantize a vector to Signed 8 mantissas with a shared Signed 7 exponent.
 -- Nearest-PoT exponent (reduces MSE vs floor-PoT)
 -- No Floating is used to find the exponent: we compare against a ROM of 2^i.
-quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
+quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Activation, Exponent)
 quantizeI8E xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
       pow2 :: Vec 64 FixedPoint
       pow2 = map (\(i :: Index 64) ->
-                    let iS :: ExpS
+                    let iS :: Exponent
                         iS = fromInteger (toInteger (fromEnum i) - 32)
                     in scalePow2F iS 1)
                  indicesI
@@ -33,11 +33,11 @@ quantizeI8E xs =
                         (zip indicesI flags))
       pInt :: Integer
       pInt = toInteger (fromEnum pIdx) - 32
-      eFloor :: ExpS
+      eFloor :: Exponent
       eFloor = clampExp (fromInteger (pInt - 7))
-      eCeil  :: ExpS
+      eCeil  :: Exponent
       eCeil  = clampExp (fromInteger (pInt - 6))
-      errFor :: ExpS -> FixedPoint
+      errFor :: Exponent -> FixedPoint
       errFor e =
         let s  = scalePow2F (negate e) 1
             qf x = fromIntegral (satRoundToI8 (round (x * s)))
@@ -52,14 +52,14 @@ quantizeI8E xs =
   in (map qElem xs, eBest)
 
 -- Ceil-safe exponent: guarantees no clipping, i.e., |q| <= 127 for all elements
-quantizeI8E_ceilSafe :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Act, ExpS)
+quantizeI8E_ceilSafe :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Activation, Exponent)
 quantizeI8E_ceilSafe xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
       -- Find integer p such that 2^p <= maxAbs < 2^(p+1)
-      pow2 :: Vec 64 (ExpS, FixedPoint)
+      pow2 :: Vec 64 (Exponent, FixedPoint)
       pow2 = map (\(i :: Index 64) ->
-                    let e :: ExpS = fromInteger (toInteger (fromEnum i) - 32)
+                    let e :: Exponent = fromInteger (toInteger (fromEnum i) - 32)
                     in (e, scalePow2F e 1))
                  indicesI
       (pE, pV) =
@@ -69,7 +69,7 @@ quantizeI8E_ceilSafe xs =
           pow2
       -- If maxAbs <= 127 * 2^p, we can use e = p-7; else e = p-6
       th = 127 * pV
-      eRaw :: ExpS
+      eRaw :: Exponent
       eRaw = if maxAbs <= th then clampExp (pE - 7) else clampExp (pE - 6)
       sInv = scalePow2F (negate eRaw) 1
       qElem x =
@@ -80,14 +80,14 @@ quantizeI8E_ceilSafe xs =
 
 -- Nearest power-of-two exponent for a positive FixedPoint a.
 -- Searches e in [-64 .. 63] and returns the argmin_e |2^e - a|.
-nearestPow2Exp :: FixedPoint -> ExpS
+nearestPow2Exp :: FixedPoint -> Exponent
 nearestPow2Exp aIn =
   let a = max epsF (abs aIn)  -- ensure positive, non-zero
-      pow2Vec :: Vec 128 (ExpS, FixedPoint)
+      pow2Vec :: Vec 128 (Exponent, FixedPoint)
       pow2Vec =
         map
           (\(i :: Index 128) ->
-             let e :: ExpS
+             let e :: Exponent
                  e = fromInteger (toInteger (fromEnum i) - 64)
              in  (e, scalePow2F e 1))
           indicesI
@@ -101,13 +101,13 @@ nearestPow2Exp aIn =
   in bestE
 
 -- Round x/s to nearest integer (symmetric), saturate to int8 [-127,127].
-qElemWithScale :: FixedPoint -> FixedPoint -> Act
+qElemWithScale :: FixedPoint -> FixedPoint -> Activation
 qElemWithScale s x =
   let y  = x / s
       yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
   in satRoundToI8 yr
 
-dequantizeI8E :: (Vec n Act, ExpS) -> Vec n FixedPoint
+dequantizeI8E :: (Vec n Activation, Exponent) -> Vec n FixedPoint
 dequantizeI8E (qs, e) =
   let s = scalePow2F e 1
   in map (\q -> fromIntegral q * s) qs
@@ -144,7 +144,7 @@ expF x =
       nI = floor y :: Integer
       f  = y - fromInteger nI
       b  = exp2Frac f
-      nC :: ExpS
+      nC :: Exponent
       nC = clampExp (fromInteger nI)
   in scalePow2F nC b
 
@@ -160,5 +160,5 @@ expF' x =
       nI = floor y :: Integer
       f  = y - fromInteger nI
       b  = exp2Frac f
-      nC :: ExpS = clampExp (fromInteger nI)
+      nC :: Exponent = clampExp (fromInteger nI)
   in scalePow2F nC b

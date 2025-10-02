@@ -14,7 +14,7 @@ module Model.Config (
 ) where
 
 import Clash.Prelude
-import qualified GHC.TypeNats
+import qualified GHC.TypeNats as TN
 
 {- 
 -- model config 260K
@@ -110,8 +110,8 @@ type SequenceLength = 4096
 -- Bank and Cache Geometry
 -- ============================================================================
 
-type BankDepth   = SequenceLength GHC.TypeNats.* HeadDimension
+type BankDepth   = SequenceLength TN.* HeadDimension
 type BankAddress = Index BankDepth
 
 -- Global KV-cache geometry (all layers × KV heads × seq × headDim)
-type CacheDepth   = NumLayers GHC.TypeNats.* NumKeyValueHeads GHC.TypeNats.* SequenceLength GHC.TypeNats.* HeadDimension
+type CacheDepth   = NumLayers TN.* NumKeyValueHeads TN.* SequenceLength TN.* HeadDimension

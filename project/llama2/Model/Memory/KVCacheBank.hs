@@ -1,5 +1,5 @@
 module Model.Memory.KVCacheBank (
-    KvBank(..)
+    KVBank(..)
   , KVRamOwner(..)
   , makeRamOwnerKV
   , writeSequencer
@@ -13,22 +13,23 @@ import Model.Config
   ( BankDepth, BankAddress
   , NumKeyValueHeads, HeadDimension, SequenceLength )
 import qualified Model.Memory.RamOps as RamOps (toRamOperation)
-import qualified Model.Memory.Addressing as Addressing
-import Model.Numeric.Types (Act, ExpS, FixedPoint)
+import Model.Numeric.Types (Activation, Exponent, FixedPoint, Mantissa)
 import Model.Numeric.Fixed
     ( quantizeI8E, quantizeI8E, quantizeI8E_ceilSafe )
 import Data.Maybe (fromMaybe)
 
 import Model.Config.Quant (quantModeKV, QuantMode(..))
+import qualified Model.Memory.Addressing as Addressing (computeBankAddress)
+import qualified GHC.TypeNats as TN
 
 -- A KV bank holds 4 RAMs:
 --  - Mantissa BRAMs for K and V (depth = BankDepth = SeqLen * HeadDim)
 --  - Exponent  BRAMs for K and V (depth = SequenceLength)
-data KvBank dom = KvBank
-  { runKeyMantBank   :: TrueDualPortRunner dom BankDepth Act
-  , runKeyExpBank    :: TrueDualPortRunner dom SequenceLength ExpS
-  , runValueMantBank :: TrueDualPortRunner dom BankDepth Act
-  , runValueExpBank  :: TrueDualPortRunner dom SequenceLength ExpS
+data KVBank dom = KVBank
+  { runKeyMantBank   :: TrueDualPortRunner dom BankDepth Activation
+  , runKeyExpBank    :: TrueDualPortRunner dom SequenceLength Exponent
+  , runValueMantBank :: TrueDualPortRunner dom BankDepth Activation
+  , runValueExpBank  :: TrueDualPortRunner dom SequenceLength Exponent
   }
 
 -- True dual-port runner over arbitrary (n, a)
@@ -39,8 +40,8 @@ mkTrueDualPortRunner (addressA, writeA) (addressB, writeB) =
   trueDualPortBlockRam (RamOps.toRamOperation addressA writeA)
                        (RamOps.toRamOperation addressB writeB)
 
-makeBankKV :: HiddenClockResetEnable dom => KvBank dom
-makeBankKV = KvBank
+makeBankKV :: HiddenClockResetEnable dom => KVBank dom
+makeBankKV = KVBank
   { runKeyMantBank   = mkTrueDualPortRunner
   , runKeyExpBank    = mkTrueDualPortRunner
   , runValueMantBank = mkTrueDualPortRunner
@@ -48,37 +49,44 @@ makeBankKV = KvBank
   }
 
 newtype KVRamOwner dom = KVRamOwner
-  { kvBanks :: Vec NumKeyValueHeads (KvBank dom)
+  { kvBanks :: Vec NumKeyValueHeads (KVBank dom)
   }
 
 makeRamOwnerKV :: HiddenClockResetEnable dom => KVRamOwner dom
 makeRamOwnerKV = KVRamOwner { kvBanks = map (const makeBankKV) indicesI }
 
-writeSequencer
-  :: HiddenClockResetEnable dom
+writeSequencer :: forall dom .
+  HiddenClockResetEnable dom
   => Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
   -> ( Signal dom BankAddress
-     , Signal dom (Maybe (BankAddress, Act))
-     , Signal dom (Maybe (Index SequenceLength, ExpS))
-     , Signal dom (Maybe (BankAddress, Act))
-     , Signal dom (Maybe (Index SequenceLength, ExpS))
+     , Signal dom (Maybe (BankAddress, Activation))
+     , Signal dom (Maybe (Index SequenceLength, Exponent))
+     , Signal dom (Maybe (BankAddress, Activation))
+     , Signal dom (Maybe (Index SequenceLength, Exponent))
      , Signal dom Bool)
 writeSequencer enSig seqPosSig kvFixedSig =
   (bankAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, doneSig)
  where
-
-  dimCnt     = register (0 :: Index HeadDimension) nextDimCnt
+  dimCnt :: Signal dom (Index HeadDimension)
+  dimCnt     = register 0 nextDimCnt
+  atLastDim :: Signal dom Bool
   atLastDim  = (== maxBound) <$> dimCnt
-  atFirstDim = (== (0 :: Index HeadDimension)) <$> dimCnt
+  atFirstDim :: Signal dom Bool
+  atFirstDim = (== 0) <$> dimCnt
+  nextDimCnt :: Signal dom (Index HeadDimension)
   nextDimCnt = mux enSig (fmap (\d -> if d == maxBound then 0 else succ d) dimCnt) (pure 0)
+  doneSig :: Signal dom Bool
   doneSig    = (&&) <$> enSig <*> atLastDim
 
+  kF :: Signal dom (Vec HeadDimension FixedPoint)
   kF = fst <$> kvFixedSig
+
+  vF :: Signal dom (Vec HeadDimension FixedPoint)
   vF = snd <$> kvFixedSig
 
-  qRow :: Vec HeadDimension FixedPoint -> (Vec HeadDimension Act, ExpS)
+  qRow :: Vec HeadDimension FixedPoint -> (Vec HeadDimension Activation, Exponent)
   qRow xs = case quantModeKV of
               QuantNearest  -> quantizeI8E xs
               QuantCeilSafe -> quantizeI8E_ceilSafe xs
@@ -96,20 +104,30 @@ writeSequencer enSig seqPosSig kvFixedSig =
            in  (st', st'))
         Nothing
         (bundle (enSig, atFirstDim, vRowSig))
-
+  
+  mantAt :: Signal dom (Maybe (Vec HeadDimension Activation, Exponent)) -> Signal dom Activation
   mantAt qSig = ((\(mVec, _) d -> mVec !! d) . fromMaybe (repeat 0, 0) <$> qSig) <*> dimCnt
+
+  kMantAt :: Signal dom Activation
   kMantAt = mantAt quantK
+
+  vMantAt :: Signal dom Activation
   vMantAt = mantAt quantV
 
+  bankAddrSig :: Signal dom (Index (SequenceLength TN.* HeadDimension))
   bankAddrSig = Addressing.computeBankAddress <$> seqPosSig <*> dimCnt
 
+  kMantWr :: Signal dom (Maybe (Index (SequenceLength TN.* HeadDimension), Mantissa))
   kMantWr = mux enSig (Just <$> bundle (bankAddrSig, kMantAt)) (pure Nothing)
   vMantWr = mux enSig (Just <$> bundle (bankAddrSig, vMantAt)) (pure Nothing)
 
+  kExpWr :: Signal dom (Maybe (Index SequenceLength, Exponent))
   kExpWr =
     mux ((&&) <$> enSig <*> atFirstDim)
         (Just <$> bundle (seqPosSig, snd . fromMaybe (repeat 0, 0) <$> quantK))
         (pure Nothing)
+
+  vExpWr :: Signal dom (Maybe (Index SequenceLength, Exponent))
   vExpWr =
     mux ((&&) <$> enSig <*> atFirstDim)
         (Just <$> bundle (seqPosSig, snd . fromMaybe (repeat 0, 0) <$> quantV))

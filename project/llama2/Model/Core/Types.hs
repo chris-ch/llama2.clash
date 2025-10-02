@@ -16,7 +16,6 @@ where
 
 import Clash.Prelude
 import GHC.Stack (HasCallStack)
-import qualified GHC.TypeNats
 import Model.Config
   ( BankAddress,
     BankDepth,

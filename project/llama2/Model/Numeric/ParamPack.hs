@@ -9,12 +9,12 @@ module Model.Numeric.ParamPack
 import Clash.Prelude
 import GHC.Generics (Generic)
 import Model.Core.Types (CArray2D(..))
-import Model.Numeric.Types (FixedPoint, Act, ExpS, scalePow2F)
+import Model.Numeric.Types (FixedPoint, Activation, Exponent, scalePow2F)
 import Model.Numeric.Fixed (quantizeI8E)
 import qualified GHC.Stack as GHC.Stack.Types
 
 -- One row of parameters as (int8 mantissas, shared exponent).
-type RowI8E n = (Vec n Act, ExpS)
+type RowI8E n = (Vec n Activation, Exponent)
 
 -- Matrix of rows.
 type MatI8E rows cols = Vec rows (RowI8E cols)

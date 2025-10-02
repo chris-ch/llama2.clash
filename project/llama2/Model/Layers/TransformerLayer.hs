@@ -24,7 +24,7 @@ import Model.Layers.Components.Quantized
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
 import Model.Helpers.MatVecI8E (matrixVectorMult)
-import Model.Numeric.Types (ExpS, FixedPoint)
+import Model.Numeric.Types (Exponent, FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
 import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
@@ -102,7 +102,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingState layerData
 
   perHeadProjected :: Signal dom (Vec NumQueryHeads (Vec ModelDimension FixedPoint))
   perHeadProjected = sequenceA perHeadProjectedSignalsVec
-  
+
   woHeads :: Signal dom (Vec ModelDimension FixedPoint)
   woHeads    = foldl1 (zipWith (+)) <$> perHeadProjected
 
@@ -188,7 +188,9 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
-fillOneBank :: HiddenClockResetEnable dom
+fillOneBank ::
+  forall dom .
+  HiddenClockResetEnable dom
   => Index NumLayers
   -> Signal dom ProcessingState
   -> Cache.KVRamOwner dom
@@ -203,89 +205,81 @@ fillOneBank :: HiddenClockResetEnable dom
 fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
     -- Stage predicates for this layer
+    stageEquals :: CycleStage -> Signal dom Bool
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
              psSig (pure ())
+    
+    isStage3Attention :: Signal dom Bool
     isStage3Attention = stageEquals Stage3_Attend
+
+    isStage2Write :: Signal dom Bool
     isStage2Write     = stageEquals Stage2_WriteKV
 
     -- Stage3 entry pulse
+    attnPrev :: Signal dom Bool
     attnPrev = register False isStage3Attention
+
+    clearS3 :: Signal dom Bool
     clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
 
+    seqPosSignal :: Signal dom (Index SequenceLength)
     seqPosSignal = sequencePosition <$> psSig
-    bank         = Cache.kvBanks kvOwner !! kvIx
 
     -- Query head mapping
     qIdx0 = queryHeadIndex0 kvIx
     hasQ1 = hasSecondQueryHead kvIx
     qIdx1 = queryHeadIndex1 kvIx
 
+    query0 :: Signal dom (Vec HeadDimension FixedPoint)
     query0 = getQueryVector idSig qIdx0
+
+    query1 :: Signal dom (Vec HeadDimension FixedPoint)
     query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
 
+    keyVec :: Signal dom (Vec HeadDimension FixedPoint)
     keyVec   = getKeyVector   idSig kvIx      -- FixedPoint vector (one row)
+
+    valueVec :: Signal dom (Vec HeadDimension FixedPoint)
     valueVec = getValueVector idSig kvIx
 
     -- ========== Stage2: writes ==========
     -- Quantized write to the I8E KV bank
-    (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) =
-      Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
+    (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) = Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
     wrAddrS = mux isStage2Write writeAddrSig (pure 0)
     kMantWr = mux isStage2Write kMantWrRaw (pure Nothing)
     vMantWr = mux isStage2Write vMantWrRaw (pure Nothing)
     kExpWr  = mux isStage2Write kExpWrRaw  (pure Nothing)
     vExpWr  = mux isStage2Write vExpWrRaw  (pure Nothing)
 
-    -- Unquantized row BRAMs (FixedPoint) used only for progressive replacement:
-    -- Two true-dual-port BRAMs with (depth = SequenceLength, payload = Vec HeadDimension FixedPoint)
-    -- Port A: Stage3 reads; Port B: Stage2 writes current row at (seqPos)
-    -- Address/Write streams for BRAM-F
-    rdRowAddrA =
-      -- t counter + one-step scheduler that generates exactly one step per row (0..pos)
-      let (tNow, stepNow, lastNow) =
-            unbundle $
-              mealy
-                (\(t, done) (cl, en, pos) ->
-                  let
-                    tStep = if cl then 0 else t
-                    step  = en && not done
-                    last  = step && tStep == pos
-                    t'    = (if not step || last then tStep else succ tStep)
-                    done' = (not cl && (done || last))
-                  in ((t', done'), (tStep, step, last)))
-                (0 :: Index SequenceLength, False)
-                (bundle (clearS3, isStage3Attention, seqPosSignal))
-
-          -- BRAM is synchronous: read at tNow, row appears next cycle
-          stepEnRow = register False stepNow
-          lastTRow  = register False lastNow
-      in (tNow, stepEnRow, lastTRow)
-
-    (tAddrRow, stepEnRow, lastTRow) = rdRowAddrA
+    (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3Attention seqPosSignal
 
     -- Build operations for the two row BRAMs
-    wrKVRowF_K =
+    wrKVRowK :: Signal dom (Maybe (Index SequenceLength, Vec HeadDimension FixedPoint))
+    wrKVRowK =
       mux isStage2Write
           (Just <$> bundle (seqPosSignal, keyVec))
           (pure Nothing)
-    wrKVRowF_V =
+
+    wrKVRowV :: Signal dom (Maybe (Index SequenceLength, Vec HeadDimension FixedPoint))
+    wrKVRowV =
       mux isStage2Write
           (Just <$> bundle (seqPosSignal, valueVec))
           (pure Nothing)
 
     -- Instantiate the two BRAMs
-    (kRowF_A, _kRowF_B) =
+    (kRowA, _kRowB) =
       trueDualPortBlockRam
         (toRamOperation tAddrRow (pure Nothing))
-        (toRamOperation seqPosSignal wrKVRowF_K)
+        (toRamOperation seqPosSignal wrKVRowK)
 
-    (vRowF_A, _vRowF_B) =
+    (vRowA, _vRowB) =
       trueDualPortBlockRam
         (toRamOperation tAddrRow (pure Nothing))
-        (toRamOperation seqPosSignal wrKVRowF_V)
+        (toRamOperation seqPosSignal wrKVRowV)
 
     -- ========== BASELINE: combinational attend over register mirror ==========
+    kvKeysAll :: Signal dom (Vec SequenceLength (Vec HeadDimension FixedPoint))
     kvKeysAll = mealy
       (\mem (we, p, rowK) ->
          let mem' = if we then replace p rowK mem else mem
@@ -293,6 +287,7 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, keyVec))
 
+    kvValsAll :: Signal dom (Vec SequenceLength (Vec HeadDimension FixedPoint))
     kvValsAll = mealy
       (\mem (we, p, rowV) ->
          let mem' = if we then replace p rowV mem else mem
@@ -308,6 +303,9 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
     doneBaseline = clearS3
 
     -- ========== STREAMED (quantized BRAM, I8E -> F) for shadow/compare ==========
+    bank :: Cache.KVBank dom
+    bank = Cache.kvBanks kvOwner !! kvIx
+
     (kRowQ, vRowQ, rowValidQ, lastTQ) =
       kvRowStreamer bank clearS3 isStage3Attention seqPosSignal
                     wrAddrS kMantWr kExpWr vMantWr vExpWr
@@ -318,10 +316,10 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
         else (pure (repeat 0), pure False)
 
     -- ========== STREAMED (unquantized BRAM rows, FixedPoint) for progressive replacement ==========
-    (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowF_A vRowF_A lastTRow
+    (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowA vRowA lastTRow
     (out1_seqF, done1_seqF) =
       if hasQ1
-        then attendHeadSeq clearS3 stepEnRow query1 kRowF_A vRowF_A lastTRow
+        then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
         else (pure (repeat 0), pure False)
 
     -- Selection
@@ -340,11 +338,13 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
     diffTooBig = liftA2
         (\a b -> maxAbs (zipWith (-) a b) > attnEps)
 
-    kRowErr  = diffTooBig kRowQ kRowF_A
-    vRowErr  = diffTooBig vRowQ vRowF_A
+    kRowErr  = diffTooBig kRowQ kRowA
+    vRowErr  = diffTooBig vRowQ vRowA
+
     -- Latch last errors at lastTQ (end of stream)
     lastKRowErr = regEn (False :: Bool) lastTQ kRowErr
     lastVRowErr = regEn (False :: Bool) lastTQ vRowErr
+
     !_probeK = lastKRowErr
     !_probeV = lastVRowErr
 
@@ -356,18 +356,64 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
 
     -- Accumulate into return vectors
     headOutAcc0  = replace qIdx0 out0_sel headOutAcc
-    headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
+
+    headOutAcc1 :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
     headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
+
+    headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
+
+    headDoneAcc1 :: Vec NumQueryHeads (Signal dom Bool)
     headDoneAcc1 = if hasQ1 then replace qIdx1 done1_sel headDoneAcc0 else headDoneAcc0
 
+    writeDoneAcc1 :: Vec NumKeyValueHeads (Signal dom Bool)
     writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
 
-chooseWrite
-  :: Maybe (Index SequenceLength, ExpS)
-  -> Maybe (Index SequenceLength, ExpS)
-  -> Maybe (Index SequenceLength, ExpS)
-chooseWrite kExp vExp = case kExp of
-  Just _  -> kExp
-  Nothing -> vExp
+-- | Generate row read addresses and step/last signals for progressive replacement
+-- Unquantized row BRAMs (FixedPoint) used only for progressive replacement:
+-- Two true-dual-port BRAMs with (depth = SequenceLength, payload = Vec HeadDimension FixedPoint)
+-- Port A: Stage3 reads; Port B: Stage2 writes current row at (seqPos)
+-- Address/Write streams for BRAM-F
+-- | Generate row read addresses and step/last signals for progressive replacement
+attentionRowSequencer ::
+  forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool                  -- ^ clearS3 (stage 3 entry pulse)
+  -> Signal dom Bool                  -- ^ isStage3Attention
+  -> Signal dom (Index SequenceLength) -- ^ seqPosSignal
+  -> ( Signal dom (Index SequenceLength)  -- tAddrRow
+     , Signal dom Bool                   -- stepEnRow
+     , Signal dom Bool )                 -- lastTRow
+attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
+  let
+    -- === Step 1: manage row counter ===
+    -- Reset to 0 on Stage3 entry
+    rowCounter :: Signal dom (Index SequenceLength)
+    rowCounter = mealy rowCounterT 0 (bundle (clearS3, isStage3Attention, seqPosSignal))
+
+    rowCounterT :: Index SequenceLength -> (Bool, Bool, Index SequenceLength)
+                -> (Index SequenceLength, Index SequenceLength)
+    rowCounterT t (clearPulse, stageActive, pos) =
+      let
+        tStart = if clearPulse then 0 else t
+        step   = stageActive
+        last   = step && tStart == pos
+        tNext  = if not step || last then tStart else succ tStart
+      in (tNext, tStart)
+
+    -- === Step 2: detect step enable ===
+    stepNow :: Signal dom Bool
+    stepNow = liftA2 const isStage3Attention rowCounter
+
+    stepEnRow :: Signal dom Bool
+    stepEnRow = register False stepNow
+
+    -- === Step 3: detect last row ===
+    lastNow :: Signal dom Bool
+    lastNow = liftA2 (==) rowCounter seqPosSignal
+
+    lastTRow :: Signal dom Bool
+    lastTRow = register False lastNow
+
+  in (rowCounter, stepEnRow, lastTRow)

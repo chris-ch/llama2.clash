@@ -5,22 +5,22 @@ module Model.Memory.KVCacheBank.RowStreamer
 
 import Clash.Prelude
 import Model.Config (SequenceLength, HeadDimension, BankDepth)
-import Model.Memory.KVCacheBank (KvBank(..))
+import Model.Memory.KVCacheBank (KVBank(..))
 import Model.Memory.KVCacheBank.Ports (mapKVPorts)
 import qualified Model.Memory.Addressing as Addressing
-import Model.Numeric.Types (FixedPoint, Act, ExpS)
+import Model.Numeric.Types (FixedPoint, Activation, Exponent)
 
 kvRowStreamer
   :: HiddenClockResetEnable dom
-  => KvBank dom
+  => KVBank dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Index BankDepth)
-  -> Signal dom (Maybe (Index BankDepth, Act))
-  -> Signal dom (Maybe (Index SequenceLength, ExpS))
-  -> Signal dom (Maybe (Index BankDepth, Act))
-  -> Signal dom (Maybe (Index SequenceLength, ExpS))
+  -> Signal dom (Maybe (Index BankDepth, Activation))
+  -> Signal dom (Maybe (Index SequenceLength, Exponent))
+  -> Signal dom (Maybe (Index BankDepth, Activation))
+  -> Signal dom (Maybe (Index SequenceLength, Exponent))
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool

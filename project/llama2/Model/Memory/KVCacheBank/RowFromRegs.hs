@@ -6,8 +6,8 @@ import Model.Config (SequenceLength, HeadDimension)
 import Model.Numeric.Types (FixedPoint)
 
 -- Walk head-dimension to produce a rowValid pulse at the end of each row.
-dimCnt
-  :: HiddenClockResetEnable dom
+dimCnt :: forall dom .
+  HiddenClockResetEnable dom
   =>  Signal dom Bool -> Signal dom (Index HeadDimension)
 dimCnt enS3 = regEn 0 enS3 $
             mux (dimCnt enS3 .==. pure maxBound) (pure 0) (succ <$> dimCnt enS3)

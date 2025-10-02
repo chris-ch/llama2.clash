@@ -13,26 +13,26 @@ Scope
 
 ## Numeric formats
  - Scalar fixed-point for “real” math: F = SFixed 12 20 (signed; 12 integer, 20 fractional).
- - Quantized 8-bit with power-of-two (PoT) scaling: value ≈ mantissa(Act/Wgt :: Signed 8) × 2^ExpS, ExpS :: Signed 7 (clamped to [-64, 63]).
+ - Quantized 8-bit with power-of-two (PoT) scaling: value ≈ mantissa(Act/Wgt :: Signed 8) × 2^Exponent, Exponent :: Signed 7 (clamped to [-64, 63]).
  - Accumulator for dot/MAC: Acc = Signed 32 with explicit saturating rounding when narrowing.
 
 ## MAC mapping
  - INT8 × INT16 → INT32 (promote one operand to 16 b), accumulate in 32 b, fuse PoT scales via shifts only.
 
 ## Scaling policy (PoT everywhere)
- - Weights: per-row static PoT exponent (one ExpS per weight row).
- - Activations: per-vector, per-timestep dynamic PoT exponent (one ExpS per produced activation vector).
+ - Weights: per-row static PoT exponent (one Exponent per weight row).
+ - Activations: per-vector, per-timestep dynamic PoT exponent (one Exponent per produced activation vector).
  - Scale fusion via shifts at layer boundaries; no general multiplies for scaling.
 
 ## Attention and KV cache
- - Store K/V rows in BRAM as (Vec HeadDim Signed 8, ExpS).
+ - Store K/V rows in BRAM as (Vec HeadDim Signed 8, Exponent).
  - Stage2 writes directly in quantized form; no float mirrors.
  - Stage3 uses streaming/sequential attention over BRAM (OnlineSoftmax), not a full-window register file; scales reconstruct with shifts.
 
 ## Math primitives (fixed-point)
  - exp(x): exp2 decomposition with 256-entry LUT for fractional part f in [0,1); result = 2^n × LUT[f]. Optional linear interpolation to reduce error.
  - Softmax: online, numerically stable variant in F using expF above.
- - RMSNorm: fixed-point mean-square, invsqrt via small LUT seed + one Newton–Raphson iteration; output renormalized in F and re-quantized to Act + ExpS.
+ - RMSNorm: fixed-point mean-square, invsqrt via small LUT seed + one Newton–Raphson iteration; output renormalized in F and re-quantized to Act + Exponent.
  - RoPE: sine/cosine tables in F; all ops in fixed-point.
 
 ## Accuracy target
@@ -218,7 +218,7 @@ import Model.Layers.Components.Quantized
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
 import Model.Helpers.MatVecI8E (matrixVectorMult)
-import Model.Numeric.Types (ExpS, FixedPoint)
+import Model.Numeric.Types (Exponent, FixedPoint)
 import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
 import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
