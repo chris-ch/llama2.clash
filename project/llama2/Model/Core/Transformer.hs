@@ -7,7 +7,7 @@ import Model.Core.Transformer.Internal
 
 import Helpers (liftA4)
 import Model.Core.Types
-  ( IntermediateData(..)
+  ( LayerData(..)
   , ProcessingState (..)
   , CycleStage (..)
   , Temperature, Seed
@@ -22,13 +22,17 @@ import qualified Model.Layers.TransformerLayer as TransformerLayer
   , TransformerDecoderComponent(..)
   , multiCycleTransformerLayer
   )
-import Model.Layers.TransformerLayer (TransformerDecoderComponent(..))
+import Model.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent)
 import Data.Maybe (isJust)
 import qualified Model.Embedding.PRNG as PRNG
 import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
   )
+import qualified Model.Core.Embedding as Embedding
+import qualified Model.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
+import Model.Numeric.ParamPack (QArray2D)
+import Model.Numeric.Types (FixedPoint)
 
 multiCycleTransformer :: forall dom
    . HiddenClockResetEnable dom
@@ -39,74 +43,88 @@ multiCycleTransformer :: forall dom
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Signal dom Token , Signal dom Bool )
-multiCycleTransformer decoder cacheOwners inputTokenSignal inputTokenValid temperatureSignal seedSignal =
-  ( selectedTokenSignal, PipelineController.readyPulse ctrl)
+multiCycleTransformer decoder cacheOwners inputToken inputTokenValid temperature seed =
+  ( selectedToken, readyPulse)
  where
-  embeddingComponent = modelEmbedding decoder
+  vocabulary :: QArray2D VocabularySize ModelDimension
+  vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
+  
+  transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
+  
+  pipelineController :: PipelineController.PipelineOutputs dom
+  pipelineController = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
 
-  writeDoneThisLayer = (!!) <$> sequenceA writeDoneVector <*> PipelineController.layerIndex ctrl
-  attnDoneThisLayer  = (!!) <$> sequenceA attnDoneVector  <*> PipelineController.layerIndex ctrl
+  layerIndex :: Signal dom (Index NumLayers)
+  layerIndex = PipelineController.layerIndex pipelineController
 
-  ctrl = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
+  readyPulse :: Signal dom Bool
+  readyPulse = PipelineController.readyPulse pipelineController
 
-  feedbackTokenSignal :: Signal dom Token
-  feedbackTokenSignal =
-    outputTokenSignal (PipelineController.readyPulse ctrl)
-                      temperatureSignal
-                      seedSignal
-                      decoder
-                      nextIntermediateDataSignal
+  processingState :: Signal dom ProcessingState
+  processingState = PipelineController.processingState pipelineController
 
-  selectedTokenSignal :: Signal dom Token
-  selectedTokenSignal =
-    mux inputTokenValid inputTokenSignal feedbackTokenSignal
+  tokenSample :: Signal dom Token
+  tokenSample = PRNG.tokenSampler readyPulse temperature seed decoder nextLayerData
+
+  feedbackToken :: Signal dom Token
+  feedbackToken = regEn 0 readyPulse tokenSample
+
+  selectedToken :: Signal dom Token
+  selectedToken = mux inputTokenValid inputToken feedbackToken
 
   -- Quantized embedding lookup
-  tokenEmbeddingSignal = embedFromComponent embeddingComponent <$> selectedTokenSignal
+  tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
+  tokenEmbedding = Embedding.embedder vocabulary <$> selectedToken
 
-  intermediateDataSignal = register initialIntermediateData nextIntermediateDataSignal
+  layerDataRegister :: Signal dom LayerData
+  layerDataRegister = register initialLayerData nextLayerData
 
-  inputLoadedSignal :: Signal dom IntermediateData
-  inputLoadedSignal =
-    liftA3
-      (\ps current tokenEmbedding ->
-         if processingStage ps == Stage1_ProjectQKV
+  layerInputSelector :: ProcessingState -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
+  layerInputSelector ps currentLayerData tokenEmbedding = if processingStage ps == Stage1_ProjectQKV
            then if processingLayer ps == 0
-                  then current { inputVector = tokenEmbedding }
-                  else current { inputVector = feedForwardOutput current }
-           else current)
-      (PipelineController.processingState ctrl) intermediateDataSignal tokenEmbeddingSignal
+                  then currentLayerData { inputVector = tokenEmbedding }
+                  else currentLayerData { inputVector = feedForwardOutput currentLayerData }
+           else currentLayerData
 
-  layerStep :: ( Signal dom IntermediateData
+  selectedInput :: Signal dom LayerData
+  selectedInput = liftA3 layerInputSelector processingState layerDataRegister tokenEmbedding
+
+  transformerLayerProcessor :: ( Signal dom LayerData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
         )
     -> (TransformerLayer.TransformerLayerComponent, Cache.KVRamOwner dom, Index NumLayers)
-    -> ( Signal dom IntermediateData
+    -> ( Signal dom LayerData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
        )
-  layerStep (currData, wDoneVec, attnDoneVec)
-            (layerComp, cacheOwner, lIx) =
+  transformerLayerProcessor (currentLayerData, wDoneVec, attnDoneVec)
+            (layerComp, cacheOwner, layerIndex) =
     let
-      (newData, wDone, attnDone, commitC3) =
-          TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner lIx (PipelineController.processingState ctrl) currData
-      selectedData =
-          liftA4
-            (\ps oldD newD c3D ->
-               if processingLayer ps == lIx
-                  then if processingStage ps == Stage3_Attend
+      (newLayerData, wDone, attnDone, commitC3) =
+          TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner layerIndex processingState currentLayerData
+      layerDataSelector :: ProcessingState -> LayerData -> LayerData -> LayerData -> LayerData
+      layerDataSelector state currentData newD c3D = 
+               if processingLayer state == layerIndex
+                  then if processingStage state == Stage3_Attend
                          then c3D
                          else newD
-                  else oldD)
-            (PipelineController.processingState ctrl) currData newData commitC3
-    in  ( selectedData
-        , replace lIx wDone    wDoneVec
-        , replace lIx attnDone attnDoneVec
+                  else currentData
+      selectedLayerData :: Signal dom LayerData
+      selectedLayerData = liftA4 layerDataSelector processingState currentLayerData newLayerData commitC3
+    in  ( selectedLayerData
+        , replace layerIndex wDone    wDoneVec
+        , replace layerIndex attnDone attnDoneVec
         )
 
-  ( nextIntermediateDataSignal , writeDoneVector , attnDoneVector ) =
+  ( nextLayerData, writeDone , attnDone ) =
       foldl
-        layerStep (inputLoadedSignal , repeat (pure False) , repeat (pure False))
+        transformerLayerProcessor (selectedInput , repeat (pure False) , repeat (pure False))
         (zip3 transformerLayers cacheOwners indicesI)
+
+  writeDoneThisLayer :: Signal dom Bool
+  writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex
+
+  attnDoneThisLayer :: Signal dom Bool
+  attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> layerIndex

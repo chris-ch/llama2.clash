@@ -6,7 +6,7 @@ module Model.Layers.TransformerLayer (
 
 import Clash.Prelude
 import Model.Core.Types
-  ( ProcessingState(..), IntermediateData(..), CycleStage(..)
+  ( ProcessingState(..), LayerData(..), CycleStage(..)
   )
 import Model.Config
   ( ModelDimension
@@ -49,14 +49,14 @@ multiCycleTransformerLayer
   -> Cache.KVRamOwner dom
   -> Index NumLayers
   -> Signal dom ProcessingState
-  -> Signal dom IntermediateData
-  -> ( Signal dom IntermediateData
+  -> Signal dom LayerData
+  -> ( Signal dom LayerData
      , Signal dom Bool
      , Signal dom Bool
-     , Signal dom IntermediateData
+     , Signal dom LayerData
   )
-multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal intermediateDataSignal =
-  ( nextIntermediateDataSignal
+multiCycleTransformerLayer layer kvRamOwner layerIndex processingState intermediateData =
+  ( nextLayerDataSignal
   , writeDoneThisLayerSignal
   , attentionDoneThisLayerSignal
   , commitCycle3Signal
@@ -70,7 +70,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
         initHeadDone    = repeat (pure False)
         initWriteDone   = repeat (pure False)
     in  foldl
-          (fillOneBank layerIndex processingStateSignal kvRamOwner intermediateDataSignal)
+          (fillOneBank layerIndex processingState kvRamOwner intermediateData)
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
@@ -79,8 +79,8 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
   attentionDoneThisLayerSignal =
     liftA2 (\now prev -> now && not prev) allHeadsDoneSignal allHeadsDonePrevSignal
 
-  baseNextIntermediateDataSignal =
-    liftA2 (processStage mhaQ ffnQ layerIndex) processingStateSignal intermediateDataSignal
+  baseNextLayerDataSignal =
+    liftA2 (processStage mhaQ ffnQ layerIndex) processingState intermediateData
 
   writeDoneThisLayerSignal =
     let allBanksDoneSignal = fmap and (sequenceA perBankWriteDoneVec)
@@ -88,7 +88,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
            processingStage ps == Stage2_WriteKV
         && processingLayer ps == layerIndex
         && banksDone)
-        <$> processingStateSignal <*> allBanksDoneSignal
+        <$> processingState <*> allBanksDoneSignal
 
   -- Per-head WO projection now uses quantized WO blocks (I8E) -> FixedPoint
   perHeadProjectedSignalsVec =
@@ -102,10 +102,10 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
         (\idata woHeads ->
           let xInput = inputVector idata
           in zipWith (+) xInput woHeads)
-        intermediateDataSignal
+        intermediateData
         woHeadsSignal
 
-  nextIntermediateDataSignal =
+  nextLayerDataSignal =
     liftA4
       (\ps cur attOut done ->
          if processingLayer ps == layerIndex
@@ -113,7 +113,7 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
             && done
            then cur { attentionOutput = attOut }
            else cur)
-      processingStateSignal baseNextIntermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
+      processingState baseNextLayerDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
 
   commitCycle3Signal =
     liftA4
@@ -123,15 +123,15 @@ multiCycleTransformerLayer layer kvRamOwner layerIndex processingStateSignal int
             && done
            then cur { attentionOutput = attOut }
            else cur)
-      processingStateSignal intermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
+      processingState intermediateData xAfterAttnSignal attentionDoneThisLayerSignal
 
 processStage
   :: MultiHeadAttentionComponentQ
   -> FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
-  -> IntermediateData
-  -> IntermediateData
+  -> LayerData
+  -> LayerData
 processStage mhaQ ffnQ layerIndex ps idata
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
@@ -170,20 +170,20 @@ queryHeadIndex1 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex1 kvIx =
   if hasSecondQueryHead kvIx then toEnum (baseQueryIndex kvIx + 1) else queryHeadIndex0 kvIx
 
-getQueryVector :: Signal dom IntermediateData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
+getQueryVector :: Signal dom LayerData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getQueryVector idSig qIx = (\i -> queryVectors i !! qIx) <$> idSig
 
-getKeyVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
+getKeyVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 
-getValueVector :: Signal dom IntermediateData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
+getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
 fillOneBank :: HiddenClockResetEnable dom
   => Index NumLayers
   -> Signal dom ProcessingState
   -> Cache.KVRamOwner dom
-  -> Signal dom IntermediateData
+  -> Signal dom LayerData
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )

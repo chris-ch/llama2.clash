@@ -2,7 +2,7 @@ module Model.Core.Types
   ( -- State machine
     CycleStage (..),
     ProcessingState (..),
-    IntermediateData (..),
+    LayerData (..),
     TrueDualPortRunner,
     Token,
     Temperature,
@@ -82,7 +82,7 @@ data ProcessingState = ProcessingState
 
 -- Per-layer intermediate data vectors carried through the pipeline.
 -- Updated selectively depending on cycle stage.
-data IntermediateData = IntermediateData
+data LayerData = LayerData
   { inputVector :: Vec ModelDimension FixedPoint,
     queryVectors :: Vec NumQueryHeads (Vec HeadDimension FixedPoint),
     keyVectors :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint),

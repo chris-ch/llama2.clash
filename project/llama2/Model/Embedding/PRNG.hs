@@ -1,11 +1,11 @@
 module Model.Embedding.PRNG (
-    sampledTokenSignal
+    tokenSampler
 ) where
 
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Model.Core.Types
-  ( Temperature, IntermediateData (..), Token)
+  ( Temperature, LayerData (..), Token)
 import Model.Config ( VocabularySize , ModelDimension )
 
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
@@ -25,44 +25,67 @@ xorshift32 s0 =
   in s3
 
 -- classifier logits in FixedPoint using quantized tied embeddings
-transformerLogitsF :: TransformerLayer.TransformerDecoderComponent
+transformerLogits :: TransformerLayer.TransformerDecoderComponent
                    -> Vec ModelDimension FixedPoint
                    -> Vec VocabularySize FixedPoint
-transformerLogitsF decoder tokenVector =
+transformerLogits decoder tokenVector =
   let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ
       tokenWithRms = rmsNormFwFix tokenVector (rmsFinalWeightF emb)
   in matrixVectorMult (vocabularyQ emb) tokenWithRms
 
-logitsSignalF :: TransformerLayer.TransformerDecoderComponent
-              -> Signal dom IntermediateData
+logitsConverter :: TransformerLayer.TransformerDecoderComponent
+              -> Signal dom LayerData
               -> Signal dom (Vec VocabularySize FixedPoint)
-logitsSignalF decoder nextIntermediateDataSignal =
-  transformerLogitsF decoder . feedForwardOutput <$> nextIntermediateDataSignal
+logitsConverter decoder nextLayerDataSignal =
+  transformerLogits decoder . feedForwardOutput <$> nextLayerDataSignal
 
--- PRNG state (unchanged API)
-firstPulseSignal :: forall dom. HiddenClockResetEnable dom
+readyPulseRegister :: forall dom. HiddenClockResetEnable dom
    => Signal dom Bool -> Signal dom Bool
-firstPulseSignal readyPulseSignal = regEn True readyPulseSignal (pure False)
+readyPulseRegister readyPulseSignal = regEn True readyPulseSignal (pure False)
 
-mixedSeedSignal :: Signal dom (Unsigned 32) -> Signal dom (Unsigned 32)
-mixedSeedSignal seedSignal = (`xor` 0x9E3779B9) <$> seedSignal
+seedMixer :: Signal dom (Unsigned 32) -> Signal dom (Unsigned 32)
+seedMixer seedSignal = (`xor` 0x9E3779B9) <$> seedSignal
 
-prngStateSignal :: forall dom. HiddenClockResetEnable dom
+pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool -> Signal dom (Unsigned 32) -> Signal dom (Unsigned 32)
-prngStateSignal readyPulseSignal seedSignal =
-  let nextVal = mux (firstPulseSignal readyPulseSignal) (xorshift32 <$> mixedSeedSignal seedSignal)
-                                      (xorshift32 <$> prngStateSignal readyPulseSignal seedSignal)
-  in regEn 2463534242 readyPulseSignal nextVal
+pseudoRandomGenerator readyPulse seedSignal =
+  let nextVal = mux (readyPulseRegister readyPulse) (xorshift32 <$> seedMixer seedSignal)
+                                      (xorshift32 <$> pseudoRandomGenerator readyPulse seedSignal)
+  in regEn 2463534242 readyPulse nextVal
 
-uniformRandom01SignalF :: forall dom. HiddenClockResetEnable dom
+uniformRandom01Generator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool -> Signal dom (Unsigned 32) -> Signal dom FixedPoint
-uniformRandom01SignalF readyPulseSignal seedSignal =
+uniformRandom01Generator readyPulse seed =
   (/ realToFrac (16777216.0 :: Double)) . fromIntegral . (`shiftR` 8)
-    <$> prngStateSignal readyPulseSignal seedSignal
+    <$> pseudoRandomGenerator readyPulse seed
+
+-- Top-level sampler in FixedPoint
+tokenSampler :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom Bool
+  -> Signal dom Temperature
+  -> Signal dom Token
+  -> TransformerLayer.TransformerDecoderComponent
+  -> Signal dom LayerData
+  -> Signal dom Token
+tokenSampler readyPulse temperature seed decoder nextLayerData =
+  liftA3
+    (\temperature logits u ->
+        if temperature <= 0 then argMax logits
+        else let probabilities = softmax temperature logits
+             in sampleFromProbs u probabilities)
+    temperature (logitsConverter decoder nextLayerData) (uniformRandom01Generator readyPulse seed)
+
+-- categorical sampling from FixedPoint probabilities
+sampleFromProbs :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32
+sampleFromProbs u probs =
+  let cdf = CV.scanl1 (+) probs
+      idxM = findIndex (>= u) cdf
+  in fromIntegral (fromEnum (fromMaybe maxBound idxM))
 
 -- Fixed softmax
-softmaxF :: forall n. KnownNat (n + 1) => FixedPoint -> Vec (n + 1) FixedPoint -> Vec (n + 1) FixedPoint
-softmaxF t xs =
+softmax :: forall n. KnownNat (n + 1) => FixedPoint -> Vec (n + 1) FixedPoint -> Vec (n + 1) FixedPoint
+softmax t xs =
   let m    = maximum xs
       exps = map (\x -> expF ((x - m) / t)) xs
       s    = sum exps
@@ -75,27 +98,3 @@ argMax vec =
                       (0, head vec)
                       (imap (\i x -> (fromIntegral i, x)) vec)
   in ix
-
--- categorical sampling from FixedPoint probabilities
-sampleFromProbsF :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32
-sampleFromProbsF u probs =
-  let cdf = CV.scanl1 (+) probs
-      idxM = findIndex (>= u) cdf
-  in fromIntegral (fromEnum (fromMaybe maxBound idxM))
-
--- Top-level sampler in FixedPoint
-sampledTokenSignal :: forall dom
-   . HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom Temperature
-  -> Signal dom Token
-  -> TransformerLayer.TransformerDecoderComponent
-  -> Signal dom IntermediateData
-  -> Signal dom Token
-sampledTokenSignal readyPulseSignal temperatureSignal seedSignal decoder nextIntermediateDataSignal =
-  liftA3
-    (\temperature logits u ->
-        if temperature <= 0 then argMax logits
-        else let probabilities = softmaxF temperature logits
-             in sampleFromProbsF u probabilities)
-    temperatureSignal (logitsSignalF decoder nextIntermediateDataSignal) (uniformRandom01SignalF readyPulseSignal seedSignal)

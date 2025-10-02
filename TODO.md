@@ -170,9 +170,16 @@ F) Per‑layer controller skeleton (for prefill wavefront): Model.Core.LayerCont
 # GPT-5 Notes
 
 Reasoning, assumptions, and approach
-- Your current loop uses Clash’s pure simulator (simulate) around Top.topEntity. That makes internal nets invisible unless you explicitly surface them as ports.
-- Easiest path (no switch of simulator): add a “debug” top that exposes per-layer lastKRowErr/lastVRowErr (already computed inside the attention layer) and print them from Haskell as you simulate. This requires adding a debug variant of the layer and transformer that OR-reduces the per‑KV‑bank row-error flags to one Bool per layer. You keep Top.topEntity unchanged for synthesis; use TopDebug.topEntityDebug only for bring‑up.
-- Alternative path (more visibility, zero code changes): generate HDL and use a waveform simulator (Verilator+GTKWave, Questa, GHDL). This is excellent once you want to inspect many signals and precise cycle alignment. But it’s a bigger tooling step than adding two debug ports.
+- Your current loop uses Clash’s pure simulator (simulate) around Top.topEntity.
+  That makes internal nets invisible unless you explicitly surface them as ports.
+- Easiest path (no switch of simulator): add a “debug” top that exposes per-layer lastKRowErr/lastVRowErr 
+  (already computed inside the attention layer) and print them from Haskell as you simulate.
+  This requires adding a debug variant of the layer and transformer that OR-reduces the per‑KV‑bank row-error
+  flags to one Bool per layer. You keep Top.topEntity unchanged for synthesis; use TopDebug.topEntityDebug
+  only for bring‑up.
+- Alternative path (more visibility, zero code changes): generate HDL and use a waveform simulator (Verilator+GTKWave,
+ Questa, GHDL). This is excellent once you want to inspect many signals and
+ precise cycle alignment. But it’s a bigger tooling step than adding two debug ports.
 
 Below I give copy‑pasteable modules/functions to:
 1) Add a debug attention layer that returns two extra signals (K/V row-error flags per layer).
@@ -195,7 +202,7 @@ module Model.Layers.TransformerLayer.Debug (
 
 import Clash.Prelude
 import Model.Core.Types
-  ( ProcessingState(..), IntermediateData(..), CycleStage(..) )
+  ( ProcessingState(..), LayerData(..), CycleStage(..) )
 import Model.Config
   ( ModelDimension
   , NumLayers, NumQueryHeads, NumKeyValueHeads
@@ -236,16 +243,16 @@ multiCycleTransformerLayerDbg
   -> Cache.KVRamOwner dom
   -> Index NumLayers
   -> Signal dom ProcessingState
-  -> Signal dom IntermediateData
-  -> ( Signal dom IntermediateData
+  -> Signal dom LayerData
+  -> ( Signal dom LayerData
      , Signal dom Bool
      , Signal dom Bool
-     , Signal dom IntermediateData
+     , Signal dom LayerData
      , Signal dom Bool  -- kRowErr (OR across KV banks), valid at end-of-stream
      , Signal dom Bool  -- vRowErr (OR across KV banks), valid at end-of-stream
      )
 multiCycleTransformerLayerDbg layer kvRamOwner layerIndex processingStateSignal intermediateDataSignal =
-  ( nextIntermediateDataSignal
+  ( nextLayerDataSignal
   , writeDoneThisLayerSignal
   , attentionDoneThisLayerSignal
   , commitCycle3Signal
@@ -279,7 +286,7 @@ multiCycleTransformerLayerDbg layer kvRamOwner layerIndex processingStateSignal 
   attentionDoneThisLayerSignal =
     liftA2 (\now prev -> now && not prev) allHeadsDoneSignal allHeadsDonePrevSignal
 
-  baseNextIntermediateDataSignal =
+  baseNextLayerDataSignal =
     liftA2 (processStage mhaQ ffnQ layerIndex) processingStateSignal intermediateDataSignal
 
   writeDoneThisLayerSignal =
@@ -304,7 +311,7 @@ multiCycleTransformerLayerDbg layer kvRamOwner layerIndex processingStateSignal 
         intermediateDataSignal
         woHeadsSignal
 
-  nextIntermediateDataSignal =
+  nextLayerDataSignal =
     liftA4
       (\ps cur attOut done ->
          if processingLayer ps == layerIndex
@@ -312,7 +319,7 @@ multiCycleTransformerLayerDbg layer kvRamOwner layerIndex processingStateSignal 
             && done
            then cur { attentionOutput = attOut }
            else cur)
-      processingStateSignal baseNextIntermediateDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
+      processingStateSignal baseNextLayerDataSignal xAfterAttnSignal attentionDoneThisLayerSignal
 
   commitCycle3Signal =
     liftA4
@@ -338,8 +345,8 @@ processStage
   -> FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
-  -> IntermediateData
-  -> IntermediateData
+  -> LayerData
+  -> LayerData
 processStage mhaQ ffnQ layerIndex ps idata
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
@@ -358,7 +365,7 @@ fillOneBankDbg :: HiddenClockResetEnable dom
   => Index NumLayers
   -> Signal dom ProcessingState
   -> Cache.KVRamOwner dom
-  -> Signal dom IntermediateData
+  -> Signal dom LayerData
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool)
@@ -495,7 +502,7 @@ module Model.Core.Transformer.Debug (
 import Clash.Prelude
 import Helpers (liftA4)
 import Model.Core.Types
-  ( IntermediateData(..)
+  ( LayerData(..)
   , ProcessingState(..)
   , CycleStage(..)
   , Temperature, Seed, Token )
@@ -509,7 +516,7 @@ import qualified Model.Layers.TransformerLayer.Debug as TLDbg
 import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController, PipelineOutputs(..) )
 import qualified Model.Core.Transformer.Internal as internal
-  ( outputTokenSignal, initialIntermediateData, embedFromComponent )
+  ( outputTokenSignal, initialLayerData, embedFromComponent )
 
 multiCycleTransformerDebug :: forall dom
    . HiddenClockResetEnable dom
@@ -536,12 +543,12 @@ multiCycleTransformerDebug decoder cacheOwners inputTokenSignal inputTokenValid 
   ctrl = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
 
   feedbackTokenSignal =
-    internal.outputTokenSignal (PipelineController.readyPulse ctrl) temperatureSignal seedSignal decoder nextIntermediateDataSignal
+    internal.outputTokenSignal (PipelineController.readyPulse ctrl) temperatureSignal seedSignal decoder nextLayerDataSignal
 
   selectedTokenSignal = mux inputTokenValid inputTokenSignal feedbackTokenSignal
 
   tokenEmbeddingSignal = internal.embedFromComponent embeddingComponent <$> selectedTokenSignal
-  intermediateDataSignal = register internal.initialIntermediateData nextIntermediateDataSignal
+  intermediateDataSignal = register internal.initialLayerData nextLayerDataSignal
 
   inputLoadedSignal =
     liftA3
@@ -554,14 +561,14 @@ multiCycleTransformerDebug decoder cacheOwners inputTokenSignal inputTokenValid 
       (PipelineController.processingState ctrl) intermediateDataSignal tokenEmbeddingSignal
 
   layerStep
-    :: ( Signal dom IntermediateData
+    :: ( Signal dom LayerData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
        )
     -> (TLDbg.TransformerLayerComponent, Cache.KVRamOwner dom, Index NumLayers)
-    -> ( Signal dom IntermediateData
+    -> ( Signal dom LayerData
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
        , Vec NumLayers (Signal dom Bool)
@@ -586,7 +593,7 @@ multiCycleTransformerDebug decoder cacheOwners inputTokenSignal inputTokenValid 
         , replace lIx vErr     vErrAcc
         )
 
-  ( nextIntermediateDataSignal
+  ( nextLayerDataSignal
   , writeDoneVector
   , attnDoneVector
   , kErrVec
