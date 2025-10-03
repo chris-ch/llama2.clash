@@ -5,7 +5,7 @@ module Model.Embedding.PRNG (
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Model.Core.Types
-  ( Temperature, LayerData (..), Token)
+  ( Temperature, LayerData (..), Token, Seed)
 import Model.Config ( VocabularySize , ModelDimension )
 
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
@@ -64,7 +64,7 @@ tokenSampler :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom Bool
   -> Signal dom Temperature
-  -> Signal dom Token
+  -> Signal dom Seed
   -> TransformerLayer.TransformerDecoderComponent
   -> Signal dom LayerData
   -> Signal dom Token

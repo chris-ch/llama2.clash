@@ -28,6 +28,7 @@ import Model.Config (
   )
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.ParamPack (QArray2D(..), quantizeMatI8E)
+import Model.Layers.Components.RotaryQ (quantizeRotary, RotaryEncodingComponentF)
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent
@@ -47,7 +48,7 @@ data SingleHeadComponentQ = SingleHeadComponentQ
   { wqHeadQ :: QArray2D HeadDimension ModelDimension
   , wkHeadQ :: QArray2D HeadDimension ModelDimension
   , wvHeadQ :: QArray2D HeadDimension ModelDimension
-  , rotaryQ :: RotaryEncodingComponent
+  , rotaryQ :: RotaryEncodingComponentF
   } deriving (Generic, Show, Eq)
 
 -- MHA with quantized per-head WO and preconverted RMS weights.
@@ -78,7 +79,7 @@ quantizeSingleHead sh =
     { wqHeadQ = quantizeMatI8E (wqHead sh)
     , wkHeadQ = quantizeMatI8E (wkHead sh)
     , wvHeadQ = quantizeMatI8E (wvHead sh)
-    , rotaryQ = rotary sh
+    , rotaryQ = quantizeRotary (freqCos (rotary sh), freqSin (rotary sh))
     }
 
 quantizeMHA :: MultiHeadAttentionComponent -> MultiHeadAttentionComponentQ

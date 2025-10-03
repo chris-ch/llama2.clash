@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 module Model.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
   , computeHeadQ
@@ -6,11 +7,6 @@ module Model.Layers.Attention.MultiHeadAttention.Internal (
 ) where
 
 import Clash.Prelude
-import Model.Core.Types
-    ( CArray2D(..),
-      RotaryEncodingComponent(..),
-      RotaryEncodingComponent(..),
-      CArray2D(..) )
 import Model.Config
     ( ModelDimension,
       HeadDimension,
@@ -24,24 +20,7 @@ import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
 import Model.Helpers.MatVecI8E (matrixVectorMult)
-
-applyRotaryPositionEncoding :: Vec HeadDimension FixedPoint
-                             -> Vec RotaryPositionalEmbeddingDimension FixedPoint
-                             -> Vec RotaryPositionalEmbeddingDimension FixedPoint
-                             -> Vec HeadDimension FixedPoint
-applyRotaryPositionEncoding inputVec cosVecF sinVecF =
-  concat (imap rotatePair (unconcat d2 inputVec))
-  where
-    rotatePair :: Index RotaryPositionalEmbeddingDimension -> Vec 2 FixedPoint -> Vec 2 FixedPoint
-    rotatePair i vec =
-      case vec of
-        (realComponent :> imagComponent :> Nil) ->
-          let c = cosVecF !! i
-              s = sinVecF !! i
-              rotatedReal = realComponent * c - imagComponent * s
-              rotatedImag = realComponent * s + imagComponent * c
-          in rotatedReal :> rotatedImag :> Nil
-        _ -> error "Unexpected vector structure in rotatePair"
+import Model.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
 
 computeHeadQ
   :: SingleHeadComponentQ
@@ -64,14 +43,28 @@ computeHeadKV headComp stepCount xHat =
       kRo = applyRotation (rotaryQ headComp) stepCount k
   in (kRo, v)
 
+applyRotaryPositionEncoding
+  :: Vec HeadDimension FixedPoint
+  -> Vec RotaryPositionalEmbeddingDimension FixedPoint
+  -> Vec RotaryPositionalEmbeddingDimension FixedPoint
+  -> Vec HeadDimension FixedPoint
+applyRotaryPositionEncoding inputVec cosVecF sinVecF =
+  concat (imap rotatePair (unconcat d2 inputVec))
+ where
+  rotatePair :: Index RotaryPositionalEmbeddingDimension -> Vec 2 FixedPoint -> Vec 2 FixedPoint
+  rotatePair i (realC :> imagC :> Nil) =
+    let c = cosVecF !! i
+        s = sinVecF !! i
+        r = realC * c - imagC * s
+        im = realC * s + imagC * c
+    in  r :> im :> Nil
+
 applyRotation
-  :: RotaryEncodingComponent
+  :: RotaryEncodingComponentF
   -> Index SequenceLength
   -> Vec HeadDimension FixedPoint
   -> Vec HeadDimension FixedPoint
-applyRotation rot stepCount tokenVec =
-  let CArray2D arrCos = freqCos rot
-      CArray2D arrSin = freqSin rot
-      cosF = map realToFrac (arrCos !! stepCount) :: Vec RotaryPositionalEmbeddingDimension FixedPoint
-      sinF = map realToFrac (arrSin !! stepCount) :: Vec RotaryPositionalEmbeddingDimension FixedPoint
-  in applyRotaryPositionEncoding tokenVec cosF sinF
+applyRotation rot step tokenVec =
+  let cosF = freqCosF rot !! step
+      sinF = freqSinF rot !! step
+  in  applyRotaryPositionEncoding tokenVec cosF sinF

@@ -66,22 +66,20 @@ exp2FracLUT =
        in  realToFrac val)
     indicesI
 
--- 2^f with f in [0,1); nearest-neighbor LUT
+-- 2^f with f in [0,1); LUT index stays in Unsigned 8 (no Integer on datapath)
 exp2Frac :: FixedPoint -> FixedPoint
 exp2Frac f =
   let fClamped = max 0 (min (1 - epsF) f)
       idx :: Unsigned 8
-      idx = fromInteger (floor (fClamped * 256))  -- 0..255
+      idx = floor (fClamped * 256)  -- floor to Unsigned 8
   in exp2FracLUT !! idx
 
--- expF: x -> 2^(x/ln2) = 2^n * 2^f
+-- expF: x -> 2^(x/ln2) = 2^n * 2^f, all bounded ints on datapath
 expF :: FixedPoint -> FixedPoint
 expF x =
   let y  = x * ln2InvF
-      nI = floor y :: Integer
-      f  = y - fromInteger nI
-      b  = exp2Frac f
       nC :: Exponent
-      nC = clampExp (fromInteger nI)
+      nC = clampExp (floor y)
+      f  = y - fromIntegral nC
+      b  = exp2Frac f
   in scalePow2F nC b
-

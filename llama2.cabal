@@ -111,6 +111,7 @@ library
     , Model.Layers.Components.Quantized
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
+    , Model.Layers.Components.RotaryQ
     , Model.Layers.TransformerLayer
     , Model.Memory.KVCacheBank
     , Model.Memory.RamOps
