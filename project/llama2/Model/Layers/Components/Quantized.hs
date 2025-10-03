@@ -7,7 +7,6 @@ module Model.Layers.Components.Quantized
   , MultiHeadAttentionComponent (..)
   , FeedForwardNetworkComponent (..)
     -- Converters (elaboration-time)
-  , quantizeSingleHead
   , quantizeMHA
   , quantizeFFN
   , quantizeEmbedding
