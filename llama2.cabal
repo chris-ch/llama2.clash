@@ -92,7 +92,6 @@ library
   exposed-modules:
       Helpers
     , Model.Config
-    , Model.Config.KVGroups
     , Model.Core.Embedding
     , Model.Core.PipelineController
     , Model.Core.LayerController
