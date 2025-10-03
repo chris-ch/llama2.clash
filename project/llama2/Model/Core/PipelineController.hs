@@ -14,7 +14,6 @@ initialProcessingState = ProcessingState
   , sequencePosition = 0
   }
 
--- Single state transition function (one step)
 nextProcessingState :: ProcessingState -> ProcessingState
 nextProcessingState state = case processingStage state of
   Stage1_ProjectQKV -> state { processingStage = Stage2_WriteKV }
@@ -43,14 +42,15 @@ data PipelineOutputs dom = PipelineOutputs
   , stageFinished     :: Signal dom Bool
   }
 
--- Gate only the very first Stage1 at (layer=0, pos=0); subsequent positions do not stall.
+-- Now includes 's1DoneThisLayer'
 runPipelineController
   :: HiddenClockResetEnable dom
-  => Signal dom Bool     -- ^ attnDoneThisLayer
-  -> Signal dom Bool     -- ^ writeDoneThisLayer
-  -> Signal dom Bool     -- ^ inputTokenValid (used only at (L0,P0))
+  => Signal dom Bool     -- ^ attnDoneThisLayer (Stage3)
+  -> Signal dom Bool     -- ^ writeDoneThisLayer (Stage2)
+  -> Signal dom Bool     -- ^ s1DoneThisLayer (Stage1)
+  -> Signal dom Bool     -- ^ inputTokenValid (only used at very first (L0,P0))
   -> PipelineOutputs dom
-runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid = outs
+runPipelineController attnDoneThisLayer writeDoneThisLayer s1DoneThisLayer inputTokenValid = outs
  where
   advance s done = if done then nextProcessingState s else s
   procState = register initialProcessingState (advance <$> procState <*> stageFinishedSig)
@@ -68,7 +68,6 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid = out
     let rising now prev = now && not prev
     in  liftA2 rising isLastLayerFFN (register False isLastLayerFFN)
 
-  -- Only at very first Stage1 (L0,P0) do we wait for inputTokenValid
   atFirstStage1 =
     liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
                   && processingLayer ps == 0
@@ -78,7 +77,7 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid = out
   isStage st = (== st) <$> stageSig
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
-         (mux atFirstStage1 inputTokenValid (pure True)) $
+         (mux atFirstStage1 inputTokenValid s1DoneThisLayer) $
     mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $
     mux (isStage Stage3_Attend)      attnDoneThisLayer       $
     mux (isStage Stage4_FeedForward) (not <$> readyPulseRaw) $
@@ -93,3 +92,4 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid = out
     , readyPulse      = readyPulseRaw
     , stageFinished   = stageFinishedSig
     }
+  

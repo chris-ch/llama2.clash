@@ -1,26 +1,30 @@
 module Model.Memory.KVCacheBank (
-  writeSequencer
+  writeSequencer,
+  writeOnce
 ) where
 
 import Clash.Prelude
+import Model.Config (HeadDimension)
 
-import Model.Config
-  ( HeadDimension
-   )
-
--- Write sequencer: emits mant per cycle; exponent at each group start
-writeSequencer :: forall dom .
-  HiddenClockResetEnable dom
+-- Existing (unchanged) counter-based sequencer (if you still want it):
+writeSequencer
+  :: HiddenClockResetEnable dom
   => Signal dom Bool
   -> Signal dom Bool
 writeSequencer enSig = doneSig
  where
-  -- Head-dim counter
-  dimCnt :: Signal dom (Index HeadDimension)
-  dimCnt     = register 0 nextDimCnt
-  nextDimCnt :: Signal dom (Index HeadDimension)
-  nextDimCnt = mux enSig (fmap (\d -> if d == maxBound then 0 else succ d) dimCnt) (pure 0)
+  dimCnt     = register (0 :: Index HeadDimension) nextDimCnt
+  nextDimCnt = mux enSig (succ <$> dimCnt) (pure 0)
   atLastDim  = (== maxBound) <$> dimCnt
-
-  doneSig :: Signal dom Bool
   doneSig    = (&&) <$> enSig <*> atLastDim
+
+-- New: one-pulse generator (rising edge of 'en')
+writeOnce
+  :: HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ en (Level during Stage2)
+  -> ( Signal dom Bool  -- ^ wrPulse (1 cycle on Stage2 entry)
+     , Signal dom Bool) -- ^ donePulse (1 cycle, same as wrPulse by default)
+writeOnce enSig =
+  let enPrev   = register False enSig
+      pulse    = enSig .&&. not <$> enPrev
+  in (pulse, pulse)

@@ -204,7 +204,6 @@ fillOneBank ::
      , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
-    stageEquals :: CycleStage -> Signal dom Bool
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
              psSig (pure ())
@@ -227,41 +226,35 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    writeDoneThisBank = Cache.writeSequencer isStage2Write
+    -- Generate a single write pulse per Stage2, and use it for both K and V.
+    (wrPulse, wrDonePulse) = Cache.writeOnce isStage2Write
+
+    wrKVRowK = mux wrPulse (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
+    wrKVRowV = mux wrPulse (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
+
+    (kRowA, _kRowB) =
+      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
+                           (toRamOperation seqPosSignal wrKVRowK)
+
+    (vRowA, _vRowB) =
+      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
+                           (toRamOperation seqPosSignal wrKVRowV)
 
     (tAddrRow, stepEnRow, lastTRow) =
       attentionRowSequencer clearS3 isStage3Attention seqPosSignal
 
-    wrKVRowK = mux isStage2Write (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
-    wrKVRowV = mux isStage2Write (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
-
-    -- TDP BRAM via RamOp wrapper
-    (kRowA, _kRowB) =
-      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                   (toRamOperation seqPosSignal wrKVRowK)
-
-    (vRowA, _vRowB) =
-      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                   (toRamOperation seqPosSignal wrKVRowV)
-
-    -- Online softmax over streamed rows
     (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowA vRowA lastTRow
     (out1_seqF, done1_seqF) =
       if hasQ1 then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
                else (pure (repeat 0), pure False)
 
-    out0_sel   = out0_seqF
-    out1_sel   = out1_seqF
-    done0_sel  = done0_seqF
-    done1_sel  = done1_seqF
+    headOutAcc0  = replace qIdx0 out0_seqF headOutAcc
+    headOutAcc1  = if hasQ1 then replace qIdx1 out1_seqF headOutAcc0 else headOutAcc0
 
-    headOutAcc0  = replace qIdx0 out0_sel headOutAcc
-    headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
+    headDoneAcc0 = replace qIdx0 done0_seqF headDoneAcc
+    headDoneAcc1 = if hasQ1 then replace qIdx1 done1_seqF headDoneAcc0 else headDoneAcc0
 
-    headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
-    headDoneAcc1 = if hasQ1 then replace qIdx1 done1_sel headDoneAcc0 else headDoneAcc0
-
-    writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
+    writeDoneAcc1 = replace kvIx wrDonePulse writeDoneAcc
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
 

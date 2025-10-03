@@ -7,12 +7,18 @@ import Model.Numeric.ParamPack (QArray2D(..))
 import Model.Core.Types (Token)
 import Model.Config (ModelDimension, VocabularySize)
 
--- Dequantize-on-read: mant * 2^exp -> FixedPoint vector
+-- BRAM/ROM-backed dequantize-on-read. 1-cycle latency.
 embedder
-  :: QArray2D VocabularySize ModelDimension
-  -> Token
-  -> Vec ModelDimension FixedPoint
-embedder (QArray2D table) tok =
-  let (mant, e) = table !! (fromIntegral tok :: Int)
-      s         = scalePow2F e 1
-  in map (\q -> fromIntegral q * s) mant
+  :: HiddenClockResetEnable dom
+  => QArray2D VocabularySize ModelDimension
+  -> Signal dom Token
+  -> Signal dom (Vec ModelDimension FixedPoint)
+embedder (QArray2D table) tokSig =
+  let
+    -- Precompute dequantized rows at elaboration time; stored in ROM.
+    deqRow (mant, e) =
+      let s = scalePow2F e 1
+      in map (\q -> fromIntegral q * s) mant
+    romContent :: Vec VocabularySize (Vec ModelDimension FixedPoint)
+    romContent = map deqRow table
+  in rom romContent tokSig

@@ -50,8 +50,13 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
 
+  -- Stage1 done handshake (stub True for now; replace with real signal)
+  s1DoneThisLayer :: Signal dom Bool
+  s1DoneThisLayer = pure True
+
   pipelineController :: PipelineController.PipelineOutputs dom
-  pipelineController = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
+  pipelineController =
+    PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer s1DoneThisLayer inputTokenValid
 
   layerIndex :: Signal dom (Index NumLayers)
   layerIndex = PipelineController.layerIndex pipelineController
@@ -71,9 +76,9 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken
 
-  -- Quantized embedding lookup
+  -- Quantized embedding lookup via ROM (1-cycle)
   tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
-  tokenEmbedding = Embedding.embedder vocabulary <$> selectedToken
+  tokenEmbedding = Embedding.embedder vocabulary selectedToken
 
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
