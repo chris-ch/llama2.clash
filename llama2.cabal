@@ -27,7 +27,7 @@ flag model-260k
 
 flag model-15m
   description: Build with MODEL_15M configuration
-  default: False
+  default: True
   manual: True
 
 -- package-wide defaults
@@ -93,6 +93,7 @@ library
       Helpers
     , Model.Config
     , Model.Config.Debug
+    , Model.Config.KVGroups
     , Model.Config.Quant
     , Model.Core.Embedding
     , Model.Core.PipelineController

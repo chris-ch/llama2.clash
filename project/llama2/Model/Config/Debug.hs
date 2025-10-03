@@ -2,6 +2,7 @@ module Model.Config.Debug
   ( AttnMode(..)
   , attnMode
   , attnEps
+  , rowCheckKV
   ) where
 
 import Clash.Prelude
@@ -22,3 +23,10 @@ attnMode = AttnReplaceBRAMF
 -- Tolerance for comparing baseline vs streamed head outputs (SFixed 12.20).
 attnEps :: FixedPoint
 attnEps = 2 ^^ (-12 :: Int)  -- about 2.4e-4
+
+-- Gate KV row-diff checks.
+-- In Q mode the per-row FixedPoint vs dequantized(I8E) mismatch is expected and large.
+rowCheckKV :: Bool
+rowCheckKV = case attnMode of
+  AttnReplaceBRAMQ -> False
+  _                -> True

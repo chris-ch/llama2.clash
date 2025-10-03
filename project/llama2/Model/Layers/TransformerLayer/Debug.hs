@@ -10,7 +10,7 @@ import Model.Config
   )
 import qualified Model.Memory.KVCacheBank as Cache
 
-import Model.Layers.TransformerLayer (TransformerLayerComponent(..))
+import Model.Layers.TransformerLayer (TransformerLayerComponent(..), getValueVector, getKeyVector, getQueryVector, queryHeadIndex1, queryHeadIndex0, hasSecondQueryHead)
 
 import qualified Model.Layers.Attention.MultiHeadAttention as MultiHeadAttention (projectQKV)
 import Model.Layers.Components.Quantized
@@ -25,7 +25,7 @@ import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
 import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
-import Model.Config.Debug (AttnMode(..), attnMode, attnEps)
+import Model.Config.Debug (AttnMode(..), attnMode, attnEps, rowCheckKV)
 import Model.Memory.RamOps (toRamOperation)
 
 -- | Multi-cycle transformer layer with debug hooks for shadow BRAM and row error checks
@@ -136,6 +136,7 @@ stageProcessor mhaQ ffnQ layerIx ps idata
         in idata { feedForwardOutput = ffnOut }
       Stage5_Bookkeeping -> idata
 
+-- project/llama2/Model/Layers/TransformerLayer/Debug.hs
 fillOneBankDbg
   :: HiddenClockResetEnable dom
   => Index NumLayers
@@ -156,40 +157,25 @@ fillOneBankDbg
 fillOneBankDbg layerIx psSig kvOwner idSig
                (headOutAcc, headDoneAcc, writeDoneAcc, kErrAcc, vErrAcc) kvIx =
   let
-    -- Stage predicates
     isStage3 = liftA2 (\ps _ -> processingStage ps == Stage3_Attend && processingLayer ps == layerIx)
-                      psSig
-                      (pure ())
+                      psSig (pure ())
     isStage2 = liftA2 (\ps _ -> processingStage ps == Stage2_WriteKV && processingLayer ps == layerIx)
-                      psSig
-                      (pure ())
+                      psSig (pure ())
 
-    -- Stage3 pulse
     attnPrev = register False isStage3
     clearS3  = liftA2 (\now prev -> now && not prev) isStage3 attnPrev
-
-    -- Seq position
-    seqPos = sequencePosition <$> psSig
+    seqPos   = sequencePosition <$> psSig
 
     -- Query head mapping
-    qIdx0 :: Index NumQueryHeads
-    qIdx0 = toEnum
-        (min
-            (natToNum @NumQueryHeads - 1)
-            (fromEnum kvIx * (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads))
-        )
+    qIdx0 = queryHeadIndex0 kvIx
+    hasQ1 = hasSecondQueryHead kvIx
+    qIdx1 = queryHeadIndex1 kvIx
 
-    qIdx1 :: Index NumQueryHeads
-    qIdx1 = if hasQ1 then succ qIdx0 else qIdx0
+    query0 = getQueryVector idSig qIdx0
+    query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
 
-    hasQ1 = (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads) >= (2 :: Int)
-             && (fromEnum kvIx * (natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads) + 1 <= natToNum @NumQueryHeads - 1)
-
-    query0 = (\d -> queryVectors d !! qIdx0) <$> idSig
-    query1 = if hasQ1 then (\d -> queryVectors d !! qIdx1) <$> idSig else pure (repeat 0)
-
-    keyVec   = (\d -> keyVectors d !! kvIx) <$> idSig
-    valueVec = (\d -> valueVectors d !! kvIx) <$> idSig
+    keyVec   = getKeyVector   idSig kvIx
+    valueVec = getValueVector idSig kvIx
 
     -- Stage2: quantized write sequencer
     (wrAddr, kMant, kExp, vMant, vExp, writeDoneThisBank) =
@@ -201,39 +187,35 @@ fillOneBankDbg layerIx psSig kvOwner idSig
     kExpWr  = mux isStage2 kExp  (pure Nothing)
     vExpWr  = mux isStage2 vExp  (pure Nothing)
 
-    -- Stage3: progressive row sequencing for unquantized BRAM
     (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3 seqPos
 
-    -- Unquantized BRAM ports
-    wrKVRowK = mux isStage2 (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
+    wrKVRowK = mux isStage2 (Just <$> bundle (seqPos, keyVec))   (pure Nothing)
     wrKVRowV = mux isStage2 (Just <$> bundle (seqPos, valueVec)) (pure Nothing)
+
     bank     = Cache.kvBanks kvOwner !! kvIx
     (kRowF_A, _kRowF_B) = trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                                                 (toRamOperation seqPos wrKVRowK)
+                                               (toRamOperation seqPos wrKVRowK)
     (vRowF_A, _vRowF_B) = trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                                                 (toRamOperation seqPos wrKVRowV)
+                                               (toRamOperation seqPos wrKVRowV)
 
-    -- Baseline attend (combinational from register mirror)
     kvKeysAll = mealy (\mem (we,p,row) -> let mem' = if we then replace p row mem else mem in (mem', mem'))
                       (repeat (repeat 0))
                       (bundle (isStage2, seqPos, keyVec))
     kvValsAll = mealy (\mem (we,p,row) -> let mem' = if we then replace p row mem else mem in (mem', mem'))
                       (repeat (repeat 0))
                       (bundle (isStage2, seqPos, valueVec))
+
     out0_baseline = liftA4 attendHead query0 kvKeysAll kvValsAll seqPos
     out1_baseline = if hasQ1 then liftA4 attendHead query1 kvKeysAll kvValsAll seqPos else pure (repeat 0)
     doneBaseline  = clearS3
 
-    -- Streamed (shadow) attend
     (kRowQ, vRowQ, rowValidQ, lastTQ) = kvRowStreamer bank clearS3 isStage3 seqPos wrAddrS kMantWr kExpWr vMantWr vExpWr
     (out0_seqQ, done0_seqQ) = attendHeadSeq clearS3 rowValidQ query0 kRowQ vRowQ lastTQ
     (out1_seqQ, done1_seqQ) = if hasQ1 then attendHeadSeq clearS3 rowValidQ query1 kRowQ vRowQ lastTQ else (pure (repeat 0), pure False)
 
-    -- Streamed unquantized
     (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowF_A vRowF_A lastTRow
     (out1_seqF, done1_seqF) = if hasQ1 then attendHeadSeq clearS3 stepEnRow query1 kRowF_A vRowF_A lastTRow else (pure (repeat 0), pure False)
 
-    -- Selection
     (out0_sel, out1_sel, done0_sel, done1_sel) =
       case attnMode of
         AttnBaseline      -> (out0_baseline, out1_baseline, doneBaseline, doneBaseline)
@@ -241,22 +223,26 @@ fillOneBankDbg layerIx psSig kvOwner idSig
         AttnReplaceBRAMF  -> (out0_seqF, out1_seqF, done0_seqF, done1_seqF)
         AttnReplaceBRAMQ  -> (out0_seqQ, out1_seqQ, done0_seqQ, done1_seqQ)
 
-    -- Row error detection
+    -- Row error detection (gated to row boundary, and disabled in Q mode)
     maxAbs v = foldl max 0 (map abs v)
     diffTooBig a b = maxAbs (zipWith (-) a b) > attnEps
-    kRowErr     = diffTooBig <$> kRowQ <*> kRowF_A
-    vRowErr     = diffTooBig <$> vRowQ <*> vRowF_A
-    lastKRowErr = regEn False lastTQ kRowErr
-    lastVRowErr = regEn False lastTQ vRowErr
 
-    -- Accumulate outputs
+    kRowErr_row = rowValidQ .&&. (diffTooBig <$> kRowQ <*> kRowF_A)
+    vRowErr_row = rowValidQ .&&. (diffTooBig <$> vRowQ <*> vRowF_A)
+
+    lastKRowErr = regEn False lastTQ (mux (pure rowCheckKV) kRowErr_row (pure False))
+    lastVRowErr = regEn False lastTQ (mux (pure rowCheckKV) vRowErr_row (pure False))
+
+    -- Accumulate outputs and OR’d error latches
     headOutAcc0  = replace qIdx0 out0_sel headOutAcc
     headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
+
     headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
     headDoneAcc1 = if hasQ1 then replace qIdx1 done1_sel headDoneAcc0 else headDoneAcc0
+
     writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
-    kErrAcc1 = liftA2 (||) kErrAcc lastKRowErr
-    vErrAcc1 = liftA2 (||) vErrAcc lastVRowErr
+    kErrAcc1      = liftA2 (||) kErrAcc lastKRowErr
+    vErrAcc1      = liftA2 (||) vErrAcc lastVRowErr
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1, kErrAcc1, vErrAcc1)
 

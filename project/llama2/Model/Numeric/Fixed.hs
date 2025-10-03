@@ -1,6 +1,7 @@
 module Model.Numeric.Fixed
   ( quantizeI8E
   , quantizeI8E_ceilSafe
+  , quantizeI8E_best3_noClip
   , expF
   ) where
 
@@ -50,32 +51,112 @@ quantizeI8E xs =
         in satRoundToI8 yr
   in (map qElem xs, eBest)
 
--- Ceil-safe exponent: guarantees no clipping, i.e., |q| <= 127 for all elements
+-- Tightened no-clip quantizer: prefer pE-8 when safe, else pE-7, else pE-6.
+-- Guarantees |mant| <= 127; minimizes step size when headroom allows.
 quantizeI8E_ceilSafe :: forall n. Vec n FixedPoint -> (Vec n Activation, Exponent)
 quantizeI8E_ceilSafe xs =
-  let maxAbs :: FixedPoint
-      maxAbs = foldl max 0 (map abs xs)
-      -- Find integer p such that 2^p <= maxAbs < 2^(p+1)
-      pow2 :: Vec 64 (Exponent, FixedPoint)
-      pow2 = map (\(i :: Index 64) ->
-                    let e :: Exponent = fromInteger (toInteger (fromEnum i) - 32)
-                    in (e, scalePow2F e 1))
-                 indicesI
-      (pE, pV) =
-        foldl
-          (\(bestE, bestV) (e, v) -> if v <= maxAbs && v > bestV then (e, v) else (bestE, bestV))
-          (minBound, 0)
-          pow2
-      -- If maxAbs <= 127 * 2^p, we can use e = p-7; else e = p-6
-      th = 127 * pV
-      eRaw :: Exponent
-      eRaw = if maxAbs <= th then clampExp (pE - 7) else clampExp (pE - 6)
-      sInv = scalePow2F (negate eRaw) 1
-      qElem x =
-        let y  = x * sInv
-            yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
-        in satRoundToI8 yr
+  let
+    maxAbs :: FixedPoint
+    maxAbs = foldl max 0 (map abs xs)
+
+    -- Find p such that 2^p <= maxAbs < 2^(p+1)
+    pow2 :: Vec 64 (Exponent, FixedPoint)
+    pow2 = map
+             (\(i :: Index 64) ->
+                let e :: Exponent = fromInteger (toInteger (fromEnum i) - 32)
+                in (e, scalePow2F e 1))
+             indicesI
+
+    (pE, pV) =
+      foldl
+        (\(be, bv) (e, v) -> if v <= maxAbs && v > bv then (e, v) else (be, bv))
+        (minBound, 0)
+        pow2
+
+    pV_div_7 = scalePow2F (negate 7) pV  -- 2^(pE-7)
+    pV_div_8 = scalePow2F (negate 8) pV  -- 2^(pE-8)
+
+    th7 = 127 * pV_div_7
+    th8 = 127 * pV_div_8
+
+    -- Prefer smallest step (pE-8) when provably safe; else try pE-7; else pE-6.
+    eRaw :: Exponent
+    eRaw | maxAbs <= th8 = clampExp (pE - 8)
+         | maxAbs <= th7 = clampExp (pE - 7)
+         | otherwise     = clampExp (pE - 6)
+
+    sInv :: FixedPoint
+    sInv = scalePow2F (negate eRaw) 1
+
+    qElem :: FixedPoint -> Activation
+    qElem x =
+      let y  = x * sInv
+          yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
+      in satRoundToI8 yr
+
   in (map qElem xs, eRaw)
+
+-- Best-of-3 no-clip PoT quantizer over e ∈ {p-8, p-7, p-6}.
+-- Guarantees |mant| <= 127 and minimizes sum of squared reconstruction error.
+quantizeI8E_best3_noClip :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Activation, Exponent)
+quantizeI8E_best3_noClip xs =
+  let
+    maxAbs :: FixedPoint
+    maxAbs = foldl max 0 (map abs xs)
+
+    -- Find p such that 2^p <= maxAbs < 2^(p+1)
+    pow2 :: Vec 64 (Exponent, FixedPoint)
+    pow2 = map (\(i :: Index 64) ->
+                  let e :: Exponent = fromInteger (toInteger (fromEnum i) - 32)
+                  in (e, scalePow2F e 1))
+               indicesI
+
+    (pE, pV) =
+      foldl (\(be, bv) (e, v) -> if v <= maxAbs && v > bv then (e, v) else (be, bv))
+            (minBound, 0)
+            pow2
+
+    candidates :: Vec 3 Exponent
+    candidates = map (clampExp . (pE -)) (3 :> 2 :> 1 :> Nil)  -- p-3? Oops, we want 8/7/6 below:
+    -- Correct the above: rebind candidates properly
+    candidates' :: Vec 3 Exponent
+    candidates' = clampExp (pE - 8) :> clampExp (pE - 7) :> clampExp (pE - 6) :> Nil
+
+    safe :: Exponent -> Bool
+    safe e = maxAbs <= (127 * scalePow2F e 1)
+
+    errFor :: Exponent -> FixedPoint
+    errFor e =
+      let s   = scalePow2F e 1
+          sInv = scalePow2F (negate e) 1
+          qf x =
+            let y  = x * sInv
+                yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
+            in satRoundToI8 yr
+          rec x = fromIntegral (qf x) * s
+      in sum (map (\x -> let d = x - rec x in d*d) xs)
+
+    -- Pick best among safe candidates; if none are safe (unlikely), fall back to p-6 (ceil-safe’s coarse choice)
+    pickBest :: Maybe (Exponent, FixedPoint) -> Exponent -> Maybe (Exponent, FixedPoint)
+    pickBest acc e =
+      if safe e
+        then let eErr = errFor e
+             in case acc of
+                  Nothing            -> Just (e, eErr)
+                  Just (eb, ebErr)   -> Just (if eErr < ebErr then (e, eErr) else (eb, ebErr))
+        else acc
+
+    chosen :: Exponent
+    chosen = case foldl pickBest Nothing candidates' of
+               Just (e, _) -> e
+               Nothing     -> clampExp (pE - 6)
+
+    sInv = scalePow2F (negate chosen) 1
+    qElem x =
+      let y  = x * sInv
+          yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
+      in satRoundToI8 yr
+  in (map qElem xs, chosen)
 
 -- Nearest power-of-two exponent for a positive FixedPoint a.
 -- Searches e in [-64 .. 63] and returns the argmin_e |2^e - a|.

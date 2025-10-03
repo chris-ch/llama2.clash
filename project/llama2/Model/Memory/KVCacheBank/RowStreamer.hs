@@ -1,10 +1,10 @@
--- ===== project/llama2/Model/Memory/KVCacheBank/RowStreamer.hs =====
 module Model.Memory.KVCacheBank.RowStreamer
   ( kvRowStreamer
   ) where
 
 import Clash.Prelude
 import Model.Config (SequenceLength, HeadDimension, BankDepth)
+import Model.Config.KVGroups (KVExpAddress)
 import Model.Memory.KVCacheBank (KVBank(..))
 import Model.Memory.KVCacheBank.Ports (mapKVPorts)
 import qualified Model.Memory.Addressing as Addressing
@@ -18,9 +18,9 @@ kvRowStreamer
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Index BankDepth)
   -> Signal dom (Maybe (Index BankDepth, Activation))
-  -> Signal dom (Maybe (Index SequenceLength, Exponent))
+  -> Signal dom (Maybe (KVExpAddress, Exponent))
   -> Signal dom (Maybe (Index BankDepth, Activation))
-  -> Signal dom (Maybe (Index SequenceLength, Exponent))
+  -> Signal dom (Maybe (KVExpAddress, Exponent))
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool
@@ -28,7 +28,7 @@ kvRowStreamer
 kvRowStreamer bank clearS3 enS3 posSig wrAddr kMantWr kExpWr vMantWr vExpWr =
   (kRowOut, vRowOut, rowValid, lastT)
  where
-  -- IMPORTANT: reset dim counter on clear to avoid stale position on re-entry
+  -- Head-dim counter
   dimCnt =
     mealy
       (\d (cl,en) ->
@@ -62,7 +62,6 @@ kvRowStreamer bank clearS3 enS3 posSig wrAddr kMantWr kExpWr vMantWr vExpWr =
   dimCntD = register 0 dimCnt
   tCntD   = register 0 tCnt
 
-  -- Suppress first write to absorb synchronous BRAM latency after clearS3
   writeEn = enS3 .&&. (not <$> clearS3)
 
   kRowOut = mealy

@@ -4,9 +4,7 @@ module Model.Helpers.FixedPoint
   ) where
 
 import Clash.Prelude
-import Model.Core.Types (CArray2D(..))
 import Model.Numeric.Types (FixedPoint, Exponent, epsF, scalePow2F)
-import Model.Numeric.Fixed (expF)
 
 -- Dot product in FixedPoint
 dotProductF :: KnownNat n => Vec n FixedPoint -> Vec n FixedPoint -> FixedPoint

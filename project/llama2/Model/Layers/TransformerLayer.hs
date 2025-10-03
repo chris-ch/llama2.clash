@@ -1,5 +1,11 @@
 module Model.Layers.TransformerLayer (
     multiCycleTransformerLayer
+    , getKeyVector
+    , getValueVector
+    , getQueryVector
+    , queryHeadIndex1
+    , queryHeadIndex0
+    , hasSecondQueryHead
   , TransformerDecoderComponent(..)
   , TransformerLayerComponent(..)
 ) where
@@ -29,7 +35,7 @@ import Helpers (liftA4)
 import Model.Layers.Attention.AttentionHead (attendHead)
 import Model.Memory.KVCacheBank.RowStreamer (kvRowStreamer)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
-import Model.Config.Debug (AttnMode(..), attnMode, attnEps)
+import Model.Config.Debug (AttnMode(..), attnMode, attnEps, rowCheckKV)
 import Model.Memory.RamOps (toRamOperation)
 
 data TransformerLayerComponent = TransformerLayerComponent
@@ -187,6 +193,7 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
+-- project/llama2/Model/Layers/TransformerLayer.hs
 fillOneBank ::
   forall dom .
   HiddenClockResetEnable dom
@@ -208,21 +215,14 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
              psSig (pure ())
-    
-    isStage3Attention :: Signal dom Bool
-    isStage3Attention = stageEquals Stage3_Attend
 
-    isStage2Write :: Signal dom Bool
+    isStage3Attention = stageEquals Stage3_Attend
     isStage2Write     = stageEquals Stage2_WriteKV
 
     -- Stage3 entry pulse
-    attnPrev :: Signal dom Bool
     attnPrev = register False isStage3Attention
-
-    clearS3 :: Signal dom Bool
     clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
 
-    seqPosSignal :: Signal dom (Index SequenceLength)
     seqPosSignal = sequencePosition <$> psSig
 
     -- Query head mapping
@@ -230,55 +230,37 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
     hasQ1 = hasSecondQueryHead kvIx
     qIdx1 = queryHeadIndex1 kvIx
 
-    query0 :: Signal dom (Vec HeadDimension FixedPoint)
     query0 = getQueryVector idSig qIdx0
-
-    query1 :: Signal dom (Vec HeadDimension FixedPoint)
     query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
 
-    keyVec :: Signal dom (Vec HeadDimension FixedPoint)
-    keyVec   = getKeyVector   idSig kvIx      -- FixedPoint vector (one row)
-
-    valueVec :: Signal dom (Vec HeadDimension FixedPoint)
+    keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    -- ========== Stage2: writes ==========
-    -- Quantized write to the I8E KV bank
-    (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) = Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
+    -- ========== Stage2: quantized writes into I8E KV bank ==========
+    (writeAddrSig, kMantWrRaw, kExpWrRaw, vMantWrRaw, vExpWrRaw, writeDoneThisBank) =
+      Cache.writeSequencer isStage2Write seqPosSignal (bundle (keyVec, valueVec))
+
     wrAddrS = mux isStage2Write writeAddrSig (pure 0)
     kMantWr = mux isStage2Write kMantWrRaw (pure Nothing)
     vMantWr = mux isStage2Write vMantWrRaw (pure Nothing)
     kExpWr  = mux isStage2Write kExpWrRaw  (pure Nothing)
     vExpWr  = mux isStage2Write vExpWrRaw  (pure Nothing)
 
-    (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3Attention seqPosSignal
+    (tAddrRow, stepEnRow, lastTRow) =
+      attentionRowSequencer clearS3 isStage3Attention seqPosSignal
 
-    -- Build operations for the two row BRAMs
-    wrKVRowK :: Signal dom (Maybe (Index SequenceLength, Vec HeadDimension FixedPoint))
-    wrKVRowK =
-      mux isStage2Write
-          (Just <$> bundle (seqPosSignal, keyVec))
-          (pure Nothing)
+    -- BRAM-F (unquantized rows) for progressive replacement/shadow
+    wrKVRowK = mux isStage2Write (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
+    wrKVRowV = mux isStage2Write (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
 
-    wrKVRowV :: Signal dom (Maybe (Index SequenceLength, Vec HeadDimension FixedPoint))
-    wrKVRowV =
-      mux isStage2Write
-          (Just <$> bundle (seqPosSignal, valueVec))
-          (pure Nothing)
-
-    -- Instantiate the two BRAMs
     (kRowA, _kRowB) =
-      trueDualPortBlockRam
-        (toRamOperation tAddrRow (pure Nothing))
-        (toRamOperation seqPosSignal wrKVRowK)
-
+      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
+                           (toRamOperation seqPosSignal wrKVRowK)
     (vRowA, _vRowB) =
-      trueDualPortBlockRam
-        (toRamOperation tAddrRow (pure Nothing))
-        (toRamOperation seqPosSignal wrKVRowV)
+      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
+                           (toRamOperation seqPosSignal wrKVRowV)
 
-    -- ========== BASELINE: combinational attend over register mirror ==========
-    kvKeysAll :: Signal dom (Vec SequenceLength (Vec HeadDimension FixedPoint))
+    -- Baseline: combinational attend over register mirror
     kvKeysAll = mealy
       (\mem (we, p, rowK) ->
          let mem' = if we then replace p rowK mem else mem
@@ -286,7 +268,6 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
       (repeat (repeat 0))
       (bundle (isStage2Write, seqPosSignal, keyVec))
 
-    kvValsAll :: Signal dom (Vec SequenceLength (Vec HeadDimension FixedPoint))
     kvValsAll = mealy
       (\mem (we, p, rowV) ->
          let mem' = if we then replace p rowV mem else mem
@@ -295,76 +276,61 @@ fillOneBank layerIndex psSig kvOwner idSig (headOutAcc, headDoneAcc, writeDoneAc
       (bundle (isStage2Write, seqPosSignal, valueVec))
 
     out0_baseline = liftA4 attendHead query0 kvKeysAll kvValsAll seqPosSignal
-    out1_baseline =
-      if hasQ1
-        then liftA4 attendHead query1 kvKeysAll kvValsAll seqPosSignal
-        else pure (repeat 0)
-    doneBaseline = clearS3
+    out1_baseline = if hasQ1 then liftA4 attendHead query1 kvKeysAll kvValsAll seqPosSignal
+                              else pure (repeat 0)
+    doneBaseline  = clearS3
 
-    -- ========== STREAMED (quantized BRAM, I8E -> F) for shadow/compare ==========
-    bank :: Cache.KVBank dom
+    -- Streamed (quantized BRAM with dequantization)
     bank = Cache.kvBanks kvOwner !! kvIx
-
     (kRowQ, vRowQ, rowValidQ, lastTQ) =
       kvRowStreamer bank clearS3 isStage3Attention seqPosSignal
                     wrAddrS kMantWr kExpWr vMantWr vExpWr
+
     (out0_seqQ, done0_seqQ) = attendHeadSeq clearS3 rowValidQ query0 kRowQ vRowQ lastTQ
     (out1_seqQ, done1_seqQ) =
-      if hasQ1
-        then attendHeadSeq clearS3 rowValidQ query1 kRowQ vRowQ lastTQ
-        else (pure (repeat 0), pure False)
+      if hasQ1 then attendHeadSeq clearS3 rowValidQ query1 kRowQ vRowQ lastTQ
+               else (pure (repeat 0), pure False)
 
-    -- ========== STREAMED (unquantized BRAM rows, FixedPoint) for progressive replacement ==========
+    -- Streamed (unquantized BRAM rows, progressive replacement)
     (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowA vRowA lastTRow
     (out1_seqF, done1_seqF) =
-      if hasQ1
-        then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
-        else (pure (repeat 0), pure False)
+      if hasQ1 then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
+               else (pure (repeat 0), pure False)
 
     -- Selection
     (out0_sel, out1_sel, done0_sel, done1_sel) =
       case attnMode of
-        AttnBaseline      -> (out0_baseline, out1_baseline, doneBaseline, doneBaseline)
-        AttnShadowBRAM    -> (out0_baseline, out1_baseline, doneBaseline, doneBaseline)
-        AttnReplaceBRAMF -> (out0_seqF,     out1_seqF,     done0_seqF,   done1_seqF)
-        AttnReplaceBRAMQ -> (out0_seqQ,     out1_seqQ,     done0_seqQ,   done1_seqQ)
+        AttnBaseline      -> (out0_baseline, out1_baseline, doneBaseline,  doneBaseline)
+        AttnShadowBRAM    -> (out0_baseline, out1_baseline, doneBaseline,  doneBaseline)
+        AttnReplaceBRAMF  -> (out0_seqF,     out1_seqF,     done0_seqF,    done1_seqF)
+        AttnReplaceBRAMQ  -> (out0_seqQ,     out1_seqQ,     done0_seqQ,    done1_seqQ)
 
-    -- Optional diagnostics (safe to keep; low footprint)
-
-    -- Row error monitors (max-abs diff per row)
+    -- Optional diagnostics: gate row diffs to row boundaries and mode
     maxAbs v = foldl max 0 (map abs v)
+    diffTooBig a b = maxAbs (zipWith (-) a b) > attnEps
 
-    diffTooBig = liftA2
-        (\a b -> maxAbs (zipWith (-) a b) > attnEps)
+    kRowErr_raw = diffTooBig <$> kRowQ <*> kRowA
+    vRowErr_raw = diffTooBig <$> vRowQ <*> vRowA
 
-    kRowErr  = diffTooBig kRowQ kRowA
-    vRowErr  = diffTooBig vRowQ vRowA
+    -- Only look at a completed row (rowValidQ) to avoid transient partial rows
+    kRowErr_row = rowValidQ .&&. kRowErr_raw
+    vRowErr_row = rowValidQ .&&. vRowErr_raw
 
-    -- Latch last errors at lastTQ (end of stream)
-    lastKRowErr = regEn (False :: Bool) lastTQ kRowErr
-    lastVRowErr = regEn (False :: Bool) lastTQ vRowErr
+    -- Latch once at end of stream, and disable in Q mode
+    lastKRowErr = regEn False lastTQ (mux (pure rowCheckKV) kRowErr_row (pure False))
+    lastVRowErr = regEn False lastTQ (mux (pure rowCheckKV) vRowErr_row (pure False))
 
+    -- Keep probes for on-chip debug if desired (won’t synthesize to logic if unused)
     !_probeK = lastKRowErr
     !_probeV = lastVRowErr
 
-
-    !_bramQCnt0 = mealy (\c m -> let c' = if m then c+1 else c in (c', c')) (0 :: Unsigned 16)
-                        (diffTooBig out0_baseline out0_seqQ)
-    !_bramQCnt1 = mealy (\c m -> let c' = if m then c+1 else c in (c', c')) (0 :: Unsigned 16)
-                        (if hasQ1 then diffTooBig out1_baseline out1_seqQ else pure False)
-
     -- Accumulate into return vectors
     headOutAcc0  = replace qIdx0 out0_sel headOutAcc
-
-    headOutAcc1 :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
     headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
 
     headDoneAcc0 = replace qIdx0 done0_sel headDoneAcc
-
-    headDoneAcc1 :: Vec NumQueryHeads (Signal dom Bool)
     headDoneAcc1 = if hasQ1 then replace qIdx1 done1_sel headDoneAcc0 else headDoneAcc0
 
-    writeDoneAcc1 :: Vec NumKeyValueHeads (Signal dom Bool)
     writeDoneAcc1 = replace kvIx writeDoneThisBank writeDoneAcc
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)

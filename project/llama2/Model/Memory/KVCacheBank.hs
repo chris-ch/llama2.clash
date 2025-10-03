@@ -6,32 +6,38 @@ module Model.Memory.KVCacheBank (
 ) where
 
 import Clash.Prelude
+import qualified GHC.TypeNats as TN
+import Data.Maybe (fromMaybe)
 
 import Model.Core.Types ( TrueDualPortRunner )
 import Model.Config
   ( BankDepth, BankAddress
-  , NumKeyValueHeads, HeadDimension, SequenceLength )
+  , SequenceLength, HeadDimension
+  , NumKeyValueHeads )
+import Model.Config.KVGroups
+  ( KVExpAddress, KVExpDepth, KVExpGroupLg2, KVExpGroupSize, KVExpGroups )
+import qualified Model.Memory.Addressing as Addressing
+  ( computeBankAddress, computeExpAddress )
 import qualified Model.Memory.RamOps as RamOps (toRamOperation)
-import Model.Numeric.Types (Activation, Exponent, FixedPoint, Mantissa)
+
+import Model.Numeric.Types
+  ( Activation, Exponent, FixedPoint )
 import Model.Numeric.Fixed
-    ( quantizeI8E, quantizeI8E, quantizeI8E_ceilSafe )
-import Data.Maybe (fromMaybe)
+  ( quantizeI8E, quantizeI8E_ceilSafe, quantizeI8E_best3_noClip ) -- keep both, select by mode
 
 import Model.Config.Quant (quantModeKV, QuantMode(..))
-import qualified Model.Memory.Addressing as Addressing (computeBankAddress)
-import qualified GHC.TypeNats as TN
 
 -- A KV bank holds 4 RAMs:
 --  - Mantissa BRAMs for K and V (depth = BankDepth = SeqLen * HeadDim)
---  - Exponent  BRAMs for K and V (depth = SequenceLength)
+--  - Exponent  BRAMs for K and V (depth = KVExpDepth = SeqLen * Groups)
 data KVBank dom = KVBank
   { runKeyMantBank   :: TrueDualPortRunner dom BankDepth Activation
-  , runKeyExpBank    :: TrueDualPortRunner dom SequenceLength Exponent
+  , runKeyExpBank    :: TrueDualPortRunner dom KVExpDepth Exponent
   , runValueMantBank :: TrueDualPortRunner dom BankDepth Activation
-  , runValueExpBank  :: TrueDualPortRunner dom SequenceLength Exponent
+  , runValueExpBank  :: TrueDualPortRunner dom KVExpDepth Exponent
   }
 
--- True dual-port runner over arbitrary (n, a)
+-- True dual-port runner
 mkTrueDualPortRunner
   :: (HiddenClockResetEnable dom, KnownNat n, NFDataX a)
   => TrueDualPortRunner dom n a
@@ -54,6 +60,48 @@ newtype KVRamOwner dom = KVRamOwner
 makeRamOwnerKV :: HiddenClockResetEnable dom => KVRamOwner dom
 makeRamOwnerKV = KVRamOwner { kvBanks = map (const makeBankKV) indicesI }
 
+-- Grouped quantization helper: split row into KVExpGroups of size KVExpGroupSize
+qRowGrouped
+  :: Vec HeadDimension FixedPoint
+  -> Vec KVExpGroups (Vec KVExpGroupSize Activation, Exponent)
+qRowGrouped row =
+  let
+    groups :: Vec KVExpGroups (Vec KVExpGroupSize FixedPoint)
+    groups = unconcat dGroup row
+
+    qOne :: Vec KVExpGroupSize FixedPoint -> (Vec KVExpGroupSize Activation, Exponent)
+    qOne xs = case quantModeKV of
+                QuantNearest  -> quantizeI8E xs
+                QuantCeilSafe -> quantizeI8E_best3_noClip xs  -- better than plain ceil-safe
+  in map qOne groups
+ where
+  dGroup :: SNat KVExpGroupSize
+  dGroup = SNat
+
+-- Select mantissa for the current dim from grouped result
+mantAt
+  :: Vec KVExpGroups (Vec KVExpGroupSize Activation, Exponent)
+  -> Index HeadDimension
+  -> Activation
+mantAt qG dIx =
+  let gLg2 = natToNum @KVExpGroupLg2
+      gIdx = toEnum (fromEnum dIx `shiftR` gLg2)       :: Index KVExpGroups
+      oIdx = toEnum (fromEnum dIx .&. (natToNum @KVExpGroupSize - 1))
+                      :: Index KVExpGroupSize
+      (mVec, _) = qG !! gIdx
+  in mVec !! oIdx
+
+-- Select exponent for the current group
+expAtGroup
+  :: Vec KVExpGroups (Vec KVExpGroupSize Activation, Exponent)
+  -> Index HeadDimension
+  -> Exponent
+expAtGroup qG dIx =
+  let gLg2 = natToNum @KVExpGroupLg2
+      gIdx = toEnum (fromEnum dIx `shiftR` gLg2) :: Index KVExpGroups
+  in snd (qG !! gIdx)
+
+-- Write sequencer: emits mant per cycle; exponent at each group start
 writeSequencer :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool
@@ -61,73 +109,65 @@ writeSequencer :: forall dom .
   -> Signal dom (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
   -> ( Signal dom BankAddress
      , Signal dom (Maybe (BankAddress, Activation))
-     , Signal dom (Maybe (Index SequenceLength, Exponent))
+     , Signal dom (Maybe (KVExpAddress, Exponent))
      , Signal dom (Maybe (BankAddress, Activation))
-     , Signal dom (Maybe (Index SequenceLength, Exponent))
+     , Signal dom (Maybe (KVExpAddress, Exponent))
      , Signal dom Bool)
 writeSequencer enSig seqPosSig kvFixedSig =
   (bankAddrSig, kMantWr, kExpWr, vMantWr, vExpWr, doneSig)
  where
+  -- Head-dim counter
   dimCnt :: Signal dom (Index HeadDimension)
   dimCnt     = register 0 nextDimCnt
-  atLastDim :: Signal dom Bool
-  atLastDim  = (== maxBound) <$> dimCnt
-  atFirstDim :: Signal dom Bool
-  atFirstDim = (== 0) <$> dimCnt
   nextDimCnt :: Signal dom (Index HeadDimension)
   nextDimCnt = mux enSig (fmap (\d -> if d == maxBound then 0 else succ d) dimCnt) (pure 0)
+  atLastDim  = (== maxBound) <$> dimCnt
+  atFirstDim = (== 0) <$> dimCnt
+
+  -- Group start when low KVExpGroupLg2 bits are zero
+  atGroupStart :: Signal dom Bool
+  atGroupStart =
+    let mask = natToNum @KVExpGroupSize - 1
+    in (\d en -> en && ((fromEnum d .&. mask) == 0)) <$> dimCnt <*> enSig
+
   doneSig :: Signal dom Bool
   doneSig    = (&&) <$> enSig <*> atLastDim
 
-  kF :: Signal dom (Vec HeadDimension FixedPoint)
+  -- Current row (K,V) in FixedPoint
   kF = fst <$> kvFixedSig
-
-  vF :: Signal dom (Vec HeadDimension FixedPoint)
   vF = snd <$> kvFixedSig
 
-  qRow :: Vec HeadDimension FixedPoint -> (Vec HeadDimension Activation, Exponent)
-  qRow xs = case quantModeKV of
-              QuantNearest  -> quantizeI8E xs
-              QuantCeilSafe -> quantizeI8E_ceilSafe xs
+  -- Hold grouped quantization across the row
+  qHoldG vRowSig =
+    mealy
+      (\st (en, first, row) ->
+         let newQ = qRowGrouped row
+             st'  = if en then (if first then Just newQ else st) else Nothing
+         in  (st', st'))
+      Nothing
+      (bundle (enSig, atFirstDim, vRowSig))
 
-  (quantK, quantV) =
-    ( qHold kF
-    , qHold vF )
-   where
-    -- Hold one row’s quantization result across HeadDim cycles
-    qHold vRowSig =
-      mealy
-        (\st (en, first, row) ->
-           let newQ = qRow row
-               st'  = if en then (if first then Just newQ else st) else Nothing
-           in  (st', st'))
-        Nothing
-        (bundle (enSig, atFirstDim, vRowSig))
-  
-  mantAt :: Signal dom (Maybe (Vec HeadDimension Activation, Exponent)) -> Signal dom Activation
-  mantAt qSig = ((\(mVec, _) d -> mVec !! d) . fromMaybe (repeat 0, 0) <$> qSig) <*> dimCnt
+  quantK  = qHoldG kF  -- Signal dom (Maybe (Vec KVExpGroups (Vec KVExpGroupSize Activation, Exponent)))
+  quantV  = qHoldG vF
 
-  kMantAt :: Signal dom Activation
-  kMantAt = mantAt quantK
+  -- Mant at current dim
+  kMantAt = mantAt . fromMaybe (repeat (repeat 0, 0)) <$> quantK <*> dimCnt
+  vMantAt = mantAt . fromMaybe (repeat (repeat 0, 0)) <$> quantV <*> dimCnt
 
-  vMantAt :: Signal dom Activation
-  vMantAt = mantAt quantV
-
+  -- Addresses
   bankAddrSig :: Signal dom (Index (SequenceLength TN.* HeadDimension))
   bankAddrSig = Addressing.computeBankAddress <$> seqPosSig <*> dimCnt
 
-  kMantWr :: Signal dom (Maybe (Index (SequenceLength TN.* HeadDimension), Mantissa))
+  -- Mant writes (every enabled cycle)
   kMantWr = mux enSig (Just <$> bundle (bankAddrSig, kMantAt)) (pure Nothing)
   vMantWr = mux enSig (Just <$> bundle (bankAddrSig, vMantAt)) (pure Nothing)
 
-  kExpWr :: Signal dom (Maybe (Index SequenceLength, Exponent))
-  kExpWr =
-    mux ((&&) <$> enSig <*> atFirstDim)
-        (Just <$> bundle (seqPosSig, snd . fromMaybe (repeat 0, 0) <$> quantK))
-        (pure Nothing)
+  -- Exp writes (each group start)
+  expAddrSig :: Signal dom KVExpAddress
+  expAddrSig = Addressing.computeExpAddress <$> seqPosSig <*> dimCnt
 
-  vExpWr :: Signal dom (Maybe (Index SequenceLength, Exponent))
-  vExpWr =
-    mux ((&&) <$> enSig <*> atFirstDim)
-        (Just <$> bundle (seqPosSig, snd . fromMaybe (repeat 0, 0) <$> quantV))
-        (pure Nothing)
+  kExpAt = expAtGroup . fromMaybe (repeat (repeat 0, 0)) <$> quantK <*> dimCnt
+  vExpAt = expAtGroup . fromMaybe (repeat (repeat 0, 0)) <$> quantV <*> dimCnt
+
+  kExpWr = mux atGroupStart (Just <$> bundle (expAddrSig, kExpAt)) (pure Nothing)
+  vExpWr = mux atGroupStart (Just <$> bundle (expAddrSig, vExpAt)) (pure Nothing)

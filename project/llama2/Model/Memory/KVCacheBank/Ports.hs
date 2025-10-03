@@ -1,18 +1,20 @@
 module Model.Memory.KVCacheBank.Ports (mapKVPorts) where
 
 import Clash.Prelude
-import Model.Config (BankDepth, SequenceLength, HeadDimension)
+import Model.Config (BankDepth, HeadDimension)
+import Model.Config.KVGroups (KVExpAddress)
 import Model.Memory.KVCacheBank (KVBank(..))
 import Model.Numeric.Types ( FixedPoint, Activation, Exponent, scalePow2F )
+import qualified Model.Memory.Addressing as Addressing
 
 mapKVPorts
   :: ( Signal dom (Index BankDepth)      -- read addr (Stage3)
      , Signal dom Bool                   -- read enable
-     , Signal dom (Index BankDepth)      -- write addr (Stage2)
+     , Signal dom (Index BankDepth)      -- write addr (Stage2, mant)
      , Signal dom (Maybe (Index BankDepth, Activation))   -- K mant write
-     , Signal dom (Maybe (Index SequenceLength, Exponent)) -- K exp write
+     , Signal dom (Maybe (KVExpAddress, Exponent))        -- K exp write (grouped)
      , Signal dom (Maybe (Index BankDepth, Activation))   -- V mant write
-     , Signal dom (Maybe (Index SequenceLength, Exponent)) -- V exp write
+     , Signal dom (Maybe (KVExpAddress, Exponent))        -- V exp write (grouped)
      , KVBank dom)
   -> ( Signal dom FixedPoint              -- K read (dequantized)
      , Signal dom FixedPoint )            -- V read (dequantized)
@@ -24,33 +26,34 @@ mapKVPorts (rdAddr, rdEn, wrAddr, wrKm, wrKe, wrVm, wrVe, bank) =
   letV  = runValueMantBank bank
   letVe = runValueExpBank  bank
 
-  -- Addresses
+  -- Port A read addresses
   addrMantA = mux rdEn rdAddr (pure 0)
   addrMantB = wrAddr
 
-  -- Sequence index = rdAddr // HeadDimension
+  -- Compute (t, d) from rdAddr; derive exponent read address
   seqIx = (\a ->
-            let hd = natToNum @HeadDimension :: Int
+            let hd = natToNum @HeadDimension
             in toEnum (fromEnum a `div` hd))
           <$> addrMantA
+  dimIx = Addressing.dimFromBankAddress <$> addrMantA
+  addrExpA = Addressing.computeExpAddress <$> seqIx <*> dimIx
 
-  addrExpA   = mux rdEn seqIx (pure 0)
+  -- Port B write addresses
   addrExpB_K = maybe 0 fst <$> wrKe
   addrExpB_V = maybe 0 fst <$> wrVe
 
-  wrMantA = pure Nothing
+  wrMantA   = pure Nothing
   wrMantB_K = wrKm
   wrMantB_V = wrVm
 
-  wrExpA   = pure Nothing
-  wrExpB_K = wrKe
-  wrExpB_V = wrVe
+  wrExpA    = pure Nothing
+  wrExpB_K  = wrKe
+  wrExpB_V  = wrVe
 
   (kMantA, _) = letK  (addrMantA, wrMantA) (addrMantB, wrMantB_K)
   (vMantA, _) = letV  (addrMantA, wrMantA) (addrMantB, wrMantB_V)
   (kExpA,  _) = letKe (addrExpA,  wrExpA)  (addrExpB_K, wrExpB_K)
   (vExpA,  _) = letVe (addrExpA,  wrExpA)  (addrExpB_V, wrExpB_V)
 
-  -- Dequantize element-wise: out = mant * 2^exp
   kOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> kMantA <*> kExpA
   vOutF = (\m e -> fromIntegral m * scalePow2F e 1) <$> vMantA <*> vExpA
