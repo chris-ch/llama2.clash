@@ -93,7 +93,6 @@ library
       Helpers
     , Model.Config
     , Model.Config.KVGroups
-    , Model.Config.Quant
     , Model.Core.Embedding
     , Model.Core.PipelineController
     , Model.Core.LayerController
@@ -114,11 +113,7 @@ library
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
     , Model.Layers.TransformerLayer
-    , Model.Memory.Addressing
     , Model.Memory.KVCacheBank
-    , Model.Memory.KVCacheBank.Ports
-    , Model.Memory.KVCacheBank.RowStreamer
-    , Model.Memory.KVCacheBank.RowFromRegs
     , Model.Memory.RamOps
     , Model.Numeric.Types
     , Model.Numeric.Fixed

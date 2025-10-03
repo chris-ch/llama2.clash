@@ -1,10 +1,5 @@
 module Model.Config.KVGroups
-  ( KVExpGroupLg2
-  , KVExpGroupSize
-  , KVExpGroups
-  , KVExpDepth
-  , KVExpAddress
-  , groupSizeI
+  ( KVExpDepth
   ) where
 
 import Clash.Prelude
@@ -33,7 +28,4 @@ type KVExpGroups    = Div HeadDimension KVExpGroupSize
 
 -- Exponent-bank depth (per head): SequenceLength * KVExpGroups
 type KVExpDepth   = SequenceLength TN.* KVExpGroups
-type KVExpAddress = Index KVExpDepth
 
-groupSizeI :: Int
-groupSizeI = natToNum @KVExpGroupSize
