@@ -27,7 +27,7 @@ type NumQueryHeads = 8
 type NumKeyValueHeads = 4
 type HeadDimension  = 8
 type RotaryPositionalEmbeddingDimension = 4
-type VocabularySize = 512 :: Nat
+type VocabularySize = 512
 type SequenceLength = 512
 
 #elif MODEL_15M
@@ -39,7 +39,7 @@ type NumQueryHeads = 6
 type NumKeyValueHeads = 6
 type HeadDimension  = 48
 type RotaryPositionalEmbeddingDimension = 24
-type VocabularySize = 32000 :: Nat
+type VocabularySize = 32000
 type SequenceLength = 256
 
 #elif MODEL_42M
@@ -51,7 +51,7 @@ type NumQueryHeads = 8
 type NumKeyValueHeads = 8
 type HeadDimension  = 64
 type RotaryPositionalEmbeddingDimension = 32
-type VocabularySize = 32000 :: Nat
+type VocabularySize = 32000
 type SequenceLength = 1024
 
 #elif MODEL_110M
@@ -63,7 +63,7 @@ type NumQueryHeads = 12
 type NumKeyValueHeads = 12
 type HeadDimension  = 64
 type RotaryPositionalEmbeddingDimension = 32
-type VocabularySize = 32000 :: Nat
+type VocabularySize = 32000
 type SequenceLength = 1024
 
 #else
@@ -75,7 +75,7 @@ type NumQueryHeads = 6
 type NumKeyValueHeads = 6
 type HeadDimension  = 48
 type RotaryPositionalEmbeddingDimension = 24
-type VocabularySize = 32000 :: Nat
+type VocabularySize = 32000
 type SequenceLength = 256
 
 #endif

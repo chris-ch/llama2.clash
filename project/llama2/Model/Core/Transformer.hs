@@ -5,7 +5,7 @@ module Model.Core.Transformer (
 import Clash.Prelude
 import Model.Core.Transformer.Internal
 
-import Helpers (liftA4)
+import Model.Helpers (liftA4)
 import Model.Core.Types
   ( LayerData(..)
   , ProcessingState (..)

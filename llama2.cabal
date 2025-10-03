@@ -90,8 +90,7 @@ common project-defaults
 library
   import: project-defaults
   exposed-modules:
-      Helpers
-    , Model.Config
+    Model.Config
     , Model.Core.Embedding
     , Model.Core.PipelineController
     , Model.Core.LayerController
@@ -100,9 +99,11 @@ library
     , Model.Core.Transformer.Internal
     , Model.Core.Types
     , Model.Embedding.PRNG
+    , Model.Helpers
     , Model.Helpers.EnableWrappers
     , Model.Helpers.FixedPoint
     , Model.Helpers.MatVecI8E
+    , Model.Helpers.MatVecI8E_Seq
     , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.MultiHeadAttention
@@ -118,6 +119,7 @@ library
     , Model.Numeric.Types
     , Model.Numeric.Fixed
     , Model.Numeric.ParamPack
+    , Model.Params.Decoder
     , Model.Top
     , Parser
     , Tokenizer

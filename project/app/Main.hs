@@ -19,7 +19,7 @@ import Text.Printf (printf)
 import Model.Core.Types ( Token, Temperature, Seed )
 
 import Model.Config ( VocabularySize )
-import qualified Model.Top as Top ( topEntity )
+import qualified Model.Top as Top ( topEntitySim )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..))
 import Model.Numeric.Types (FixedPoint)
@@ -201,7 +201,7 @@ bundledOutputs :: TransformerDecoderComponent
   -> C.Signal C.System (Token, Bool)
 bundledOutputs decoder bundledInputs =
   C.bundle $
-    C.exposeClockResetEnable (Top.topEntity decoder token isValid temperature seed)
+    C.exposeClockResetEnable (Top.topEntitySim decoder token isValid temperature seed)
                              CS.systemClockGen
                              CS.resetGen
                              CS.enableGen

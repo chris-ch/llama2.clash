@@ -1,4 +1,3 @@
-
 module Model.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
   , computeHeadQ

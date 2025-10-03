@@ -31,7 +31,7 @@ import Model.Layers.Components.Quantized
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
 import Model.Helpers.MatVecI8E (matrixVectorMult)
 import Model.Numeric.Types (FixedPoint)
-import Helpers (liftA4)
+import Model.Helpers (liftA4)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
 import Model.Memory.RamOps (toRamOperation)
 
