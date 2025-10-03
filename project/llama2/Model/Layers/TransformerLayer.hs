@@ -189,7 +189,6 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
--- project/llama2/Model/Layers/TransformerLayer.hs
 fillOneBank ::
   forall dom .
   HiddenClockResetEnable dom
@@ -205,7 +204,6 @@ fillOneBank ::
      , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
-    -- Stage predicates for this layer
     stageEquals :: CycleStage -> Signal dom Bool
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
@@ -214,13 +212,11 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     isStage3Attention = stageEquals Stage3_Attend
     isStage2Write     = stageEquals Stage2_WriteKV
 
-    -- Stage3 entry pulse
     attnPrev = register False isStage3Attention
     clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
 
     seqPosSignal = sequencePosition <$> psSig
 
-    -- Query head mapping
     qIdx0 = queryHeadIndex0 kvIx
     hasQ1 = hasSecondQueryHead kvIx
     qIdx1 = queryHeadIndex1 kvIx
@@ -231,33 +227,34 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    -- ========== Stage2: quantized writes into I8E KV bank ==========
     writeDoneThisBank = Cache.writeSequencer isStage2Write
 
     (tAddrRow, stepEnRow, lastTRow) =
       attentionRowSequencer clearS3 isStage3Attention seqPosSignal
 
-    -- BRAM-F (unquantized rows) for progressive replacement/shadow
     wrKVRowK = mux isStage2Write (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
     wrKVRowV = mux isStage2Write (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
 
+    -- TDP BRAM via RamOp wrapper
     (kRowA, _kRowB) =
       trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                           (toRamOperation seqPosSignal wrKVRowK)
+                   (toRamOperation seqPosSignal wrKVRowK)
+
     (vRowA, _vRowB) =
       trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                           (toRamOperation seqPosSignal wrKVRowV)
+                   (toRamOperation seqPosSignal wrKVRowV)
 
-    -- Streamed (unquantized BRAM rows, progressive replacement)
+    -- Online softmax over streamed rows
     (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowA vRowA lastTRow
     (out1_seqF, done1_seqF) =
       if hasQ1 then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
                else (pure (repeat 0), pure False)
 
-    -- Selection
-    (out0_sel, out1_sel, done0_sel, done1_sel) = (out0_seqF,     out1_seqF,     done0_seqF,    done1_seqF)
+    out0_sel   = out0_seqF
+    out1_sel   = out1_seqF
+    done0_sel  = done0_seqF
+    done1_sel  = done1_seqF
 
-    -- Accumulate into return vectors
     headOutAcc0  = replace qIdx0 out0_sel headOutAcc
     headOutAcc1  = if hasQ1 then replace qIdx1 out1_sel headOutAcc0 else headOutAcc0
 
@@ -268,12 +265,6 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
 
   in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
 
--- | Generate row read addresses and step/last signals for progressive replacement
--- Unquantized row BRAMs (FixedPoint) used only for progressive replacement:
--- Two true-dual-port BRAMs with (depth = SequenceLength, payload = Vec HeadDimension FixedPoint)
--- Port A: Stage3 reads; Port B: Stage2 writes current row at (seqPos)
--- Address/Write streams for BRAM-F
--- | Generate row read addresses and step/last signals for progressive replacement
 attentionRowSequencer ::
   forall dom .
   HiddenClockResetEnable dom

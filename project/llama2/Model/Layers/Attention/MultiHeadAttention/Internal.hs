@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
+
 module Model.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
   , computeHeadQ
@@ -43,6 +43,11 @@ computeHeadKV headComp stepCount xHat =
       kRo = applyRotation (rotaryQ headComp) stepCount k
   in (kRo, v)
 
+-- helper: safely destructure a Vec 2
+vec2ToPair :: NFDataX a => Vec 2 a -> (a, a)
+vec2ToPair (x :> y :> Nil) = (x, y)
+vec2ToPair _   = deepErrorX "Impossible: Vec 2 had wrong shape"
+
 applyRotaryPositionEncoding
   :: Vec HeadDimension FixedPoint
   -> Vec RotaryPositionalEmbeddingDimension FixedPoint
@@ -51,11 +56,14 @@ applyRotaryPositionEncoding
 applyRotaryPositionEncoding inputVec cosVecF sinVecF =
   concat (imap rotatePair (unconcat d2 inputVec))
  where
-  rotatePair :: Index RotaryPositionalEmbeddingDimension -> Vec 2 FixedPoint -> Vec 2 FixedPoint
-  rotatePair i (realC :> imagC :> Nil) =
-    let c = cosVecF !! i
-        s = sinVecF !! i
-        r = realC * c - imagC * s
+  rotatePair :: Index RotaryPositionalEmbeddingDimension
+             -> Vec 2 FixedPoint
+             -> Vec 2 FixedPoint
+  rotatePair i v =
+    let (realC, imagC) = vec2ToPair v
+        c  = cosVecF !! i
+        s  = sinVecF !! i
+        r  = realC * c - imagC * s
         im = realC * s + imagC * c
     in  r :> im :> Nil
 

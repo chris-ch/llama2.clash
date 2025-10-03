@@ -18,7 +18,7 @@ attendHead q ks vs pos =
     scale = realToFrac (1.0 / sqrt ((natToNum @HeadDimension) :: Double))
 
     negBig :: FixedPoint
-    negBig = scale * realToFrac (-2.0e30 :: Double)  -- any very negative number in F range
+    negBig = minBound
 
     scores :: Vec SequenceLength FixedPoint
     scores =
