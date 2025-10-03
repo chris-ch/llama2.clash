@@ -15,17 +15,14 @@ import qualified Parser
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
-import Control.Monad (unless)
 import Text.Printf (printf)
 import Model.Core.Types ( Token, Temperature, Seed )
 
-import Model.Config ( VocabularySize, NumLayers )
+import Model.Config ( VocabularySize )
 import qualified Model.Top as Top ( topEntity )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import Model.Layers.TransformerLayer (TransformerDecoderComponent (..))
 import Model.Numeric.Types (FixedPoint)
-import qualified Model.TopDebug as TopDebug
-
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -74,7 +71,7 @@ runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed
   startTime <- getPOSIXTime
 
   countTokens <-
-    generateTokensSimAutoregressiveDebug
+    generateTokensSimAutoregressive
       transformerConfig
       tokenizer
       stepCount
@@ -210,128 +207,3 @@ bundledOutputs decoder bundledInputs =
                              CS.enableGen
   where
     (token, isValid, temperature, seed) = C.unbundle bundledInputs
-
--- ==================================
--- DEBUGGING
--- ==================================
-
-bundledOutputsDebug
-  :: TransformerDecoderComponent
-  -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> C.Signal C.System (Token, Bool, C.Vec NumLayers Bool, C.Vec NumLayers Bool)
-bundledOutputsDebug decoder bundledInputs =
-  C.bundle $
-    C.exposeClockResetEnable
-      (TopDebug.topEntityDebug decoder token isValid temperature seed)
-      CS.systemClockGen
-      CS.resetGen
-      CS.enableGen
- where
-  (token, isValid, temperature, seed) = C.unbundle bundledInputs
-
--- A debug generation routine that prints row errors when they occur.
--- | Print at most the cycles needed to emit (promptLength + stepCount) tokens.
---   This avoids consuming the infinite stream from 'simulate'.
--- | Debug generator that:
---   - prints the prompt immediately,
---   - then streams tokens as 'ready' pulses arrive,
---   - prints row error diagnostics per-cycle on-the-fly, and
---   - never traverses unbounded lists looking for the Nth 'True'.
---   It also has a large but finite cycle cap to avoid true hangs if 'ready' never fires.
-generateTokensSimAutoregressiveDebug
-  :: TransformerDecoderComponent
-  -> T.Tokenizer
-  -> Int
-  -> [Token]
-  -> Float
-  -> Seed
-  -> IO Int
-generateTokensSimAutoregressiveDebug decoder tokenizer stepCount promptTokens temperature seed = do
-  putStrLn $ "✅ Prompt: " ++ show promptTokens
-  hFlush stdout
-  let
-    (firstToken, restPrompt) =
-      case promptTokens of { (t:ts) -> (t, ts); [] -> (1, []) }
-
-    -- Same state machine as your non-debug path; advances on ready pulses.
-    advanceState :: (Token,[Token],Bool) -> (Bool,Token) -> (Token,[Token],Bool)
-    advanceState (current, remPrompt, usingPrompt) (isReady, sampled)
-      | not isReady = (current, remPrompt, usingPrompt)
-      | otherwise   = case remPrompt of
-                        (p:ps) -> (p, ps, True)
-                        []     -> (sampled, [], False)
-
-    temperature' = realToFrac temperature :: FixedPoint
-
-    -- Classic knot-tying: inputs depend on future outputs via 'states'.
-    outputsDbg :: [(Token, Bool, C.Vec NumLayers Bool, C.Vec NumLayers Bool)]
-    outputsDbg =
-      CS.simulate (bundledOutputsDebug decoder)
-                  (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
-
-    (outputTokens, readyFlags, _kErrVecs, _vErrVecs) = DL.unzip4 outputsDbg
-
-    states :: [(Token,[Token],Bool)]
-    states = scanl advanceState (firstToken, restPrompt, True)
-                (zip (drop 1 readyFlags) (drop 1 outputTokens))
-
-    inputTokens     = firstToken : [ tok | (tok, _, _) <- states ]
-    inputValidFlags = True       : [ use | (_, _, use) <- states ]
-
-    promptLength = length promptTokens
-
-    -- Pretty-print one cycle's row errors if any.
-    printErr :: (Int, (C.Vec NumLayers Bool, C.Vec NumLayers Bool)) -> IO ()
-    printErr (cyc,(kE,vE)) =
-      let ks  = zip [(0 :: Int)..] (C.toList kE)
-          vs  = zip [(0 :: Int)..] (C.toList vE)
-          badK = [ i | (i,True) <- ks ]
-          badV = [ i | (i,True) <- vs ]
-      in unless (null badK && null badV) $
-           putStrLn $ "⚠️  RowErr at cycle " ++ show cyc
-                    ++ " K(layers)=" ++ show badK
-                    ++ " V(layers)=" ++ show badV
-
-    -- Cycle budget to avoid true hangs if 'ready' never arrives.
-    maxCycles :: Int
-    maxCycles = 1000000
-
-    -- Stream over the simulated outputs one element at a time.
-    -- We print prompt first, then print 'stepCount' generated tokens as they arrive.
-    loop !cyc !readySeen !gen ((tok,isReady,kE,vE):rest) = do
-      -- per-cycle diagnostics
-      printErr (cyc,(kE,vE))
-
-      -- optional: stop after a very large number of cycles to avoid infinite wait
-      if cyc >= maxCycles then do
-        putStrLn $ "\n⏱️  Gave up after " ++ show cyc ++ " cycles without finishing."
-                 ++ " readySeen=" ++ show readySeen ++ " generated=" ++ show gen
-        putStrLn ""
-        pure gen
-      else if not isReady then
-        loop (cyc+1) readySeen gen rest
-      else
-        -- A 'ready' pulse observed this cycle.
-        if readySeen < promptLength then
-          -- Warm-up 'ready's for the prompt (we already printed the prompt explicitly).
-          loop (cyc+1) (readySeen+1) gen rest
-        else if gen < stepCount then do
-          -- Print a sampled token
-          printToken tokenizer tok
-          loop (cyc+1) (readySeen+1) (gen+1) rest
-        else do
-          -- Done: printed all requested tokens
-          putStrLn ""
-          pure gen
-
-    loop _ _ gen [] = do
-      -- 'simulate' never ends, so this clause should be unreachable.
-      putStrLn $ "\nUnexpected end of simulation stream; generated=" ++ show gen
-      pure gen
-
-  -- Print prompt immediately so users see activity right away.
-  mapM_ (printToken tokenizer) promptTokens
-  hFlush stdout
-
-  -- Walk the simulation stream until we print 'stepCount' generated tokens (or hit the cycle cap).
-  loop 0 0 0 outputsDbg

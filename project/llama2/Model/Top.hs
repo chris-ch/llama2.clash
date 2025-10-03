@@ -8,7 +8,6 @@ import Model.Core.Types
   ( Temperature, Seed, Token
   )
 
-import qualified Model.Memory.KVCacheBank as Cache
 import qualified Model.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent)
 import qualified Model.Core.Transformer as Transformer
 
@@ -21,4 +20,4 @@ topEntity :: HiddenClockResetEnable System
   -> ( Signal System Token                -- sampled token
      , Signal System Bool                 -- ready pulse (end of last FFN)
      )
-topEntity decoder = Transformer.multiCycleTransformer decoder (repeat Cache.makeRamOwnerKV)
+topEntity = Transformer.multiCycleTransformer

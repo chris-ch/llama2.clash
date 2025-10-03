@@ -16,7 +16,6 @@ import Model.Core.Types
 import Model.Config
   (  NumLayers, VocabularySize, ModelDimension
   )
-import qualified Model.Memory.KVCacheBank as Cache (KVRamOwner)
 import qualified Model.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
   , multiCycleTransformerLayer
@@ -37,21 +36,20 @@ type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom B
 multiCycleTransformer :: forall dom
    . HiddenClockResetEnable dom
   => TransformerLayer.TransformerDecoderComponent
-  -> Vec NumLayers (Cache.KVRamOwner dom)
   -> Signal dom Token
   -> Signal dom Bool            -- ^ inputTokenValid (True while external prompt is used)
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Signal dom Token , Signal dom Bool )
-multiCycleTransformer decoder cacheOwners inputToken inputTokenValid temperature seed =
+multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
   ( selectedToken, readyPulse)
  where
   vocabulary :: QArray2D VocabularySize ModelDimension
   vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
-  
+
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
-  
+
   pipelineController :: PipelineController.PipelineOutputs dom
   pipelineController = PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer inputTokenValid
 
@@ -89,7 +87,7 @@ multiCycleTransformer decoder cacheOwners inputToken inputTokenValid temperature
   selectedInput :: Signal dom LayerData
   selectedInput = liftA3 layerInputSelector processingState layerDataRegister tokenEmbedding
 
-  (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput cacheOwners transformerLayers
+  (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
 
   (writeDone, attnDone) = unzip doneFlags
 
@@ -103,13 +101,11 @@ pipelineProcessor :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom ProcessingState
   -> Signal dom LayerData
-  -> Vec NumLayers (Cache.KVRamOwner dom)
   -> Vec NumLayers TransformerLayerComponent
   -> LayerProcessorData dom
-pipelineProcessor processingState initLayerData cacheOwners transformerLayers =
+pipelineProcessor processingState initLayerData transformerLayers =
   let
-    indexedLayers :: Vec NumLayers (Index NumLayers, TransformerLayerComponent, Cache.KVRamOwner dom)
-    indexedLayers = imap (\i (comp, owner) -> (i, comp, owner)) (zip transformerLayers cacheOwners)
+    indexedLayers = imap (,) transformerLayers
 
     (finalLayerData, doneFlags) = mapAccumL (layerProcessor processingState) initLayerData indexedLayers
 
@@ -120,12 +116,12 @@ layerProcessor :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom ProcessingState
   -> Signal dom LayerData
-  -> (Index NumLayers, TransformerLayerComponent, Cache.KVRamOwner dom)
+  -> (Index NumLayers, TransformerLayerComponent)
   -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool))
-layerProcessor processingState currentLayerData (layerIndex, layerComp, cacheOwner) =
+layerProcessor processingState currentLayerData (layerIndex, layerComp) =
   let
     (newLayerData, writeDone, attnDone, commitC3) =
-      TransformerLayer.multiCycleTransformerLayer layerComp cacheOwner layerIndex processingState currentLayerData
+      TransformerLayer.multiCycleTransformerLayer layerComp layerIndex processingState currentLayerData
 
     selectedLayerData =
       liftA4 (layerDataSelector layerIndex) processingState currentLayerData newLayerData commitC3

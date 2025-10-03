@@ -111,16 +111,13 @@ quantizeI8E_best3_noClip xs =
                   in (e, scalePow2F e 1))
                indicesI
 
-    (pE, pV) =
-      foldl (\(be, bv) (e, v) -> if v <= maxAbs && v > bv then (e, v) else (be, bv))
+    (pE, _) = foldl (\(be, bv) (e, v) -> if v <= maxAbs && v > bv then (e, v) else (be, bv))
             (minBound, 0)
             pow2
 
-    candidates :: Vec 3 Exponent
-    candidates = map (clampExp . (pE -)) (3 :> 2 :> 1 :> Nil)  -- p-3? Oops, we want 8/7/6 below:
     -- Correct the above: rebind candidates properly
-    candidates' :: Vec 3 Exponent
-    candidates' = clampExp (pE - 8) :> clampExp (pE - 7) :> clampExp (pE - 6) :> Nil
+    candidates :: Vec 3 Exponent
+    candidates = clampExp (pE - 8) :> clampExp (pE - 7) :> clampExp (pE - 6) :> Nil
 
     safe :: Exponent -> Bool
     safe e = maxAbs <= (127 * scalePow2F e 1)
@@ -128,9 +125,9 @@ quantizeI8E_best3_noClip xs =
     errFor :: Exponent -> FixedPoint
     errFor e =
       let s   = scalePow2F e 1
-          sInv = scalePow2F (negate e) 1
+          sInv' = scalePow2F (negate e) 1
           qf x =
-            let y  = x * sInv
+            let y  = x * sInv'
                 yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
             in satRoundToI8 yr
           rec x = fromIntegral (qf x) * s
@@ -147,7 +144,7 @@ quantizeI8E_best3_noClip xs =
         else acc
 
     chosen :: Exponent
-    chosen = case foldl pickBest Nothing candidates' of
+    chosen = case foldl pickBest Nothing candidates of
                Just (e, _) -> e
                Nothing     -> clampExp (pE - 6)
 
@@ -157,40 +154,6 @@ quantizeI8E_best3_noClip xs =
           yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
       in satRoundToI8 yr
   in (map qElem xs, chosen)
-
--- Nearest power-of-two exponent for a positive FixedPoint a.
--- Searches e in [-64 .. 63] and returns the argmin_e |2^e - a|.
-nearestPow2Exp :: FixedPoint -> Exponent
-nearestPow2Exp aIn =
-  let a = max epsF (abs aIn)  -- ensure positive, non-zero
-      pow2Vec :: Vec 128 (Exponent, FixedPoint)
-      pow2Vec =
-        map
-          (\(i :: Index 128) ->
-             let e :: Exponent
-                 e = fromInteger (toInteger (fromEnum i) - 64)
-             in  (e, scalePow2F e 1))
-          indicesI
-      -- initialize with first element and fold the tail
-      (e0, v0) = head pow2Vec
-      d0'       = abs (v0 - a)
-      pickBest (bestE', bestV, bestD) (e, v) =
-        let d = abs (v - a)
-        in if d < bestD then (e, v, d) else (bestE', bestV, bestD)
-      (bestE, _, _) = foldl pickBest (e0, v0, d0') (tail pow2Vec)
-  in bestE
-
--- Round x/s to nearest integer (symmetric), saturate to int8 [-127,127].
-qElemWithScale :: FixedPoint -> FixedPoint -> Activation
-qElemWithScale s x =
-  let y  = x / s
-      yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
-  in satRoundToI8 yr
-
-dequantizeI8E :: (Vec n Activation, Exponent) -> Vec n FixedPoint
-dequantizeI8E (qs, e) =
-  let s = scalePow2F e 1
-  in map (\q -> fromIntegral q * s) qs
 
 -- ===========================
 -- expF using 2^x decomposition with LUT-256
@@ -228,17 +191,3 @@ expF x =
       nC = clampExp (fromInteger nI)
   in scalePow2F nC b
 
-expF' :: FixedPoint -> FixedPoint
-expF' x =
-  let ln2InvF' = realToFrac (1.4426950408889634 :: Double)
-      exp2FracLUT' :: Vec 256 FixedPoint
-      exp2FracLUT' = map (\(i :: Index 256) -> realToFrac (2 ** (fromIntegral (fromEnum i) / 256 :: Double))) indicesI
-      exp2Frac' f' =
-        let idx :: Unsigned 8 = fromInteger (floor (max 0 (min (1 - (2 ^^ (-20 :: Int))) f') * 256))
-        in exp2FracLUT' !! idx
-      y  = x * ln2InvF'
-      nI = floor y :: Integer
-      f  = y - fromInteger nI
-      b  = exp2Frac' f
-      nC :: Exponent = clampExp (fromInteger nI)
-  in scalePow2F nC b

@@ -92,7 +92,6 @@ library
   exposed-modules:
       Helpers
     , Model.Config
-    , Model.Config.Debug
     , Model.Config.KVGroups
     , Model.Config.Quant
     , Model.Core.Embedding
@@ -100,7 +99,6 @@ library
     , Model.Core.LayerController
     , Model.Core.StageEnable
     , Model.Core.Transformer
-    , Model.Core.Transformer.Debug
     , Model.Core.Transformer.Internal
     , Model.Core.Types
     , Model.Embedding.PRNG
@@ -116,7 +114,6 @@ library
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
     , Model.Layers.TransformerLayer
-    , Model.Layers.TransformerLayer.Debug
     , Model.Memory.Addressing
     , Model.Memory.KVCacheBank
     , Model.Memory.KVCacheBank.Ports
@@ -127,7 +124,6 @@ library
     , Model.Numeric.Fixed
     , Model.Numeric.ParamPack
     , Model.Top
-    , Model.TopDebug
     , Parser
     , Tokenizer
   hs-source-dirs:
