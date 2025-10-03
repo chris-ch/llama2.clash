@@ -24,7 +24,7 @@ attendHeadSeq clear stepEn qSig kSig vSig lastT =
   (OnlineSoftmax.softResult <$> st, stepEn .&&. lastT)
  where
   scale :: FixedPoint
-  scale = realToFrac (1.0 / sqrt (fromIntegral (natToNum @HeadDimension) :: Double))
+  scale = realToFrac (1.0 / sqrt ((natToNum @HeadDimension) :: Double))
 
   stepInput =
     mux stepEn

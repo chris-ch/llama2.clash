@@ -24,7 +24,7 @@ wget --directory-prefix=data https://huggingface.co/karpathy/tinyllamas/resolve/
 Once a model is downloaded, you can then run the llama2 right away: 
 
 ```shell
-cabal run -- llama2 --model-file data/stories15M.bin --temperature 0.8 --steps 256 "In that little town"
+cabal run llama2 --flag model-15m -- --temperature 0.8 --seed 123 "In that little town"
 ```
 
 This is the kind of output you will get (here using the 110M model):
@@ -42,7 +42,7 @@ From that day on, Lily and Tom became good friends. They would often talk and sh
 ## Reproducible output
 
 ```shell
-cabal run -- llama2 --model-file data/stories15M.bin --temperature 0 "Hi"
+cabal run llama2 --flag model-15m -- --temperature 0 --seed 123 "Hi"
 ```
 
 ```text
@@ -53,7 +53,7 @@ Hippy's friends were scared too and they ran away. [...]"
 For debugging / testing with the 260K model:
 
 ```shell
-cabal run -- llama2 --model-file data/stories260K.bin --temperature 0 "Hi"
+cabal run llama2 --flag model-260k -- --temperature 0 --seed 123 "Hi"
 ```
 
 ```text

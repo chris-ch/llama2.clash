@@ -1,13 +1,13 @@
-module Model.Layers.FeedForward.FeedForwardNetwork.Internal  where
+module Model.Layers.FeedForward.FeedForwardNetwork.Internal  (
+  runFeedForward
+  , sigmoidLinearUnitF
+)where
 
 import Clash.Prelude
-import Model.Core.Types ( CArray2D )
 import Model.Config
     (
       ModelDimension,
-      HiddenDimension,
-      ModelDimension,
-      HiddenDimension )
+      ModelDimension )
 
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers.MatVecI8E (matrixVectorMult)

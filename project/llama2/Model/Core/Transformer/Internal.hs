@@ -1,10 +1,11 @@
-module Model.Core.Transformer.Internal where
+module Model.Core.Transformer.Internal (
+  initialLayerData
+) where
 
 import Clash.Prelude
-import Helpers (liftA4)
 import Model.Core.Types ( LayerData(..) )
 import Model.Config
-  ( NumLayers, VocabularySize, ModelDimension, SequenceLength, NumQueryHeads, HeadDimension, NumKeyValueHeads
+  ( ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads
   )
 import Model.Numeric.Types (FixedPoint)
 

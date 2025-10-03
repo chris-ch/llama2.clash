@@ -19,6 +19,17 @@ source-repository head
   type: git
   location: https://github.com/chris-ch/llama2.clash
 
+-- Define flags for model sizes
+flag model-260k
+  description: Build with MODEL_260K configuration
+  default: False
+  manual: True
+
+flag model-15m
+  description: Build with MODEL_15M configuration
+  default: False
+  manual: True
+
 -- package-wide defaults
 common project-defaults
   default-language: Haskell2010
@@ -120,20 +131,26 @@ library
     , Tokenizer
   hs-source-dirs:
       project/llama2
+  if flag(model-260k)
+    ghc-options: -DMODEL_260K
+  if flag(model-15m)
+    ghc-options: -DMODEL_15M
+  if !flag(model-260k) && !flag(model-15m)
+    ghc-options: -DMODEL_260K
+    buildable: False
 
-executable llama2-260K
+executable llama2
   import: project-defaults
   main-is: Main.hs
   hs-source-dirs: project/app
   build-depends: llama2
-  ghc-options: -DMODEL_260K
-
-executable llama2-15M
-  import: project-defaults
-  main-is: Main.hs
-  hs-source-dirs: project/app
-  build-depends: llama2
-  ghc-options: -DMODEL_15m
+  if flag(model-260k)
+    ghc-options: -DMODEL_260K
+  elif flag(model-15m)
+    ghc-options: -DMODEL_15M
+  else
+    ghc-options: -DMODEL_DEFAULT
+    buildable: False
 
 test-suite llama2-test
   import: project-defaults
@@ -152,4 +169,11 @@ test-suite llama2-test
     , hspec
     , llama2
     , QuickCheck
-  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N -main-is Spec.main
+  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N -main-is Spec.mainif flag(model-260k)
+    ghc-options: -DMODEL_260K
+  if flag(model-15m)
+    ghc-options: -DMODEL_15M
+  if !flag(model-260k) && !flag(model-15m)
+    ghc-options: -DMODEL_DEFAULT
+    buildable: False
+

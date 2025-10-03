@@ -13,7 +13,7 @@ dotRowI8E_Fixed row = dotProductF (dequantRowToF row)
 
 -- Matrix @ vector where matrix is quantized (I8E rows) and vector is FixedPoint.
 matrixVectorMult
-  :: (KnownNat rows, KnownNat cols)
+  :: ( KnownNat cols)
   => QArray2D rows cols
   -> Vec cols FixedPoint
   -> Vec rows FixedPoint

@@ -67,16 +67,16 @@ type VocabularySize = 32000 :: Nat
 type SequenceLength = 1024
 
 #else
--- defaults to model config 260K
-type ModelDimension = 64
-type HiddenDimension = 172
-type NumLayers = 5
-type NumQueryHeads = 8
-type NumKeyValueHeads = 4
-type HeadDimension  = 8
-type RotaryPositionalEmbeddingDimension = 4
-type VocabularySize = 512 :: Nat
-type SequenceLength = 512
+-- defaults to model config 15M
+type ModelDimension = 288
+type HiddenDimension = 768
+type NumLayers = 6
+type NumQueryHeads = 6
+type NumKeyValueHeads = 6
+type HeadDimension  = 48
+type RotaryPositionalEmbeddingDimension = 24
+type VocabularySize = 32000 :: Nat
+type SequenceLength = 256
 
 #endif
 

@@ -14,7 +14,6 @@ module Model.Layers.Components.Quantized
   ) where
 
 import Clash.Prelude
-import GHC.Generics (Generic)
 
 import Model.Core.Types
   ( CArray2D(..)

@@ -4,9 +4,8 @@ module Model.Layers.FeedForward.FeedForwardNetwork (
 
 import Clash.Prelude
 import Model.Helpers.FixedPoint ( rmsNormFwFix )
-import Model.Core.Types ( CArray2D )
 import Model.Config
-    ( ModelDimension, HiddenDimension, ModelDimension )
+    ( ModelDimension, ModelDimension )
 import Model.Numeric.Types ( FixedPoint, FixedPoint )
 import Model.Layers.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
