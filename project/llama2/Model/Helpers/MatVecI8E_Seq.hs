@@ -5,7 +5,6 @@ import Clash.Prelude
 import Model.Numeric.Types (FixedPoint, Activation, scalePow2F)
 import Model.Numeric.ParamPack (RowI8E)
 
--- Sequential dot for one row: consumes one (mant, x) per cycle.
 -- Protocol:
 --  - clear: pulse to reset internal state for new row
 --  - en: one step (consumes one column) when True

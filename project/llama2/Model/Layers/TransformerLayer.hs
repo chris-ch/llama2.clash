@@ -29,7 +29,7 @@ import Model.Layers.Components.Quantized
   )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
-import Model.Helpers.MatVecI8E (matrixVectorMult)
+import Model.Helpers.MatVecI8E (sequentialMatVecStub)
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers (liftA4)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
@@ -79,12 +79,10 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
   allHeadsDone :: Signal dom Bool
   allHeadsDone = and <$> sequenceA perHeadDoneFlags
 
-  allHeadsDonePrev :: Signal dom Bool
-  allHeadsDonePrev = register False allHeadsDone
-
   attentionDone :: Signal dom Bool
   attentionDone =
-    liftA2 (\now prev -> now && not prev) allHeadsDone allHeadsDonePrev
+    liftA2 (&&) validProjected $
+      liftA2 (\now prev -> now && not prev) allHeadsDone (register False allHeadsDone)
 
   baseNextLayerData :: Signal dom LayerData
   baseNextLayerData =
@@ -96,16 +94,34 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
   writeDone :: Signal dom Bool
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
-  -- Per-head WO projection uses quantized WO blocks (I8E) -> FixedPoint
-  perHeadProjectedSignalsVec :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
+  -- === Per-head WO projection (sequential façade) ===
+
+  -- Each head’s multiplier exposes (outVec, validOut, readyOut)
+  perHeadProjectedSignalsVec ::
+    Vec NumQueryHeads
+      ( Signal dom (Vec ModelDimension FixedPoint)
+      , Signal dom Bool   -- validOut
+      , Signal dom Bool   -- readyOut
+      )
   perHeadProjectedSignalsVec =
-    zipWith (\woQ hSig -> matrixVectorMult woQ <$> hSig) (mWoQ mha) perHeadOutputs
+    zipWith
+      (\woQ hSig -> sequentialMatVecStub woQ (bundle (pure True, hSig)))
+      (mWoQ mha)
+      perHeadOutputs
 
+  -- Gather outputs
   perHeadProjected :: Signal dom (Vec NumQueryHeads (Vec ModelDimension FixedPoint))
-  perHeadProjected = sequenceA perHeadProjectedSignalsVec
+  perHeadProjected =
+    traverse (\(out,_,_) -> out) perHeadProjectedSignalsVec
 
+  -- All heads must present validOut before we can proceed
+  validProjected :: Signal dom Bool
+  validProjected =
+    and <$> traverse (\(_,v,_) -> v) perHeadProjectedSignalsVec
+
+  -- Combine projected heads into WO result
   woHeads :: Signal dom (Vec ModelDimension FixedPoint)
-  woHeads    = foldl1 (zipWith (+)) <$> perHeadProjected
+  woHeads = foldl1 (zipWith (+)) <$> perHeadProjected
 
   xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
   xAfterAttn = liftA2 inputsAggregator layerData woHeads

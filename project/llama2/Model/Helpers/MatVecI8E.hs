@@ -1,5 +1,6 @@
 module Model.Helpers.MatVecI8E
   ( matrixVectorMult
+  , sequentialMatVecStub
   ) where
 
 import Clash.Prelude
@@ -19,3 +20,22 @@ matrixVectorMult
   -> Vec rows FixedPoint
 matrixVectorMult (QArray2D rowsQ) xF =
   map (`dotRowI8E_Fixed` xF) rowsQ
+
+-- Ready/Valid sequential façade for matrix-vector multiplication
+sequentialMatVecStub
+  :: ( KnownNat cols )
+  =>QArray2D rows cols
+  -> Signal dom (Bool, Vec cols FixedPoint)      -- (validIn, inputVec)
+  -> ( Signal dom (Vec rows FixedPoint)          -- outputVec
+     , Signal dom Bool                           -- validOut
+     , Signal dom Bool                           -- readyOut
+     )
+sequentialMatVecStub mat inSig =
+  let
+    (validIn, vecIn) = unbundle inSig
+    res              = matrixVectorMult mat <$> vecIn
+  in
+    ( res
+    , validIn        -- Stub: output valid matches input valid
+    , pure True      -- Stub: always ready
+    )

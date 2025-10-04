@@ -15,7 +15,6 @@ import Model.Core.Types
 import Model.Config
   (  NumLayers, VocabularySize, ModelDimension
   )
-import qualified Model.Layers.Attention.ProjectQKVSeq as QKVSeq (stage1ProjectQKVSeqLayer)
 import qualified Model.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
   , multiCycleTransformerLayer
@@ -49,22 +48,9 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
-  
-  -- Run the Stage-1 QKV sequencers for all layers in parallel; select current one
-  s1Results :: Vec NumLayers (Signal dom LayerData, Signal dom Bool)
-  s1Results =
-    imap
-      (\ix layerComp ->
-        QKVSeq.stage1ProjectQKVSeqLayer
-          (multiHeadAttention layerComp) ix processingState layerDataRegister)
-      transformerLayers
-
-  s1DoneFlags :: Vec NumLayers (Signal dom Bool)
-  s1DoneFlags = map snd s1Results
 
   -- Select this layer's s1Done for pipeline control
   s1DoneThisLayer :: Signal dom Bool
-  --s1DoneThisLayer = (!!) <$> sequenceA s1DoneFlags <*> layerIndex
   s1DoneThisLayer = pure True
 
   pipelineController :: PipelineController.PipelineOutputs dom
