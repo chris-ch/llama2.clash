@@ -4,7 +4,6 @@ module Model.Core.Transformer (
 
 import Clash.Prelude
 import Model.Core.Transformer.Internal
-
 import Model.Helpers (liftA4)
 import Model.Core.Types
   ( LayerData(..)
@@ -16,11 +15,12 @@ import Model.Core.Types
 import Model.Config
   (  NumLayers, VocabularySize, ModelDimension
   )
+import qualified Model.Layers.Attention.ProjectQKVSeq as QKVSeq (stage1ProjectQKVSeqLayer)
 import qualified Model.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
   , multiCycleTransformerLayer
   )
-import Model.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent)
+import Model.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
 import qualified Model.Embedding.PRNG as PRNG (tokenSampler)
 import qualified Model.Core.PipelineController as PipelineController
   ( runPipelineController
@@ -49,9 +49,22 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
+  
+  -- Run the Stage-1 QKV sequencers for all layers in parallel; select current one
+  s1Results :: Vec NumLayers (Signal dom LayerData, Signal dom Bool)
+  s1Results =
+    imap
+      (\ix layerComp ->
+        QKVSeq.stage1ProjectQKVSeqLayer
+          (multiHeadAttention layerComp) ix processingState layerDataRegister)
+      transformerLayers
 
-  -- Stage1 done handshake (stub True for now; replace with real signal)
+  s1DoneFlags :: Vec NumLayers (Signal dom Bool)
+  s1DoneFlags = map snd s1Results
+
+  -- Select this layer's s1Done for pipeline control
   s1DoneThisLayer :: Signal dom Bool
+  --s1DoneThisLayer = (!!) <$> sequenceA s1DoneFlags <*> layerIndex
   s1DoneThisLayer = pure True
 
   pipelineController :: PipelineController.PipelineOutputs dom

@@ -104,14 +104,17 @@ library
     , Model.Helpers.FixedPoint
     , Model.Helpers.MatVecI8E
     , Model.Helpers.MatVecI8E_Seq
+    , Model.Helpers.Seq.RowColCtrl
     , Model.Layers.Attention.AttendSequential
     , Model.Layers.Attention.AttentionHead
     , Model.Layers.Attention.MultiHeadAttention
     , Model.Layers.Attention.MultiHeadAttention.Internal
     , Model.Layers.Attention.OnlineSoftmax
+    , Model.Layers.Attention.ProjectQKVSeq
     , Model.Layers.Components.Quantized
     , Model.Layers.FeedForward.FeedForwardNetwork
     , Model.Layers.FeedForward.FeedForwardNetwork.Internal
+    , Model.Layers.FeedForward.FFNSequential
     , Model.Layers.Components.RotaryQ
     , Model.Layers.TransformerLayer
     , Model.Memory.KVCacheBank
