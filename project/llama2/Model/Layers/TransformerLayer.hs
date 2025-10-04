@@ -29,11 +29,12 @@ import Model.Layers.Components.Quantized
   )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
-import Model.Helpers.MatVecI8E (sequentialMatVecStub)
+import Model.Helpers.MatVecI8E (sequentialMatVec, sequentialMatVecStub)
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers (liftA4)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
 import Model.Memory.RamOps (toRamOperation)
+import Model.Numeric.ParamPack (QArray2D)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -76,14 +77,6 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
-  allHeadsDone :: Signal dom Bool
-  allHeadsDone = and <$> sequenceA perHeadDoneFlags
-
-  attentionDone :: Signal dom Bool
-  attentionDone =
-    liftA2 (&&) validProjected $
-      liftA2 (\now prev -> now && not prev) allHeadsDone (register False allHeadsDone)
-
   baseNextLayerData :: Signal dom LayerData
   baseNextLayerData =
     liftA2 (stageProcessor mha ffn layerIndex) processingState layerData
@@ -94,43 +87,101 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
   writeDone :: Signal dom Bool
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
-  -- === Per-head WO projection (sequential façade) ===
+  -- === Per-head WO projection (with proper handshaking) ===
+  (perHeadProjected, allWODone) = 
+    perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
-  -- Each head’s multiplier exposes (outVec, validOut, readyOut)
-  perHeadProjectedSignalsVec ::
-    Vec NumQueryHeads
-      ( Signal dom (Vec ModelDimension FixedPoint)
-      , Signal dom Bool   -- validOut
-      , Signal dom Bool   -- readyOut
-      )
-  perHeadProjectedSignalsVec =
-    zipWith
-      (\woQ hSig -> sequentialMatVecStub woQ (bundle (pure True, hSig)))
-      (mWoQ mha)
-      perHeadOutputs
-
-  -- Gather outputs
-  perHeadProjected :: Signal dom (Vec NumQueryHeads (Vec ModelDimension FixedPoint))
-  perHeadProjected =
-    traverse (\(out,_,_) -> out) perHeadProjectedSignalsVec
-
-  -- All heads must present validOut before we can proceed
-  validProjected :: Signal dom Bool
-  validProjected =
-    and <$> traverse (\(_,v,_) -> v) perHeadProjectedSignalsVec
-
-  -- Combine projected heads into WO result
+  -- Combine projected heads into WO result (only valid when allWODone)
+  -- First convert Vec of Signals to Signal of Vec, then sum
   woHeads :: Signal dom (Vec ModelDimension FixedPoint)
-  woHeads = foldl1 (zipWith (+)) <$> perHeadProjected
+  woHeads = foldl1 (zipWith (+)) <$> sequenceA perHeadProjected
+
+  -- WO projection is complete when all heads are projected
+  validProjected :: Signal dom Bool
+  validProjected = allWODone
 
   xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
   xAfterAttn = liftA2 inputsAggregator layerData woHeads
+
+  -- Attention done pulses on rising edge of validProjected
+  attentionDone :: Signal dom Bool
+  attentionDone = 
+    let prevValid = register False validProjected
+        risingEdge = validProjected .&&. (not <$> prevValid)
+    in risingEdge
 
   nextLayerData :: Signal dom LayerData
   nextLayerData = liftA4 (layerDataAttnDone layerIndex) processingState baseNextLayerData xAfterAttn attentionDone
 
   commitStage3 :: Signal dom LayerData
   commitStage3 = liftA4 (layerDataAttnDone layerIndex)  processingState layerData xAfterAttn attentionDone
+
+-- Per-head WO projection with proper handshaking
+perHeadWOController ::
+  forall dom .
+  HiddenClockResetEnable dom
+  => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))  -- head outputs
+  -> Vec NumQueryHeads (Signal dom Bool)                            -- head done flags
+  -> Vec NumQueryHeads (QArray2D ModelDimension HeadDimension)      -- WO matrices
+  -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))  -- projected outputs
+     , Signal dom Bool                                                  -- all projections done
+     )
+perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
+  (perHeadProjected, allProjectionsDone)
+  where
+    -- For each head: create a controller that starts WO projection when head completes
+    perHeadResults = 
+      zipWith3 controlOneHead perHeadOutputs perHeadDoneFlags mWoQs
+    
+    -- Unpack results
+    perHeadProjected = map (\(out, _, _) -> out) perHeadResults
+    perHeadValidOuts = map (\(_, v, _) -> v) perHeadResults
+    
+    -- All projections done when all validOut signals are high
+    allProjectionsDone = and <$> sequenceA perHeadValidOuts
+
+-- Controller for one head's WO projection
+controlOneHead ::
+  forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom (Vec HeadDimension FixedPoint)           -- head output
+  -> Signal dom Bool                                      -- head done
+  -> QArray2D ModelDimension HeadDimension               -- WO matrix
+  -> ( Signal dom (Vec ModelDimension FixedPoint)        -- projected output
+     , Signal dom Bool                                    -- validOut
+     , Signal dom Bool                                    -- readyOut
+     )
+controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
+  where
+    -- Detect rising edge of headDone
+    headDonePrev = register False headDone
+    headDoneRising = headDone .&&. (not <$> headDonePrev)
+    
+    -- State: IDLE (0) -> PROJECTING (1) -> DONE (2)
+    state :: Signal dom (Unsigned 2)
+    state = register 0 nextState
+    
+    nextState = 
+      mux (state .==. 0 .&&. headDoneRising) (pure 1) $  -- Rising edge of headDone -> start
+      mux (state .==. 1 .&&. woValidOut) (pure 2) $      -- WO done -> done state
+      mux (state .==. 2) (pure 0) $                      -- Reset to idle next cycle
+      state                                              -- Hold state
+    
+    -- Start WO projection when entering state 1
+    startWO = state .==. 0 .&&. headDoneRising
+    
+    -- Call the sequential matmul stub
+    (woResult, woValidOut, woReadyOut) = 
+      sequentialMatVecStub woMatrix (bundle (startWO, headOutput))
+    
+    -- Output the result (hold it when valid)
+    projOut = regEn (repeat 0) woValidOut woResult
+    
+    -- Valid out in DONE state (state 2)
+    validOut = state .==. 2
+    
+    -- Ready when idle
+    readyOut = state .==. 0
 
 kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
 kvWriteDoneCond layerIndex state banksDone = processingStage state == Stage2_WriteKV
