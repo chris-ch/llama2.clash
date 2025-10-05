@@ -170,7 +170,7 @@ controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
     -- Start WO projection when entering state 1
     startWO = state .==. 0 .&&. headDoneRising
     
-    -- Call the sequential matmul stub
+    -- Call the sequential matmul stub (no latching - use current headOutput)
     (woResult, woValidOut, woReadyOut) = 
       sequentialMatVecStub woMatrix (bundle (startWO, headOutput))
     

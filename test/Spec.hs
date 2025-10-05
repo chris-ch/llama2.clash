@@ -1,4 +1,4 @@
-module Spec where
+module Spec (main) where
 
 import Clash.Prelude
 
@@ -7,6 +7,7 @@ import qualified Model.Layers.Attention.AttentionHeadSpec (spec)
 import qualified Model.Layers.Attention.MultiHeadAttentionSpec (spec)
 import qualified Model.Layers.FeedForward.FeedForwardNetworkSpec  (spec)
 import qualified Model.Layers.TransformerLayerSpec (spec)
+import qualified Model.Helpers.MatVecI8ESpec (spec)
 
 main :: IO ()
 main = hspec $ do
@@ -14,3 +15,4 @@ main = hspec $ do
   Model.Layers.Attention.MultiHeadAttentionSpec.spec
   Model.Layers.FeedForward.FeedForwardNetworkSpec.spec
   Model.Layers.TransformerLayerSpec.spec
+  Model.Helpers.MatVecI8ESpec.spec

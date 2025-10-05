@@ -121,21 +121,23 @@ sequentialMatVecOneRow ::
   , KnownNat cols )
   => Signal dom (RowI8E cols)                  -- ^ row as a signal
   -> Signal dom (Bool, Vec cols FixedPoint)    -- ^ (validIn, input vector)
+  -> Signal dom Bool                           -- ^ clear (reset for new row)
   -> ( Signal dom FixedPoint                   -- ^ output scalar
      , Signal dom Bool )                       -- ^ done pulse
-sequentialMatVecOneRow rowSig inSig = (yOut, done)
+sequentialMatVecOneRow rowSig inSig clearSig = (yOut, done)
  where
   (validIn, xVec) = unbundle inSig
 
-  -- Column index sequencer
+  -- Column index sequencer with clear
   colIdx :: Signal dom (Index cols)
-  colIdx = mealy step 0 validIn
+  colIdx = mealy step 0 (bundle (validIn, clearSig))
     where
-      step i vIn =
+      step i (vIn, clr) =
         let i0
-              | vIn && i == maxBound = 0
-              | vIn = succ i
-              | otherwise = i
+              | clr = 0                         -- Reset on clear
+              | vIn && i == maxBound = 0        -- Wrap at end
+              | vIn = succ i                    -- Advance
+              | otherwise = i                   -- Hold
         in  (i0, i)
 
   -- Current input element from xVec
@@ -144,10 +146,10 @@ sequentialMatVecOneRow rowSig inSig = (yOut, done)
   -- Control signals for row engine
   enSig      = validIn
   lastColSig = (colIdx .==. pure (maxBound :: Index cols)) .&&. validIn
-  clearSig   = validIn .&&. (colIdx .==. pure 0)
+  clearRowSig = clearSig
 
   -- Call the row engine
-  (yOut, done) = matVecRowSeq clearSig enSig lastColSig rowSig xElem
+  (yOut, done) = matVecRowSeq clearRowSig enSig lastColSig rowSig xElem
 
 -- | Sequential matrix-vector multiply over all rows
 --   Produces full output vector, one row at a time
@@ -189,8 +191,16 @@ sequentialMatVec (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
   curRow :: Signal dom (RowI8E cols)
   curRow = (!!) rowsQ <$> rowIdx
 
-  -- One-row sequential matvec (now accepts isActive to keep processing)
-  (yRow, rowDone) = sequentialMatVecOneRow curRow (bundle (isActive, xVec))
+  -- Generate clear pulse when starting a new row
+  rowIdxPrev = register 0 rowIdx
+  clearRow = (rowIdx ./=. rowIdxPrev) .||. validIn
+
+  -- Latch input vector when starting computation
+  xVecLatched :: Signal dom (Vec cols FixedPoint)
+  xVecLatched = regEn (repeat 0) validIn xVec
+
+  -- One-row sequential matvec (use LATCHED input with clear signal)
+  (yRow, rowDone) = sequentialMatVecOneRow curRow (bundle (isActive, xVecLatched)) clearRow
 
   -- Accumulate results into output vector
   outMem :: Signal dom (Vec rows FixedPoint)

@@ -158,6 +158,7 @@ test-suite llama2-test
       Model.Layers.Attention.MultiHeadAttentionSpec
       Model.Layers.FeedForward.FeedForwardNetworkSpec
       Model.Layers.TransformerLayerSpec
+      Model.Helpers.MatVecI8ESpec 
   hs-source-dirs:
       test
   build-depends:
@@ -166,11 +167,10 @@ test-suite llama2-test
     , hspec
     , llama2
     , QuickCheck
-  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N -main-is Spec.mainif flag(model-260k)
-    ghc-options: -DMODEL_260K
-  if flag(model-15m)
-    ghc-options: -DMODEL_15M
-  if !flag(model-260k) && !flag(model-15m)
-    ghc-options: -DMODEL_DEFAULT
-    buildable: False
-
+  ghc-options:
+    -Wall
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+    -main-is Spec.main
+    -DMODEL_260K
