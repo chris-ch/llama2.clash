@@ -117,6 +117,7 @@ library
     , Model.Layers.FeedForward.FFNSequential
     , Model.Layers.Components.RotaryQ
     , Model.Layers.TransformerLayer
+    , Model.Layers.TransformerLayer.Internal
     , Model.Memory.KVCacheBank
     , Model.Memory.RamOps
     , Model.Numeric.Types

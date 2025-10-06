@@ -58,7 +58,7 @@ cabal run llama2 --flag model-260k -- --temperature 0 --seed 123 "Hi"
 
 ```text
 <s>
-Hi com j F mer " h C ` $ S { iscode #es reigdees rendes rend { anad jment a whch th th th thndes { \ { th th thde  ameameameameameameameameameameameamendndndnd com Tpt com with com com com com com com comantantantantant y y y y y y yle { { { { { { { ` s s s s {ndndndndndndndndndndesdededede proassegame is proth is...
+ Hibo and Anna, Anna, Anna, came to visit her. She saw a big box and asked Anna. [...]
 ```
 
 ## C Version

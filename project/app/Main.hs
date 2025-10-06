@@ -107,7 +107,7 @@ optionsParser =
     <$> OA.optional (OA.option OA.auto (OA.long "seed" <> OA.help "Seed for debugging"))
     <*> OA.strOption (OA.long "tokenizer-file" <> OA.value
 #if defined(MODEL_260K)
-      "./data/tokenizer.bin"
+      "./data/tok512.bin"
 #elif defined(MODEL_15M)
       "./data/tokenizer.bin"
 #else
