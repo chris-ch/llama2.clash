@@ -45,13 +45,6 @@ sequentialMatVecStub (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
     resultComb :: Signal dom (Vec rows FixedPoint)
     resultComb = matrixVectorMult (QArray2D rowsQ) <$> vecIn
     
-    -- State machine: IDLE -> COMPUTING -> DONE
-    -- We simulate a 1-cycle computation delay for proper handshaking
-    state :: Signal dom Bool  -- False = ready/idle, True = busy
-    state = register False $ 
-      mux validIn (pure True) $           -- Start on validIn
-      mux state (pure False) state        -- Complete next cycle
-    
     -- Latch input when we accept it
     outVec :: Signal dom (Vec rows FixedPoint)
     outVec = regEn (repeat 0) validIn resultComb
@@ -60,9 +53,15 @@ sequentialMatVecStub (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
     validOut :: Signal dom Bool
     validOut = register False validIn
     
-    -- Ready when idle (not busy)
+    -- State machine should ensure busy period
+    state :: Signal dom Bool  -- False = ready/idle, True = busy
+    state = register False $ 
+      mux (validIn .&&. (not <$> state)) (pure True) $   -- Start only when idle and validIn
+      mux state (pure False) state                        -- Complete next cycle
+
+    -- Ready only when truly idle
     readyOut :: Signal dom Bool
-    readyOut = not <$> state
+    readyOut = register True $ not <$> (validIn .||. state)
 
 -- ============================================================================
 -- SEQUENTIAL IMPLEMENTATION
@@ -153,7 +152,7 @@ sequentialMatVecOneRow rowSig inSig clearSig = (yOut, done)
 
 -- | Sequential matrix-vector multiply over all rows
 --   Produces full output vector, one row at a time
---   Compatible with the stub's interface (ready/valid handshake)
+--   Proper ready/valid handshaking for truly sequential operation
 sequentialMatVec
   :: forall dom rows cols .
      ( HiddenClockResetEnable dom
@@ -170,47 +169,54 @@ sequentialMatVec (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
  where
   (validIn, xVec) = unbundle inSig
 
-  -- Row index state machine with active flag
-  (rowIdx, isActive) = unbundle $ mealy stepRow (0, False) (bundle (validIn, rowDone))
-    where
-      stepRow (i, active) (start, done) =
-        let 
-            -- Start on validIn pulse
-            newActive = if start then True
-                       else if done && i == maxBound then False
-                       else active
-            
-            -- Row counter logic
-            i'
-              | start = 0                              -- Reset on start
-              | active && done && i /= maxBound = succ i  -- Advance when row completes
-              | otherwise = i
-        in ((i', newActive), (i, newActive))
+  -- Accept input only when ready and validIn asserted
+  acceptInput = validIn .&&. readyOut
+  
+  -- State machine: IDLE -> PROCESSING -> IDLE
+  isBusy :: Signal dom Bool
+  isBusy = register False $ 
+    mux acceptInput (pure True) $        -- Start processing on accept
+    mux allRowsDone (pure False) isBusy  -- Return to idle when complete
+  
+  -- Latch input vector when accepting
+  xVecLatched :: Signal dom (Vec cols FixedPoint)
+  xVecLatched = regEn (repeat 0) acceptInput xVec
 
-  -- Current row from matrix
+  -- Row counter: tracks which row we're currently processing
+  rowIdx :: Signal dom (Index rows)
+  rowIdx = regEn 0 (acceptInput .||. rowDone) $
+           mux acceptInput 0 $  -- Reset to row 0 when starting
+           mux (rowDone .&&. (rowIdx ./=. pure maxBound)) 
+               (succ <$> rowIdx)  -- Advance to next row
+               rowIdx
+
+  -- Select current row from matrix
   curRow :: Signal dom (RowI8E cols)
   curRow = (!!) rowsQ <$> rowIdx
 
-  -- Generate clear pulse when starting a new row
-  rowIdxPrev = register 0 rowIdx
-  clearRow = (rowIdx ./=. rowIdxPrev) .||. validIn
+  -- Clear row engine when starting a new row
+  -- Important: also clear on acceptInput to start first row
+  clearRow = acceptInput .||. (rowDone .&&. (rowIdx ./=. pure maxBound))
 
-  -- Latch input vector when starting computation
-  xVecLatched :: Signal dom (Vec cols FixedPoint)
-  xVecLatched = regEn (repeat 0) validIn xVec
+  -- Stream enable: enable when accepting input (to start immediately) OR when busy
+  -- This ensures we start processing on the same cycle we accept
+  streamEn = acceptInput .||. isBusy
 
-  -- One-row sequential matvec (use LATCHED input with clear signal)
-  (yRow, rowDone) = sequentialMatVecOneRow curRow (bundle (isActive, xVecLatched)) clearRow
+  -- Process one row at a time using the row engine
+  (yRow, rowDone) = sequentialMatVecOneRow curRow (bundle (streamEn, xVecLatched)) clearRow
 
-  -- Accumulate results into output vector
+  -- Accumulate row results into output vector as each row completes
   outMem :: Signal dom (Vec rows FixedPoint)
   outMem = regEn (repeat 0) rowDone
              (replace <$> rowIdx <*> yRow <*> outMem)
 
   outVec = outMem
 
-  -- Pulse when last row has finished
-  validOut = rowDone .&&. (rowIdx .==. pure (maxBound :: Index rows))
+  -- All rows done when the last row completes
+  allRowsDone = rowDone .&&. (rowIdx .==. pure (maxBound :: Index rows))
   
-  -- For now, always ready (could add backpressure logic later)
-  readyOut = pure True
+  -- ValidOut pulses ONE cycle after all rows complete (matches stub)
+  validOut = register False allRowsDone
+
+  -- Ready when idle (not busy)
+  readyOut = not <$> isBusy
