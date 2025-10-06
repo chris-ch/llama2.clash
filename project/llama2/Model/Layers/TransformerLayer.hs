@@ -30,7 +30,6 @@ import Model.Layers.Components.Quantized
   )
 
 import qualified Model.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
-import Model.Helpers.MatVecI8E (sequentialMatVec, sequentialMatVecStub)
 import Model.Numeric.Types (FixedPoint)
 import Model.Helpers (liftA4)
 import Model.Layers.Attention.AttendSequential (attendHeadSeq)
