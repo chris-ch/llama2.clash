@@ -184,36 +184,44 @@ sequentialMatVec (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
 
   -- Row counter: tracks which row we're currently processing
   rowIdx :: Signal dom (Index rows)
-  rowIdx = regEn 0 (acceptInput .||. rowDone) $
+  rowIdx = register 0 $
            mux acceptInput 0 $  -- Reset to row 0 when starting
            mux (rowDone .&&. (rowIdx ./=. pure maxBound)) 
                (succ <$> rowIdx)  -- Advance to next row
                rowIdx
 
+  -- We need to track which row we just finished for storage
+  -- Store the row index at the start of processing that row
+  rowIdxForStore :: Signal dom (Index rows)
+  rowIdxForStore = regEn 0 (acceptInput .||. rowDone) rowIdx
+
   -- Select current row from matrix
   curRow :: Signal dom (RowI8E cols)
   curRow = (!!) rowsQ <$> rowIdx
 
-  -- Clear row engine when starting a new row
-  -- Important: also clear on acceptInput to start first row
-  clearRow = acceptInput .||. (rowDone .&&. (rowIdx ./=. pure maxBound))
+  -- Clear row engine NEXT cycle after rowDone (or immediately on acceptInput)
+  -- This gives time for rowIdx to advance and state to settle
+  clearRow = register False $
+             mux acceptInput (pure True) $  -- Clear on accept
+             mux rowDone (pure True) $      -- Clear next cycle after done
+             pure False
 
-  -- Stream enable: enable when accepting input (to start immediately) OR when busy
-  -- This ensures we start processing on the same cycle we accept
-  streamEn = acceptInput .||. isBusy
+  -- Stream enable: enable processing when busy, but not during clear cycle
+  streamEn = isBusy .&&. (not <$> clearRow)
 
   -- Process one row at a time using the row engine
   (yRow, rowDone) = sequentialMatVecOneRow curRow (bundle (streamEn, xVecLatched)) clearRow
 
   -- Accumulate row results into output vector as each row completes
+  -- Use rowIdxForStore which captures the index at row start
   outMem :: Signal dom (Vec rows FixedPoint)
   outMem = regEn (repeat 0) rowDone
-             (replace <$> rowIdx <*> yRow <*> outMem)
+             (replace <$> rowIdxForStore <*> yRow <*> outMem)
 
   outVec = outMem
 
   -- All rows done when the last row completes
-  allRowsDone = rowDone .&&. (rowIdx .==. pure (maxBound :: Index rows))
+  allRowsDone = rowDone .&&. (rowIdxForStore .==. pure (maxBound :: Index rows))
   
   -- ValidOut pulses ONE cycle after all rows complete (matches stub)
   validOut = register False allRowsDone

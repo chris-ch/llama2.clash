@@ -53,6 +53,38 @@ simulateUntilValid maxCycles vec =
         [] -> Nothing -- Timeout: no valid output within maxCycles
         ((_, _, result) : _) -> Just result
 
+-- Simulate until we get a valid output, return the result
+-- This waits for the handshake to complete regardless of cycle count
+simulateUntilValid' ::
+  Int -> -- Max cycles to simulate
+  Vec 4 FixedPoint -> -- Input vector
+  Maybe (Vec 3 FixedPoint) -- Result (Nothing if timeout)
+simulateUntilValid' maxCycles vec =
+  let -- Create input stream: wait for ready, then send valid input
+      inputStream = (False, repeat 0) : DL.repeat (True, vec)
+      inputSig = fromList inputStream
+
+      -- Run simulation
+      (outVecsSig, validOutsSig, readyOutsSig) =
+        exposeClockResetEnable
+          (sequentialMatVec makeSimpleQMatrix)
+          CS.systemClockGen
+          CS.resetGen
+          CS.enableGen
+          inputSig
+
+      outVecs = DL.take maxCycles $ sample outVecsSig
+      validOuts = DL.take maxCycles $ sample validOutsSig
+      _readyOuts = DL.take maxCycles $ sample readyOutsSig
+
+      -- Find first cycle where validOut is True
+      resultsWithIndex = DL.zip3 [0 :: Int ..] validOuts outVecs
+      validResults = DL.filter (\(_, valid, _) -> valid) resultsWithIndex
+
+   in case validResults of
+        [] -> Nothing -- Timeout: no valid output within maxCycles
+        ((_, _, result) : _) -> Just result
+
 -- Helper to check if result matches expected within tolerance
 checkResultWithinTolerance :: Vec 3 FixedPoint -> Vec 3 FixedPoint -> FixedPoint -> Bool
 checkResultWithinTolerance actual expected tolerance =
@@ -73,12 +105,10 @@ spec = do
           tolerance = 0.01
 
       -- Check that we got a result
-      result
-        `shouldSatisfy` ( \case
+      result `shouldSatisfy` ( \case
                             Nothing -> False
                             Just _ -> True
                         )
-
       -- Check the result is correct
       case result of
         Just outVec ->
@@ -117,7 +147,7 @@ spec = do
           -- Expected: [1*(-1) + 2*(-0.5) + 3*0.5 + 4*1,
           --            5*(-1) + 6*(-0.5) + 7*0.5 + 8*1,
           --            9*(-1) + 10*(-0.5) + 11*0.5 + 12*1]
-          --         = [4.5, 6.5, 8.5]
+          --         = [3.5, 3.5, 3.5]
           expected = 3.5 :> 3.5 :> 3.5 :> Nil
           tolerance = 0.01
       case result of
@@ -176,7 +206,6 @@ spec = do
           expected = 300.0 :> 700.0 :> 1100.0 :> Nil
           tolerance = 0.1
 
-      putStrLn $ "result: " P.++ show result
       case result of
         Just outVec ->
           checkResultWithinTolerance outVec expected tolerance `shouldBe` True
@@ -206,3 +235,77 @@ spec = do
 
       hasValidOut `shouldBe` True
       readyChanges `shouldBe` True
+
+  describe "sequentialMatVec" $ do
+    
+    it "computes correct matrix-vector product (cycle-independent)" $ do
+      let result = simulateUntilValid' 60 makeSimpleVec
+
+          -- Expected: [1*1 + 2*0.5 + 3*0.25 + 4*0.125,
+          --            5*1 + 6*0.5 + 7*0.25 + 8*0.125,
+          --            9*1 + 10*0.5 + 11*0.25 + 12*0.125]
+          --         = [3.25, 10.75, 18.25]
+          expected = 3.25 :> 10.75 :> 18.25 :> Nil
+          tolerance = 0.01
+
+      -- Check that we got a result
+      result `shouldSatisfy` ( \case
+                            Nothing -> False
+                            Just _ -> True
+                        )
+
+      -- Check the result is correct
+      case result of
+        Just outVec ->
+          checkResultWithinTolerance outVec expected tolerance `shouldBe` True
+        Nothing ->
+          expectationFailure "No valid output received within timeout"
+
+    it "handles negative values correctly" $ do
+      let 
+          negVec = (-1.0) :> (-0.5) :> 0.5 :> 1.0 :> Nil
+          result = simulateUntilValid' 60 negVec
+          -- Expected: [1*(-1) + 2*(-0.5) + 3*0.5 + 4*1,
+          --            5*(-1) + 6*(-0.5) + 7*0.5 + 8*1,
+          --            9*(-1) + 10*(-0.5) + 11*0.5 + 12*1]
+          --         = [3.5, 3.5, 3.5]
+          expected = 3.5 :> 3.5 :> 3.5 :> Nil
+          tolerance = 0.01
+
+      -- Check that we got a result
+      result `shouldSatisfy` ( \case
+                            Nothing -> False
+                            Just _ -> True
+                        )
+
+      -- Check the result is correct
+      case result of
+        Just outVec ->
+          checkResultWithinTolerance outVec expected tolerance `shouldBe` True
+        Nothing ->
+          expectationFailure "No valid output received within timeout"
+
+    it "produces deterministic results for same input" $ do
+      let vec = 0.3 :> 0.2 :> 0.1 :> 0.0 :> Nil
+          r1 = simulateUntilValid' 60 vec
+          r2 = simulateUntilValid' 60 vec
+      case (r1, r2) of
+        (Just out1, Just out2) ->
+          P.and (P.zipWith (\a b -> abs (a-b) < 0.0001) (toList out1) (toList out2)) `shouldBe` True
+        _ -> expectationFailure "No results for determinism test"
+
+    it "handles ready/valid protocol correctly for sequentialMatVec" $ do
+      let inputStream = (False, repeat 0) : (True, makeSimpleVec) : DL.repeat (False, repeat 0)
+          inputSig = fromList inputStream
+          (_, validOutsSig, readyOutsSig) =
+            exposeClockResetEnable
+              (sequentialMatVec makeSimpleQMatrix)
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              inputSig
+          validOuts = DL.take 60 $ sample validOutsSig
+          readyOuts = DL.take 60 $ sample readyOutsSig
+      DL.or validOuts `shouldBe` True
+      P.length (DL.nub readyOuts) > 1 `shouldBe` True
+      
