@@ -136,8 +136,6 @@ spec = do
               CS.enableGen
           validOuts = DL.take 5 $ sample @System validOutsSig
           readyOuts = DL.take 5 $ sample @System readyOutsSig
-      putStrLn $ "validOuts during reset: " P.++ show validOuts
-      putStrLn $ "readyOuts during reset: " P.++ show readyOuts
       all P.not validOuts `shouldBe` True
     it "headDones signal is well-defined" $ do
       let headDonesList = DL.take 15 $ DL.replicate 10 False P.++ DL.repeat True

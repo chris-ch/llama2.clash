@@ -5,15 +5,14 @@ module Model.Helpers.MatVecI8E
   , singleRowProcessor
   , columnComponentCounter
   , accumulator
-  , rowStateMachine
+  , MultiplierState(..)
+  , matrixMultiplierStateMachine
   ) where
 
 import Clash.Prelude
 import Model.Numeric.Types (FixedPoint, scalePow2F)
 import Model.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
 import Model.Helpers.FixedPoint (dotProductF)
-
-import Data.Proxy (Proxy(..))           -- for type-level Proxy
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
 dotProductRowI8E :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint
@@ -36,14 +35,14 @@ sequentialMatVecStub
      , KnownNat cols, KnownNat rows
      )
   => QArray2D rows cols
-  -> Signal dom (Bool, Vec cols FixedPoint)       -- ^ (validIn, inputVec)
+  -> Signal dom Bool                              -- ^ validIn
+  -> Signal dom (Vec cols FixedPoint)             -- ^ inputVec
   -> ( Signal dom (Vec rows FixedPoint)           -- ^ outputVec
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-sequentialMatVecStub (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
+sequentialMatVecStub (QArray2D rowsQ) validIn vecIn = (outVec, validOut, readyOut)
   where
-    (validIn, vecIn) = unbundle inSig
 
     -- Compute result combinationally
     resultComb :: Signal dom (Vec rows FixedPoint)
@@ -86,10 +85,10 @@ sequentialMatVecStub (QArray2D rowsQ) inSig = (outVec, validOut, readyOut)
 -- The counter updates the index based on the
 -- reset and enable signals. It ensures the index does not exceed the maximum bound defined
 -- by 'n', making it suitable for iterating over columns in a matrix row.
-columnComponentCounter :: (HiddenClockResetEnable dom, KnownNat n)
+columnComponentCounter :: (HiddenClockResetEnable dom, KnownNat size)
   => Signal dom Bool
   -> Signal dom Bool
-  -> Signal dom (Index n)
+  -> Signal dom (Index size)
 columnComponentCounter reset enable = index
   where
     -- Compute next value *combinationally* from current and inputs
@@ -129,138 +128,158 @@ accumulator reset enable input = acc
     -- Register holds state; output is current (updated) value
     acc = register 0 next
 
-singleRowProcessor :: forall dom cols .
+singleRowProcessor :: forall dom size.
   ( HiddenClockResetEnable dom
-  , KnownNat cols )
+  , KnownNat size )
   => Signal dom Bool                           -- ^ reset for new row
   -> Signal dom Bool                           -- ^ enable
-  -> Signal dom (RowI8E cols)                  -- ^ input row
-  -> Signal dom (Vec cols FixedPoint)          -- ^ input column
+  -> Signal dom (RowI8E size)                  -- ^ input row
+  -> Signal dom (Vec size FixedPoint)          -- ^ input column
   -> ( Signal dom FixedPoint                   -- ^ output scalar
-     , Signal dom Bool )                       -- ^ done flag
-singleRowProcessor reset enable row columnVec = (output, rowDone)
+     , Signal dom Bool                         -- ^ done flag
+     , Signal dom FixedPoint                   -- ^ accumulator
+     , Signal dom (Index size)                 -- ^ current column index
+  )
+singleRowProcessor reset enable row columnVec = (output, rowDone, acc, columnIndex)
   where
     mant = fst <$> row
     expon = snd <$> row
-    
+
     columnIndex = columnComponentCounter reset enable
     mantissa = (!!) <$> mant <*> columnIndex
     columnComponent = (!!) <$> columnVec <*> columnIndex  -- Select component using counter
-    
+
     mantissaFP = fromIntegral <$> mantissa :: Signal dom FixedPoint
     inputValue = mantissaFP * columnComponent
     acc = accumulator reset enable inputValue
     output = liftA2 scalePow2F expon acc
 
-    lastColumnFlag = (columnIndex .==. pure (maxBound :: Index cols)) .&&. enable
+    lastColumnFlag = (columnIndex .==. pure (maxBound :: Index size)) .&&. enable
     rowDone       = register False lastColumnFlag
 
--- ============================================================================
--- Row State Machine
--- ============================================================================
-
-data RowState rows
-  = RowIdle
-  | RowProcessing (Index rows)
+-- State machine for controlling the sequential processing
+data MultiplierState = IDLE | PROCESSING | DONE
   deriving (Generic, NFDataX, Show, Eq)
 
-rowStateMachine ::
-  forall dom rows .
-  ( HiddenClockResetEnable dom
-  , KnownNat rows
-  ) =>
-  Signal dom Bool           -- ^ validIn: start signal
-  -> Signal dom Bool        -- ^ rowDone: completion signal for current row
-  -> ( Signal dom Bool       -- ^ busy
-     , Signal dom (Index rows) -- ^ rowIdx
-     , Signal dom Bool       -- ^ clearRow pulse
+-- | Sequential matrix-vector multiplication processor that computes the product
+-- of a quantized matrix with an input vector in a row-by-row, column-by-column manner.
+-- The function processes one column per cycle, completing one row before moving to the next.
+--
+-- Inputs:
+-- - matrix: A quantized 2D array (QArray2D) containing the matrix in I8E format
+-- - validIn: A signal indicating when the input vector is valid and processing should begin
+-- - inputVec: A signal carrying the input vector of FixedPoint values
+--
+-- Outputs:
+-- - outputVec: A signal carrying the resulting vector after matrix-vector multiplication
+-- - validOut: A signal indicating when the output vector is valid (all rows processed)
+-- - readyOut: A signal indicating when the processor is ready to accept new input
+--
+-- The processor operates as a finite state machine that:
+-- 1. Waits for validIn to be asserted (IDLE state)
+-- 2. Processes each row sequentially using singleRowProcessor (PROCESSING state)
+-- 3. Outputs the complete result vector and asserts validOut (DONE state)
+-- 4. Returns to IDLE state
+
+
+-- | State machine for matrix multiplier
+-- Manages state transitions and control signals
+matrixMultiplierStateMachine
+  :: forall dom. HiddenClockResetEnable dom
+  => Signal dom Bool -- ^ enable
+  -> Signal dom Bool -- ^ allRowsDone
+  -> ( Signal dom MultiplierState -- ^ currentState
+     , Signal dom Bool -- ^ validOut
+     , Signal dom Bool -- ^ readyOut
      )
-rowStateMachine validIn rowDone = (busy, rowIdx, clearRow)
+matrixMultiplierStateMachine enable allRowsDone = (currentState, validOut, readyOut)
   where
-    maxRow :: Index rows
-    maxRow = fromIntegral (natVal (Proxy :: Proxy rows) - 1)
+    -- State register
+    currentState :: Signal dom MultiplierState
+    currentState = register IDLE nextState
 
-    -- Mealy step function: returns next state + output
-    step :: RowState rows -> (Bool, Bool) -> (RowState rows, (Bool, Index rows, Bool))
-    step s (vIn, rDone) = case s of
-      RowIdle ->
-        if vIn
-          then (RowProcessing 0, (True, 0, True))  -- Start processing, pulse clearRow
-          else (RowIdle, (False, 0, True))         -- Idle, keep clearRow True
-      RowProcessing n ->
-        if rDone
-          then if n == maxRow
-                 then (RowIdle, (True, n, True))  -- Done with last row, stay busy one more cycle
-                 else (RowProcessing (n+1), (True, n, True)) -- Advance to next row, output current rowIdx
-          else (RowProcessing n, (True, n, False)) -- Stay in current row, no pulse
-
-    -- FSM output signal
-    out :: Signal dom (Bool, Index rows, Bool)
-    out = mealy step RowIdle (bundle (validIn, rowDone))
-
-    -- Extract outputs
-    busy     = (\(b,_,_) -> b) <$> out
-    rowIdx   = (\(_,r,_) -> r) <$> out
-    clearRow = (\(_,_,c) -> c) <$> out
-
--- ============================================================================
--- Main Sequential Matrix-Vector Multiplication
--- ============================================================================
-
-type State rows = (Bool, Index rows)
+    -- Check if in a specific state
+    stateIs :: MultiplierState -> Signal dom Bool
+    stateIs s = currentState .==. pure s
     
+    -- State transitions
+    nextState :: Signal dom MultiplierState
+    nextState = mux (stateIs IDLE .&&. enable) (pure PROCESSING) $
+                mux (stateIs PROCESSING .&&. allRowsDone) (pure DONE) $
+                mux (stateIs DONE) (pure IDLE)
+                currentState
+
+    -- Output control signals
+    validOut :: Signal dom Bool
+    validOut = register False (stateIs PROCESSING .&&. allRowsDone)
+
+    readyOut :: Signal dom Bool
+    readyOut = stateIs IDLE
+
+-- | Sequential matrix-vector multiplication processor
 matrixMultiplier
   :: forall dom rows cols .
      ( HiddenClockResetEnable dom
-     , KnownNat rows
-     , KnownNat cols
+     , KnownNat cols, KnownNat rows
      )
-  => QArray2D rows cols                    -- ^ matrix
-  -> Signal dom Bool                       -- ^ enable)
-  ->  Signal dom (Vec cols FixedPoint)     -- ^ input vector
-  -> ( Signal dom (Vec rows FixedPoint)    -- ^ output vector
-     , Signal dom Bool                     -- ^ validOut
-     , Signal dom Bool                     -- ^ readyOut
-     , Signal dom FixedPoint
-     , Signal dom Bool
-     , Signal dom (State rows)
+  => QArray2D rows cols -- ^ matrix
+  -> Signal dom Bool -- ^ enable
+  -> Signal dom (Vec cols FixedPoint) -- ^ inputVec
+  -> ( Signal dom (Vec rows FixedPoint) -- ^ outputVec
+     , Signal dom Bool -- ^ validOut
+     , Signal dom Bool -- ^ readyOut
+     , Signal dom MultiplierState -- ^ inner state
+     , Signal dom FixedPoint -- ^ rowResult
+     , Signal dom Bool -- ^ rowDone
+     , Signal dom (Index rows) -- ^ rowIndex
+     , Signal dom FixedPoint -- ^ accumulator
+     , Signal dom Bool -- ^ resetRow
+     , Signal dom Bool -- ^ enableRow
+     , Signal dom (RowI8E cols) -- ^ currentRow
+     , Signal dom (Index cols) -- ^ colIdx
      )
-matrixMultiplier (QArray2D rowsQ) enable xVec = (outVec, validOut, readyOut, yOutRow, doneCurrentRow, stateForDebug)
+matrixMultiplier (QArray2D matrix) enable inputVec = (outputVec, validOut, readyOut, 
+  currentState, rowResult, rowDone, rowIndex, acc, resetRow, enableRow, currentRow,
+  colIdx)
   where
+    -- State machine instance
+    (currentState, validOut, readyOut) = matrixMultiplierStateMachine enable allRowsDone
 
-    -- Use the cleaner row state machine
-    (busy, rowIdx, clearRow) = rowStateMachine enable doneCurrentRow
+    -- Row counter to track which row is currently being processed
+    rowIndex :: Signal dom (Index rows)
+    rowIndex = rowCounter
+      where
+        resetRow' = (currentState .==. pure IDLE) .&&. enable
+        enableRow' = rowDone .&&. (currentState .==. pure PROCESSING)
+        incrementFlag = enableRow' .&&. (rowCounter .<. pure (maxBound :: Index rows))
+        nextRow = mux incrementFlag (rowCounter + 1) rowCounter
+        next = mux resetRow' 0 nextRow
+        rowCounter = register 0 next
 
-    -- Current row being processed
+    -- Check if all rows have been processed
+    allRowsDone :: Signal dom Bool
+    allRowsDone = rowDone .&&. (rowIndex .==. pure (maxBound :: Index rows))
+
+    -- Select the current row from the matrix
     currentRow :: Signal dom (RowI8E cols)
-    currentRow = (!!) rowsQ <$> rowIdx
+    currentRow = (matrix !!) <$> rowIndex
 
-    -- Only enable processing when busy
-    enableProcessing :: Signal dom Bool
-    enableProcessing = busy .&&. enable
+    -- Control signals for singleRowProcessor
+    resetRow :: Signal dom Bool
+    resetRow = ((currentState .==. pure IDLE) .&&. enable) .||.
+               ((currentState .==. pure PROCESSING) .&&. rowDone .&&. not <$> allRowsDone)
 
-    -- Sequentially compute dot product for the current row
-    (yOutRow, doneCurrentRow) = singleRowProcessor clearRow enableProcessing currentRow xVec
+    enableRow :: Signal dom Bool
+    enableRow = currentState .==. pure PROCESSING
 
-    -- Output vector register: store each row result as it completes
-    outVec :: Signal dom (Vec rows FixedPoint)
-    outVec = regEn (repeat 0) doneCurrentRow outVecNext
+    -- Single row processor instance
+    (rowResult, rowDone, acc, colIdx) = singleRowProcessor resetRow enableRow currentRow inputVec
 
-    -- Build next output vector by updating current row
-    outVecNext :: Signal dom (Vec rows FixedPoint)
-    outVecNext = liftA3 (\vec idx y -> replace idx y vec) outVec rowIdx yOutRow
+    -- Accumulate results into output vector
+    outputVec :: Signal dom (Vec rows FixedPoint)
+    outputVec = register (repeat 0) nextOutputVec
 
-    -- Done when last row finishes
-    doneAllRows :: Signal dom Bool
-    doneAllRows = liftA2 (\idx doneRow -> doneRow && idx == maxBound) rowIdx doneCurrentRow
-
-    -- Valid pulses when the full matrix is done
-    validOut :: Signal dom Bool
-    validOut = register False doneAllRows
-
-    -- Ready signal: high when not busy
-    readyOut :: Signal dom Bool
-    readyOut = not <$> busy
-
-    -- For debug compatibility
-    stateForDebug = bundle (busy, rowIdx)
+    nextOutputVec :: Signal dom (Vec rows FixedPoint)
+    nextOutputVec = mux rowDone 
+                        (liftA3 replace rowIndex rowResult outputVec)
+                        outputVec
