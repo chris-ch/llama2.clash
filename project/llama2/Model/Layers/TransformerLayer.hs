@@ -250,7 +250,7 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    -- Generate a single write pulse per Stage2, and use it for both K and V.
+    -- Single write pulse per Stage2 entry
     (wrPulse, wrDonePulse) = Cache.writeOnce isStage2Write
 
     wrKVRowK = mux wrPulse (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
