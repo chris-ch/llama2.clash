@@ -3,7 +3,7 @@ module Model.Helpers.MatVecI8E
   , sequentialMatVecStub
   , matrixMultiplier
   , singleRowProcessor
-  , columnComponentCounter
+  , cyclicalCounter
   , accumulator
   , MultiplierState(..)
   , matrixMultiplierStateMachine
@@ -13,6 +13,8 @@ import Clash.Prelude
 import Model.Numeric.Types (FixedPoint, scalePow2F)
 import Model.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
 import Model.Helpers.FixedPoint (dotProductF)
+import Clash.Debug (trace)
+import qualified Prelude as P
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
 dotProductRowI8E :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint
@@ -71,30 +73,26 @@ sequentialMatVecStub (QArray2D rowsQ) validIn vecIn = (outVec, validOut, readyOu
 -- ============================================================================
 
 -- | A stateful column counter for tracking the current column index in a sequential
--- matrix-vector multiplication process. The counter increments when enabled unless it gets reset,
--- operating within a bounded range defined by the type parameter 'n'.
+-- matrix-vector multiplication process. The counter cyclicylly increments when enabled
+-- unless it gets reset, operating within a bounded range defined by the type parameter 'size'.
 -- This function is used to select components from a row vector during sequential processing.
 --
 -- Inputs:
 --   - reset: A signal that, when True, forces the counter to 0.
---   - enable: A signal that, when True, increments the counter if it is below its maximum value.
+--   - enable: A signal that, when True, increments the counter cyclically.
 --
 -- Output:
 --   - A signal carrying the current column index as an 'Index n' value.
 --
--- The counter updates the index based on the
--- reset and enable signals. It ensures the index does not exceed the maximum bound defined
--- by 'n', making it suitable for iterating over columns in a matrix row.
-columnComponentCounter :: (HiddenClockResetEnable dom, KnownNat size)
+cyclicalCounter :: (HiddenClockResetEnable dom, KnownNat size)
   => Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index size)
-columnComponentCounter reset enable = index
+cyclicalCounter reset enable = index
   where
     -- Compute next value *combinationally* from current and inputs
-    nextIndex = mux enable (index + 1) index
+    nextIndex = mux (enable .&&. (index ./=. pure maxBound)) (index + 1) index
     next = mux (reset .||. (index .==. pure maxBound)) 0 nextIndex
-
     -- Register holds state; output is current (updated) value
     index = register 0 next
 
@@ -104,7 +102,7 @@ columnComponentCounter reset enable = index
 -- of a row vector with an input vector in a cycle-by-cycle manner.
 --
 -- Inputs:
---   - reset: A signal that, when True, resets the accumulator to the input value.
+--   - reset: A signal that, when True, resets the accumulator to zero.
 --   - enable: A signal that, when True, enables accumulation of the input value.
 --   - input: A signal carrying the FixedPoint value to be accumulated.
 --
@@ -121,7 +119,7 @@ accumulator
 accumulator reset enable input = acc
   where
     -- Compute next value *combinationally* from current and inputs
-    next = mux reset input $
+    next = mux reset 0 $
            mux enable (acc + input) acc
 
     -- Register holds state; output is current (updated) value
@@ -138,13 +136,15 @@ singleRowProcessor :: forall dom size.
      , Signal dom Bool                         -- ^ done flag
      , Signal dom FixedPoint                   -- ^ accumulator
      , Signal dom (Index size)                 -- ^ current column index
+     , Signal dom FixedPoint  -- ^ mantissaFP
+     , Signal dom FixedPoint  -- ^ columnComponent
   )
-singleRowProcessor reset enable row columnVec = (output, rowDone, acc, columnIndex)
+singleRowProcessor reset enable row columnVec = (output, rowDone, acc, columnIndex, mantissaFP, columnComponent)
   where
     mant = fst <$> row
     expon = snd <$> row
 
-    columnIndex = columnComponentCounter reset enable
+    columnIndex = cyclicalCounter reset enable
     mantissa = (!!) <$> mant <*> columnIndex
     columnComponent = (!!) <$> columnVec <*> columnIndex  -- Select component using counter
 
@@ -208,7 +208,8 @@ matrixMultiplierStateMachine enable rowDone currentRow =
                                         state))))
 
     rowReset = state .==. pure MReset
-    rowEnable = state .==. pure MProcessing
+    -- Disable enable on the cycle when rowDone arrives
+    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. (not <$> rowReset)
     validOut = state .==. pure MDone
     readyOut = state .==. pure MIdle
 
@@ -233,9 +234,11 @@ matrixMultiplier
      , Signal dom Bool -- ^ enableRow
      , Signal dom (RowI8E cols) -- ^ currentRow
      , Signal dom (Index cols) -- ^ colIdx
+     , Signal dom FixedPoint  -- ^ mantissaFP
+     , Signal dom FixedPoint  -- ^ columnComponent
      )
 matrixMultiplier (QArray2D rowsQ) enable inputVec = (outputVec, validOut, readyOut,
-      state, rowResult, rowDone, rowIndex, acc, rowReset, rowEnable, currentRow, columnIndex
+      state, rowResult, rowDone, rowIndex, acc, rowReset, rowEnable, currentRow, columnIndex, mantissa, columnComponent
     )
   where
     -- Row counter to track which row we're processing
@@ -245,7 +248,7 @@ matrixMultiplier (QArray2D rowsQ) enable inputVec = (outputVec, validOut, readyO
     currentRow = (!!) rowsQ <$> rowIndex
 
     -- Single row processor
-    (rowResult, rowDone, acc, columnIndex) = singleRowProcessor rowReset rowEnable currentRow inputVec
+    (rowResult, rowDone, acc, columnIndex, mantissa, columnComponent) = singleRowProcessor rowReset rowEnable currentRow inputVec
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
