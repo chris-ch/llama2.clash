@@ -92,9 +92,8 @@ columnComponentCounter :: (HiddenClockResetEnable dom, KnownNat size)
 columnComponentCounter reset enable = index
   where
     -- Compute next value *combinationally* from current and inputs
-    incrementFlag = enable .&&. (index .<. pure maxBound)
-    nextIndex = mux incrementFlag (index + 1) index
-    next = mux reset 0 nextIndex
+    nextIndex = mux enable (index + 1) index
+    next = mux (reset .||. (index .==. pure maxBound)) 0 nextIndex
 
     -- Register holds state; output is current (updated) value
     index = register 0 next

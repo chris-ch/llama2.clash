@@ -205,8 +205,7 @@ spec = do
         abs (finalOut - expected) < tolerance `shouldBe` True
 
     context "computes dot products for two rows sequentially" $ do
-      let maxCycles = 20
-
+      let maxCycles = 12
           -- Define two different rows
           rowVector1 :: RowI8E 4
           rowVector1 = (1 :> 2 :> 3 :> 4 :> Nil, 0) -- First row: [1, 2, 3, 4], exponent 0
@@ -215,6 +214,20 @@ spec = do
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil -- Column: [1.0, 0.5, 0.25, 0.125]
 
+          expectedAccsPattern =
+            [ 0.0, -- Cycle 0: reset
+              0.0, -- Cycle 1: start first row
+              1.0, -- Cycle 2: 1*1.0
+              2.0, -- Cycle 3: +2*0.5
+              2.75,  -- Cycle 4: +3*0.25
+              3.25,  -- Cycle 5: +4*0.125 (first row done)
+              0.0,   -- Cycle 6: reset before second row
+              2.0,   -- Cycle 7: start second row +2*1.0
+              3.5,   -- Cycle 8: +3*0.5
+              4.5,   -- Cycle 9: +4*0.25 
+              5.125, -- Cycle 10: + 5*0.125 (done)
+              5.125  -- Cycle 11: still done
+            ] :: [FixedPoint]
           -- Expected dot products
           -- First row: 1*1.0 + 2*0.5 + 3*0.25 + 4*0.125 = 1.0 + 1.0 + 0.75 + 0.5 = 3.25
           expected1 = 3.25 :: FixedPoint
@@ -251,7 +264,7 @@ spec = do
           enableStream =
             [False] -- Initial idle cycle
               P.++ DL.replicate 4 True -- Process first row
-              P.++ [False] -- Gap cycle
+              P.++ [True] -- Gap cycle
               P.++ DL.replicate 4 True -- Process second row
               P.++ DL.replicate (maxCycles - 10) False
           enable :: Signal System Bool
@@ -267,7 +280,7 @@ spec = do
           column = fromList columnStream
 
           -- Run simulation
-          (outputComponent, rowDone, _acc, _) =
+          (outputComponent, rowDone, acc, _colIdx) =
             exposeClockResetEnable
               singleRowProcessor
               CS.systemClockGen
@@ -278,6 +291,7 @@ spec = do
               row
               column
 
+          accs = P.take maxCycles $ sample acc
           outs = P.take maxCycles $ sample outputComponent
           dones = P.take maxCycles $ sample rowDone
 
@@ -287,6 +301,8 @@ spec = do
           -- Extract outputs at done cycles
           finalOuts = [outs P.!! i | i <- doneIndices]
 
+      it "has 2 completions" $ do
+        accs `shouldBe` expectedAccsPattern
       it "has 2 completions" $ do
         P.length doneIndices `shouldBe` 2 -- Expect two row completions
       it "first result matches" $ do
@@ -341,7 +357,7 @@ spec = do
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
-        let expectedAccs = [0.0, 0.0, 1.0, 5.0, 14.0, 14.0, 0.0]
+        let expectedAccs = [0.0, 0.0, 0.0, 1.0, 5.0, 14.0, 1.0]
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip (P.take maxCycles accs) expectedAccs) `shouldBe` True
       it "prints debug signals" $ do
         putStrLn $ "outs=" P.++ show outs
