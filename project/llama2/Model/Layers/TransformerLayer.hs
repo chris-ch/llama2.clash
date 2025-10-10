@@ -88,7 +88,10 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
   -- === Per-head WO projection (with proper handshaking) ===
-  (perHeadProjected, allWODone) = 
+  (perHeadProjected
+    , perHeadValidOuts
+    , perHeadReadyOuts
+    , allWODone) = 
     perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
   -- Combine projected heads into WO result (only valid when allWODone)
@@ -123,19 +126,28 @@ perHeadWOController ::
   => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))  -- head outputs
   -> Vec NumQueryHeads (Signal dom Bool)                            -- head done flags
   -> Vec NumQueryHeads (QArray2D ModelDimension HeadDimension)      -- WO matrices
-  -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))  -- projected outputs
-     , Signal dom Bool                                                  -- all projections done
+  -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
+     , Vec NumQueryHeads (Signal dom Bool)  -- validOuts
+     , Vec NumQueryHeads (Signal dom Bool)  -- readyOuts
+     , Signal dom Bool                      -- all projections done
      )
 perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
-  (perHeadProjected, allProjectionsDone)
+  (perHeadProjected
+  , perHeadValidOuts
+  , perHeadReadyOuts
+   , allProjectionsDone
+  )
   where
+
+    gatedHeadDoneFlags = zipWith (.&&.) perHeadDoneFlags perHeadReadyOuts
+
     -- For each head: create a controller that starts WO projection when head completes
-    perHeadResults = 
-      zipWith3 controlOneHead perHeadOutputs perHeadDoneFlags mWoQs
+    perHeadResults = zipWith3 controlOneHead perHeadOutputs gatedHeadDoneFlags mWoQs
     
     -- Unpack results
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
+    perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
     
     -- All projections done when all validOut signals are high
     allProjectionsDone = and <$> sequenceA perHeadValidOuts

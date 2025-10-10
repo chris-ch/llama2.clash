@@ -15,14 +15,14 @@ data FSMState = IDLE | PROJECTING | DONE
 -- Controller for one head's WO projection
 controlOneHead :: forall dom .
   HiddenClockResetEnable dom
-  => Signal dom (Vec HeadDimension FixedPoint)           -- head output
+  => Signal dom (Vec HeadDimension FixedPoint)           -- head vector
   -> Signal dom Bool                                      -- head done
   -> QArray2D ModelDimension HeadDimension               -- WO matrix
   -> ( Signal dom (Vec ModelDimension FixedPoint)        -- projected output
      , Signal dom Bool                                    -- validOut
      , Signal dom Bool                                    -- readyOut
      )
-controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
+controlOneHead headVector headDone woMatrix = (projOut, validOut, readyOut)
   where
     -- Detect rising edge of headDone
     headDonePrev = register False headDone
@@ -43,10 +43,10 @@ controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
       , woValidOut
       , woReadyOut
        , _, _, _, _, _, _, _, _, _, _, _
-       ) = matrixMultiplier woMatrix startWO headOutput
+       ) = matrixMultiplier woMatrix validIn headVector
 
     -- Start WO projection when entering state 1
-    startWO = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
+    validIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
 
     -- Output the result (hold it when valid)
     projOut = regEn (repeat 0) woValidOut woResult
