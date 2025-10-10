@@ -1,5 +1,5 @@
 module LLaMa2.Core.Transformer (
-    multiCycleTransformer
+    transformer
 ) where
 
 import Clash.Prelude
@@ -30,9 +30,9 @@ import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingCompo
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 
-type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool))
+type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool))
 
-multiCycleTransformer :: forall dom
+transformer :: forall dom
    . HiddenClockResetEnable dom
   => TransformerLayer.TransformerDecoderComponent
   -> Signal dom Token
@@ -40,7 +40,7 @@ multiCycleTransformer :: forall dom
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Signal dom Token , Signal dom Bool )
-multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
+transformer decoder inputToken inputTokenValid temperature seed =
   ( selectedToken, readyPulse)
  where
   vocabulary :: MatI8E VocabularySize LLaMa2Dimension
@@ -49,13 +49,13 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
 
-  -- Select this layer's s1Done for pipeline control
-  s1DoneThisLayer :: Signal dom Bool
-  s1DoneThisLayer = pure True
-
   pipelineController :: PipelineController.PipelineOutputs dom
   pipelineController =
-    PipelineController.runPipelineController attnDoneThisLayer writeDoneThisLayer s1DoneThisLayer inputTokenValid
+    PipelineController.runPipelineController 
+      attnDoneThisLayer 
+      writeDoneThisLayer 
+      qkvDoneThisLayer    -- Changed from s1DoneThisLayer
+      inputTokenValid
 
   layerIndex :: Signal dom (Index NumLayers)
   layerIndex = PipelineController.layerIndex pipelineController
@@ -93,13 +93,18 @@ multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
 
   (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
 
-  (writeDone, attnDone) = unzip doneFlags
+  -- Unpack the three completion signals
+  (writeDone, attnDone, qkvDone) = unzip3 doneFlags
 
   writeDoneThisLayer :: Signal dom Bool
   writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex
 
   attnDoneThisLayer :: Signal dom Bool
   attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> layerIndex
+
+  -- NEW: Select QKV done signal for current layer
+  qkvDoneThisLayer :: Signal dom Bool
+  qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> layerIndex
 
 pipelineProcessor :: forall dom
    . HiddenClockResetEnable dom
@@ -121,17 +126,19 @@ layerProcessor :: forall dom
   => Signal dom ProcessingState
   -> Signal dom LayerData
   -> (Index NumLayers, TransformerLayerComponent)
-  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool))
+  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool, Signal dom Bool))
 layerProcessor processingState currentLayerData (layerIndex, layerComp) =
   let
-    (newLayerData, writeDone, attnDone, commitC3) =
+    -- transformerLayer now returns 5 outputs (including qkvDone)
+    (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention) =
       TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
 
     selectedLayerData =
-      liftA4 (layerDataSelector layerIndex) processingState currentLayerData newLayerData commitC3
+      liftA4 (layerDataSelector layerIndex) processingState currentLayerData layerData layerDataAfterAttention
 
   in
-    (selectedLayerData, (writeDone, attnDone))
+    -- Return all three completion signals
+    (selectedLayerData, (writeDone, attnDone, qkvDone))
 
 layerDataSelector :: Index NumLayers
                   -> ProcessingState

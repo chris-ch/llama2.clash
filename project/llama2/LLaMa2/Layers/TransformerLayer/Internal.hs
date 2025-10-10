@@ -15,18 +15,18 @@ data FSMState = IDLE | PROJECTING | DONE
 -- Controller for one head's WO projection
 singleHeadController :: forall dom .
   HiddenClockResetEnable dom
-  => Signal dom (Vec HeadDimension FixedPoint)            -- head vector
-  -> Signal dom Bool                                      -- head done
+  => Signal dom Bool                                      -- validIn
+  -> Signal dom (Vec HeadDimension FixedPoint)            -- head vector
   -> MatI8E LLaMa2Dimension HeadDimension                 -- WO matrix
   -> ( Signal dom (Vec LLaMa2Dimension FixedPoint)        -- projected output
      , Signal dom Bool                                    -- validOut
      , Signal dom Bool                                    -- readyOut
      )
-singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut)
+singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
   where
     -- Detect rising edge of headDone
-    headDonePrev = register False headDone
-    headDoneRising = headDone .&&. (not <$> headDonePrev)
+    headDonePrev = register False validIn
+    headDoneRising = validIn .&&. (not <$> headDonePrev)
 
     -- State: IDLE (0) -> PROJECTING (1) -> DONE (2)
     state :: Signal dom FSMState
@@ -48,10 +48,10 @@ singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut
     -- Upstream |                 | Multiplier |                  | Downstream
     --          | <---readyOut--- |            | <---readyIn----- |
     --
-    (woResult, woValidOut, woReadyOut) = matrixMultiplier validIn readyIn woMatrix headVector
+    (woResult, woValidOut, woReadyOut) = matrixMultiplierStub woValidIn readyIn woMatrix headVector
 
     -- Start WO projection when entering state 1
-    validIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
+    woValidIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
 
     -- Output the result (hold it when valid)
     projOut = regEn (repeat 0) woValidOut woResult

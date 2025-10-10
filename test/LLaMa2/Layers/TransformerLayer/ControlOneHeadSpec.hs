@@ -68,12 +68,12 @@ worstLatency =
 -- Expose singleHeadController
 singleHeadControllerDUT
   :: HiddenClockResetEnable System
-  => Signal System Bool                         -- headDone (start request)
+  => Signal System Bool                         -- validIn (start request)
   -> ( Signal System (Vec LLaMa2Dimension FixedPoint) -- projOut (held at valid)
      , Signal System Bool                       -- validOut (pulse)
      , Signal System Bool )                     -- readyOut (level)
-singleHeadControllerDUT headDoneSig =
-  singleHeadController (pure makeHeadVec) headDoneSig makeWO
+singleHeadControllerDUT validIn =
+  singleHeadController validIn (pure makeHeadVec) makeWO
 
 -- ==========
 -- Simulation helpers

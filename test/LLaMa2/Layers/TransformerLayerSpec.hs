@@ -56,7 +56,7 @@ simulateControlOneHeadUntilValid maxCycles headOut = do
       -- Simulate the module
       (projOutsSig, validOutsSig, readyOutsSig) =
         exposeClockResetEnable
-          (singleHeadController headOutputs headDones makeSimpleWOMatrix)
+          (singleHeadController headDones headOutputs makeSimpleWOMatrix)
           CS.systemClockGen
           CS.resetGen
           CS.enableGen
@@ -128,7 +128,7 @@ spec = do
           headDones = fromList $ DL.repeat False :: Signal System Bool
           (_, validOutsSig, readyOutsSig) =
             exposeClockResetEnable
-              (singleHeadController headOutputs headDones makeSimpleWOMatrix)
+              (singleHeadController headDones headOutputs makeSimpleWOMatrix)
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
