@@ -30,9 +30,9 @@ Blockers (must-fix to build a real bitstream)
    - For synthesis, the decoder (weights, LUTs) must be a constant bound inside the top or provided via an external loader, not a port. Provide a new top that is fully applied and monomorphic.
 
 2) Use true ROM/BRAM for the vocabulary table (and large parameter tables).
-   - Model.Core.Embedding.embedder currently indexes a Vec with a runtime Int/Token. That becomes a giant mux and will not map to BRAM for large VocabularySize (e.g., 32k). Use rom/romPow2 (1‑cycle) or blockRam (1‑cycle) to force BRAM.
+   - LLaMa2.Core.Embedding.embedder currently indexes a Vec with a runtime Int/Token. That becomes a giant mux and will not map to BRAM for large VocabularySize (e.g., 32k). Use rom/romPow2 (1‑cycle) or blockRam (1‑cycle) to force BRAM.
 
-3) Stage1 (QKV projection) and FFN are purely combinational mat‑vec on full ModelDimension. That won’t close timing and creates huge multiplier farms.
+3) Stage1 (QKV projection) and FFN are purely combinational mat‑vec on full LLaMa2Dimension. That won’t close timing and creates huge multiplier farms.
    - Replace matrixVectorMult (combinational) with a sequential mat‑vec engine (you already have MatVecI8E_Seq.matVecRowSeq as a kernel) and add a Stage1 “done” handshake.
    - Do the same for FFN’s three mat‑vecs (W1, W3, W2). A single time‑multiplexed engine with a small controller can run all three passes.
 
@@ -52,14 +52,14 @@ Reasoning and approach
   3) Accumulate the per-row results into a per-matrix work vector and, at pass boundaries, commit into the appropriate Q/K/V or FFN vectors.
   4) Time-multiplex one engine across passes: Q → K → V for Stage 1, and W1 → W3 → W2 for FFN.
   5) Emit a single s1Done pulse at the last Wv row, and a single ffnDone pulse at the last W2 row.
-- Important dimensional note: for matrix-vector multiply, “columns” = ModelDimension (not HeadDimension). The bullet in your request that says “iterate columns for HeadDimension cycles” would be correct for Stage 3 attention (dot over HeadDimension), but for Q/K/V/FFN mat-vec the column count is the input dimension of each matrix (ModelDimension for Wq/Wk/Wv and W1/W3; HiddenDimension for W2).
+- Important dimensional note: for matrix-vector multiply, “columns” = LLaMa2Dimension (not HeadDimension). The bullet in your request that says “iterate columns for HeadDimension cycles” would be correct for Stage 3 attention (dot over HeadDimension), but for Q/K/V/FFN mat-vec the column count is the input dimension of each matrix (LLaMa2Dimension for Wq/Wk/Wv and W1/W3; HiddenDimension for W2).
 - Interfaces: I keep interfaces as “start/done pulse + whole-vector outputs” so they can be wired into your pipeline easily. Stage-1 done replaces the stub in Transformer.multiCycleTransformer. If you want fully incremental writes, the commit points are called out.
 
 New: generic row/column controller (1-row kernel driver)
-File: project/llama2/Model/Helpers/Seq/RowColCtrl.hs
+File: project/llama2/LLaMa2/Helpers/Seq/RowColCtrl.hs
 ```haskell
 {-# LANGUAGE ScopedTypeVariables #-}
-module Model.Helpers.Seq.RowColCtrl
+module LLaMa2.Helpers.Seq.RowColCtrl
   ( RowColCtrlOut(..)
   , rowColCtrl
   ) where
@@ -139,27 +139,27 @@ Why it works
 - The controller replicates the exact clear/en/lastCol contract expected by matVecRowSeq, ensuring the external colIdx stays aligned to the kernel’s internal counter. Row changes only occur in the RowGap state (the commit cycle), so at rowDone the rowIdx still points to the completed row.
 
 QKV sequential engine over all heads with single kernel
-File: project/llama2/Model/Layers/Attention/ProjectQKVSeq.hs
+File: project/llama2/LLaMa2/Layers/Attention/ProjectQKVSeq.hs
 ```haskell
 {-# LANGUAGE ScopedTypeVariables #-}
-module Model.Layers.Attention.ProjectQKVSeq
+module LLaMa2.Layers.Attention.ProjectQKVSeq
   ( projectQKVSeq
   , stage1ProjectQKVSeqLayer
   ) where
 
 import Clash.Prelude
-import Model.Config
-  ( ModelDimension, HeadDimension
+import LLaMa2.Config
+  ( LLaMa2Dimension, HeadDimension
   , NumQueryHeads, NumKeyValueHeads
   , SequenceLength, NumLayers )
-import Model.Numeric.Types (FixedPoint)
-import Model.Numeric.ParamPack (QArray2D(..), RowI8E)
-import Model.Helpers.MatVecI8E_Seq (matVecRowSeq)
-import Model.Helpers.Seq.RowColCtrl (rowColCtrl, RowColCtrlOut(..))
-import Model.Helpers.FixedPoint (rmsNormFwFix)
-import Model.Layers.Components.Quantized (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
-import Model.Layers.Attention.MultiHeadAttention.Internal (applyRotation)
-import Model.Core.Types (ProcessingState(..), CycleStage(..), LayerData(..))
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.ParamPack (QArray2D(..), RowI8E)
+import LLaMa2.Helpers.MatVecI8E_Seq (matVecRowSeq)
+import LLaMa2.Helpers.Seq.RowColCtrl (rowColCtrl, RowColCtrlOut(..))
+import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
+import LLaMa2.Layers.Components.Quantized (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
+import LLaMa2.Layers.Attention.MultiHeadAttention.Internal (applyRotation)
+import LLaMa2.Core.Types (ProcessingState(..), CycleStage(..), LayerData(..))
 
 -- Map each KV head to the query head it shares rotary/weight bank with
 queryHeadIndex0 :: Index NumKeyValueHeads -> Index NumQueryHeads
@@ -171,29 +171,29 @@ queryHeadIndex0 kvIx =
 
 -- Select current row for the active pass/head/row
 selectRowQ
-  :: Vec NumQueryHeads (QArray2D HeadDimension ModelDimension)
+  :: Vec NumQueryHeads (QArray2D HeadDimension LLaMa2Dimension)
   -> Index NumQueryHeads
   -> Index HeadDimension
-  -> RowI8E ModelDimension
+  -> RowI8E LLaMa2Dimension
 selectRowQ headsQ qIx rIx =
   let QArray2D m = (headsQ !! qIx)
   in m !! rIx
 
 selectRowK
-  :: Vec NumQueryHeads (QArray2D HeadDimension ModelDimension)
+  :: Vec NumQueryHeads (QArray2D HeadDimension LLaMa2Dimension)
   -> Index NumKeyValueHeads
   -> Index HeadDimension
-  -> RowI8E ModelDimension
+  -> RowI8E LLaMa2Dimension
 selectRowK headsQ kvIx rIx =
   let qIx = queryHeadIndex0 kvIx
       QArray2D m = wkHeadQ (SingleHeadComponentQ (wqHeadQ (headsQ !! qIx)) (QArray2D (repeat (repeat (0,0)))) (QArray2D (repeat (repeat (0,0)))) (rotaryQ (headsQ !! qIx)))
   in m !! rIx
 
 selectRowV
-  :: Vec NumQueryHeads (QArray2D HeadDimension ModelDimension)
+  :: Vec NumQueryHeads (QArray2D HeadDimension LLaMa2Dimension)
   -> Index NumKeyValueHeads
   -> Index HeadDimension
-  -> RowI8E ModelDimension
+  -> RowI8E LLaMa2Dimension
 selectRowV headsQ kvIx rIx =
   let qIx = queryHeadIndex0 kvIx
       QArray2D m = wvHeadQ (headsQ !! qIx)
@@ -211,7 +211,7 @@ projectQKVSeq
   :: HiddenClockResetEnable System
   => MultiHeadAttentionComponentQ
   -> Signal System (Index SequenceLength)                    -- ^ seq pos for rotary
-  -> Signal System (Vec ModelDimension FixedPoint)           -- ^ input x (already RMS-normalized preferred)
+  -> Signal System (Vec LLaMa2Dimension FixedPoint)           -- ^ input x (already RMS-normalized preferred)
   -> Signal System Bool                                      -- ^ start pulse
   -> ( Signal System (Vec NumQueryHeads    (Vec HeadDimension FixedPoint))  -- Q
      , Signal System (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))  -- K
@@ -222,7 +222,7 @@ projectQKVSeq mha seqPos xHat start = (qOut, kOut, vOut, allDonePass)
   headsQv = headsQ mha
 
   -- Controller per row (rows=headDim, cols=modelDim)
-  rc :: RowColCtrlOut HeadDimension ModelDimension
+  rc :: RowColCtrlOut HeadDimension LLaMa2Dimension
   rc = rowColCtrl start
   clearS  = clear rc
   enS     = en rc
@@ -265,14 +265,14 @@ projectQKVSeq mha seqPos xHat start = (qOut, kOut, vOut, allDonePass)
       in (kh', kh')
 
   -- Select row for current pass/head/row; latch on 'clear' so it stays stable
-  rowSel :: Signal System (RowI8E ModelDimension)
+  rowSel :: Signal System (RowI8E LLaMa2Dimension)
   rowSel = mux (passReg .==. pure PassQ)
                 (selectRowQ (map wqHeadQ headsQv) <$> qHeadReg <*> rIdxS)
         $ mux (passReg .==. pure PassK)
                 (selectRowK (map wkHeadQ headsQv) <$> kvHeadReg <*> rIdxS)
                 (selectRowV (map wvHeadQ headsQv) <$> kvHeadReg <*> rIdxS)
 
-  rowLat :: Signal System (RowI8E ModelDimension)
+  rowLat :: Signal System (RowI8E LLaMa2Dimension)
   rowLat = regEn (repeat 0, 0) clearS rowSel
 
   -- Stream x by selecting current column
@@ -369,22 +369,22 @@ Why it works
 - The single engine walks Q → K → V, one head at a time, one row at a time. Row data is latched on clear and the input element is taken from xHat !! colIdx, keeping perfect alignment with the kernel’s internal column counter. Results are accumulated per row into workBuf; when the last row of that head completes, we commit into the head’s slot. Rotary is applied only once per head on the fully assembled vector. We emit s1Done as a 1-cycle pulse at the end of the final V head’s last row.
 
 FFN sequential engine (W1, W3, W2) using same kernel
-File: project/llama2/Model/Layers/FeedForward/FFNSequential.hs
+File: project/llama2/LLaMa2/Layers/FeedForward/FFNSequential.hs
 ```haskell
 {-# LANGUAGE ScopedTypeVariables #-}
-module Model.Layers.FeedForward.FFNSequential
+module LLaMa2.Layers.FeedForward.FFNSequential
   ( runFFNSeq
   ) where
 
 import Clash.Prelude
-import Model.Config (ModelDimension, HiddenDimension)
-import Model.Numeric.Types (FixedPoint)
-import Model.Numeric.ParamPack (QArray2D(..), RowI8E)
-import Model.Helpers.MatVecI8E_Seq (matVecRowSeq)
-import Model.Helpers.Seq.RowColCtrl (rowColCtrl, RowColCtrlOut(..))
-import Model.Helpers.FixedPoint (rmsNormFwFix)
-import Model.Layers.FeedForward.FeedForwardNetwork.Internal (sigmoidLinearUnitF)
-import Model.Layers.Components.Quantized (FeedForwardNetworkComponentQ(..))
+import LLaMa2.Config (LLaMa2Dimension, HiddenDimension)
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.ParamPack (QArray2D(..), RowI8E)
+import LLaMa2.Helpers.MatVecI8E_Seq (matVecRowSeq)
+import LLaMa2.Helpers.Seq.RowColCtrl (rowColCtrl, RowColCtrlOut(..))
+import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
+import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (sigmoidLinearUnitF)
+import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ(..))
 
 data Pass = PIdle | PW1 | PW3 | PW2 deriving (Generic, NFDataX, Eq, Show)
 
@@ -392,24 +392,24 @@ data Pass = PIdle | PW1 | PW3 | PW2 deriving (Generic, NFDataX, Eq, Show)
 -- 1) xHat = RMSNorm(x, fRMSFfnF)
 -- 2) gate = SiLU(W1 * xHat)   [HiddenDimension]
 -- 3) up   =       W3 * xHat   [HiddenDimension]
--- 4) y    = W2 * (gate * up)  [ModelDimension]
+-- 4) y    = W2 * (gate * up)  [LLaMa2Dimension]
 -- start is a 1-cycle pulse; done pulses after final W2 row.
 runFFNSeq
   :: HiddenClockResetEnable System
   => FeedForwardNetworkComponentQ
-  -> Signal System (Vec ModelDimension FixedPoint)   -- ^ x (pre-attention residual)
+  -> Signal System (Vec LLaMa2Dimension FixedPoint)   -- ^ x (pre-attention residual)
   -> Signal System Bool                              -- ^ start pulse (Stage4 entry)
-  -> ( Signal System (Vec ModelDimension FixedPoint) -- ^ y
+  -> ( Signal System (Vec LLaMa2Dimension FixedPoint) -- ^ y
      , Signal System Bool )                          -- ^ done pulse
 runFFNSeq ffn x start = (yReg, allDone)
  where
   xHat = rmsNormFwFix <$> x <*> pure (fRMSFfnF ffn)
 
-  -- Common row controller; re-used for PW1/PW3 (rows=HiddenDim, cols=ModelDim) and PW2 (rows=ModelDim, cols=HiddenDim)
-  rcW1W3 :: RowColCtrlOut HiddenDimension ModelDimension
+  -- Common row controller; re-used for PW1/PW3 (rows=HiddenDim, cols=LLaMa2Dim) and PW2 (rows=LLaMa2Dim, cols=HiddenDim)
+  rcW1W3 :: RowColCtrlOut HiddenDimension LLaMa2Dimension
   rcW1W3 = rowColCtrl start
 
-  rcW2 :: RowColCtrlOut ModelDimension HiddenDimension
+  rcW2 :: RowColCtrlOut LLaMa2Dimension HiddenDimension
   rcW2  = rowColCtrl (allDoneW3)  -- start W2 right after W3 completes
 
   -- Pass FSM
@@ -458,7 +458,7 @@ runFFNSeq ffn x start = (yReg, allDone)
   zCol  = (!!) <$> zBuf <*> (colIdx rcW2)
   (yRowW2, rowDoneW2) = matVecRowSeq (clear rcW2) (en rcW2) (lastCol rcW2) rowW2 zCol
 
-  yReg :: Signal System (Vec ModelDimension FixedPoint)
+  yReg :: Signal System (Vec LLaMa2Dimension FixedPoint)
   yReg = mealy goY (repeat 0) (bundle (rowDoneW2, rowIdx rcW2, yRowW2))
    where
     goY acc (rd, r, y) =
@@ -470,17 +470,17 @@ runFFNSeq ffn x start = (yReg, allDone)
 ```
 
 Why it works
-- The same kernel is re-used three times. W1 and W3 share the same controller (same shape Hidden×Model), so we compute both in a single sweep (gate and up are independent), avoiding re-reading xHat. W2 starts automatically after W3 completes and uses its own controller because the matrix shape differs. We commit the final y after the last row. No floats, all FixedPoint math.
+- The same kernel is re-used three times. W1 and W3 share the same controller (same shape Hidden×LLaMa2), so we compute both in a single sweep (gate and up are independent), avoiding re-reading xHat. W2 starts automatically after W3 completes and uses its own controller because the matrix shape differs. We commit the final y after the last row. No floats, all FixedPoint math.
 
 Minimal integration: feed s1Done into the pipeline
-Replace your Stage-1 stub in Model.Core.Transformer to use the new per-layer driver. This change does not replace your Stage-1 combinational code yet; it only supplies a real s1Done pulse so sequencing becomes correct. You can decide when to switch LayerData updates over to the sequential version (the stage1ProjectQKVSeqLayer already computes updates on the s1Done pulse).
+Replace your Stage-1 stub in LLaMa2.Core.Transformer to use the new per-layer driver. This change does not replace your Stage-1 combinational code yet; it only supplies a real s1Done pulse so sequencing becomes correct. You can decide when to switch LayerData updates over to the sequential version (the stage1ProjectQKVSeqLayer already computes updates on the s1Done pulse).
 
-Edit: project/llama2/Model/Core/Transformer.hs
+Edit: project/llama2/LLaMa2/Core/Transformer.hs
 Replace the “Stage1 done handshake” stub with per-layer s1Done outputs and select the active layer’s flag, mirroring your write/attn selection.
 
 ```haskell
 -- add at the top
-import qualified Model.Layers.Attention.ProjectQKVSeq as QKVSeq (stage1ProjectQKVSeqLayer)
+import qualified LLaMa2.Layers.Attention.ProjectQKVSeq as QKVSeq (stage1ProjectQKVSeqLayer)
 
 -- inside multiCycleTransformer, after 'transformerLayers' definition
 -- Run the Stage-1 QKV sequencers for all layers in parallel; select current one
@@ -529,6 +529,6 @@ Portability/safety
 Further reading
 - Clash Manual (GHC/Clash types, BlockRAM/ROM inference).
 - IEEE 1364-2005 Verilog LRM for downstream synthesis expectations (if you inspect generated Verilog).
-- Hints on FixedPoint numerics and PoT scaling in your own Model.Numeric modules.
+- Hints on FixedPoint numerics and PoT scaling in your own LLaMa2.Numeric modules.
 
 If you want, I can provide a small testbench module that compares the sequential engines against your current combinational matrixVectorMult for small dimensions (e.g., MODEL_260K).

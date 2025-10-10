@@ -1,4 +1,4 @@
-module Parser (parseModelConfigFile) where
+module Parser (parseLLaMa2ConfigFile) where
 
 import Prelude
 
@@ -11,7 +11,7 @@ import qualified Clash.Prelude as C
 
 import GHC.IO (unsafePerformIO)
 import Control.Monad (replicateM_)
-import Model.Core.Types
+import LLaMa2.Core.Types
     (
       SingleHeadComponent(SingleHeadComponent, rotary, wqHead, wkHead,
                           wvHead),
@@ -19,7 +19,7 @@ import Model.Core.Types
       EmbeddingComponent(EmbeddingComponent, rmsFinalWeight, vocabulary),
       CArray2D(CArray2D) )
 
-import Model.Config
+import LLaMa2.Config
     (
       HeadDimension,
       SequenceLength,
@@ -28,11 +28,11 @@ import Model.Config
       NumLayers,
       NumKeyValueHeads,
       HiddenDimension,
-      ModelDimension,
+      LLaMa2Dimension,
       RotaryPositionalEmbeddingDimension
       )
-import Model.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
-import qualified Model.Layers.Components.Quantized as Quantized
+import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
+import qualified LLaMa2.Layers.Components.Quantized as Quantized
     ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding )
 
 
@@ -109,20 +109,20 @@ readVec4D = do
     chunksOf _ [] = []
     chunksOf k xs = take k xs : chunksOf k (drop k xs)
 
-parseModelConfigFile :: BG.Get TransformerDecoderComponent
-parseModelConfigFile = do
+parseLLaMa2ConfigFile :: BG.Get TransformerDecoderComponent
+parseLLaMa2ConfigFile = do
   replicateM_ 7 BG.getInt32le
-  tokenEmbeddingTable' <- readVec2D @VocabularySize @ModelDimension
-  rmsAttWeight'        <- readVec2D @NumLayers @ModelDimension
-  wq'                  <- readVec4D @NumLayers @NumQueryHeads     @HeadDimension  @ModelDimension
-  wk'                  <- readVec4D @NumLayers @NumKeyValueHeads  @HeadDimension  @ModelDimension
-  wv'                  <- readVec4D @NumLayers @NumKeyValueHeads  @HeadDimension  @ModelDimension
-  wo'                  <- readVec3D @NumLayers @ModelDimension    @ModelDimension
-  rmsFfnWeight'        <- readVec2D @NumLayers @ModelDimension
-  w1'                  <- readVec3D @NumLayers @HiddenDimension   @ModelDimension
-  w2'                  <- readVec3D @NumLayers @ModelDimension    @HiddenDimension
-  w3'                  <- readVec3D @NumLayers @HiddenDimension   @ModelDimension
-  rmsFinalWeight'      <- readVec1D @ModelDimension
+  tokenEmbeddingTable' <- readVec2D @VocabularySize @LLaMa2Dimension
+  rmsAttWeight'        <- readVec2D @NumLayers @LLaMa2Dimension
+  wq'                  <- readVec4D @NumLayers @NumQueryHeads     @HeadDimension  @LLaMa2Dimension
+  wk'                  <- readVec4D @NumLayers @NumKeyValueHeads  @HeadDimension  @LLaMa2Dimension
+  wv'                  <- readVec4D @NumLayers @NumKeyValueHeads  @HeadDimension  @LLaMa2Dimension
+  wo'                  <- readVec3D @NumLayers @LLaMa2Dimension    @LLaMa2Dimension
+  rmsFfnWeight'        <- readVec2D @NumLayers @LLaMa2Dimension
+  w1'                  <- readVec3D @NumLayers @HiddenDimension   @LLaMa2Dimension
+  w2'                  <- readVec3D @NumLayers @LLaMa2Dimension    @HiddenDimension
+  w3'                  <- readVec3D @NumLayers @HiddenDimension   @LLaMa2Dimension
+  rmsFinalWeight'      <- readVec1D @LLaMa2Dimension
   freqCisReal'         <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
   freqCisImag'         <- readVec2D @SequenceLength @RotaryPositionalEmbeddingDimension
 
@@ -154,20 +154,20 @@ parseModelConfigFile = do
                    , freqSin = CArray2D freqCisImag'
                    }
                }
-        woLayer :: C.Vec ModelDimension (C.Vec ModelDimension Float)
+        woLayer :: C.Vec LLaMa2Dimension (C.Vec LLaMa2Dimension Float)
         woLayer = wo' C.!! lIdx
-        headBlock :: C.Index NumQueryHeads -> CArray2D ModelDimension HeadDimension
+        headBlock :: C.Index NumQueryHeads -> CArray2D LLaMa2Dimension HeadDimension
         headBlock hIdx =
           let base :: Int
               base = fromIntegral hIdx * C.snatToNum (C.SNat @HeadDimension)
-              rowSlice :: C.Vec ModelDimension Float -> C.Vec HeadDimension Float
+              rowSlice :: C.Vec LLaMa2Dimension Float -> C.Vec HeadDimension Float
               rowSlice row =
                 C.map
-                  (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index ModelDimension))
+                  (\off -> row C.!! (toEnum (base + fromIntegral off) :: C.Index LLaMa2Dimension))
                   (C.indicesI @HeadDimension)
           in CArray2D (C.map rowSlice woLayer)
 
-        mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimension HeadDimension)
+        mWoVec :: C.Vec NumQueryHeads (CArray2D LLaMa2Dimension HeadDimension)
         mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
         mhaFloat :: Quantized.MultiHeadAttentionComponent

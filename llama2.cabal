@@ -90,37 +90,37 @@ common project-defaults
 library
   import: project-defaults
   exposed-modules:
-    Model.Config
-    , Model.Core.Embedding
-    , Model.Core.PipelineController
-    , Model.Core.LayerController
-    , Model.Core.StageEnable
-    , Model.Core.Transformer
-    , Model.Core.Transformer.Internal
-    , Model.Core.Types
-    , Model.Embedding.PRNG
-    , Model.Helpers
-    , Model.Helpers.EnableWrappers
-    , Model.Helpers.FixedPoint
-    , Model.Helpers.MatVecI8E
-    , Model.Layers.Attention.AttendSequential
-    , Model.Layers.Attention.AttentionHead
-    , Model.Layers.Attention.MultiHeadAttention
-    , Model.Layers.Attention.MultiHeadAttention.Internal
-    , Model.Layers.Attention.OnlineSoftmax
-    , Model.Layers.Components.Quantized
-    , Model.Layers.FeedForward.FeedForwardNetwork
-    , Model.Layers.FeedForward.FeedForwardNetwork.Internal
-    , Model.Layers.Components.RotaryQ
-    , Model.Layers.TransformerLayer
-    , Model.Layers.TransformerLayer.Internal
-    , Model.Memory.KVCacheBank
-    , Model.Memory.RamOps
-    , Model.Numeric.Types
-    , Model.Numeric.Fixed
-    , Model.Numeric.ParamPack
-    , Model.Params.Decoder
-    , Model.Top
+    LLaMa2.Config
+    , LLaMa2.Core.Embedding
+    , LLaMa2.Core.PipelineController
+    , LLaMa2.Core.LayerController
+    , LLaMa2.Core.StageEnable
+    , LLaMa2.Core.Transformer
+    , LLaMa2.Core.Transformer.Internal
+    , LLaMa2.Core.Types
+    , LLaMa2.Embedding.PRNG
+    , LLaMa2.Helpers
+    , LLaMa2.Helpers.EnableWrappers
+    , LLaMa2.Helpers.FixedPoint
+    , LLaMa2.Helpers.MatVecI8E
+    , LLaMa2.Layers.Attention.AttendSequential
+    , LLaMa2.Layers.Attention.AttentionHead
+    , LLaMa2.Layers.Attention.MultiHeadAttention
+    , LLaMa2.Layers.Attention.MultiHeadAttention.Internal
+    , LLaMa2.Layers.Attention.OnlineSoftmax
+    , LLaMa2.Layers.Components.Quantized
+    , LLaMa2.Layers.FeedForward.FeedForwardNetwork
+    , LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal
+    , LLaMa2.Layers.Components.RotaryQ
+    , LLaMa2.Layers.TransformerLayer
+    , LLaMa2.Layers.TransformerLayer.Internal
+    , LLaMa2.Memory.KVCacheBank
+    , LLaMa2.Memory.RamOps
+    , LLaMa2.Numeric.Types
+    , LLaMa2.Numeric.Fixed
+    , LLaMa2.Numeric.ParamPack
+    , LLaMa2.Params.Decoder
+    , LLaMa2.Top
     , Parser
     , Tokenizer
   hs-source-dirs:
@@ -151,12 +151,12 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      Model.Layers.Attention.AttentionHeadSpec
-      Model.Layers.Attention.MultiHeadAttentionSpec
-      Model.Layers.FeedForward.FeedForwardNetworkSpec
-      Model.Layers.TransformerLayerSpec
-      Model.Helpers.MatVecI8ESpec 
-      Model.Layers.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Layers.Attention.AttentionHeadSpec
+      LLaMa2.Layers.Attention.MultiHeadAttentionSpec
+      LLaMa2.Layers.FeedForward.FeedForwardNetworkSpec
+      LLaMa2.Layers.TransformerLayerSpec
+      LLaMa2.Helpers.MatVecI8ESpec 
+      LLaMa2.Layers.TransformerLayer.ControlOneHeadSpec
   hs-source-dirs:
       test
   build-depends:

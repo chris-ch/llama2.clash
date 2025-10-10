@@ -16,13 +16,13 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import Model.Core.Types ( Token, Temperature, Seed )
+import LLaMa2.Core.Types ( Token, Temperature, Seed )
 
-import Model.Config ( VocabularySize )
-import qualified Model.Top as Top ( topEntitySim )
+import LLaMa2.Config ( VocabularySize )
+import qualified LLaMa2.Top as Top ( topEntitySim )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
-import Model.Layers.TransformerLayer (TransformerDecoderComponent (..))
-import Model.Numeric.Types (FixedPoint)
+import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent (..))
+import LLaMa2.Numeric.Types (FixedPoint)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -34,15 +34,15 @@ main = do
          prompt} <- OA.execParser $ OA.info (optionsParser OA.<**> OA.helper) OA.fullDesc
   modelFileContent <- BSL.readFile modelFile
   tokenizerFileContent <- BSL.readFile tokenizerFile
-  runModel modelFileContent tokenizerFileContent (realToFrac temperature) steps prompt seed
+  runLLaMa2 modelFileContent tokenizerFileContent (realToFrac temperature) steps prompt seed
 
-runModel :: BSL.ByteString -> BSL.ByteString -> Float -> Int -> Maybe String -> Maybe Int -> IO ()
-runModel modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed = do
+runLLaMa2 :: BSL.ByteString -> BSL.ByteString -> Float -> Int -> Maybe String -> Maybe Int -> IO ()
+runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed = do
   currentTime <- getPOSIXTime
   let
     randomSeed = fromIntegral $ fromMaybe (round currentTime) maybeSeed
-    parseModel = BG.runGet Parser.parseModelConfigFile
-    transformerConfig = parseModel modelBinary
+    parseLLaMa2 = BG.runGet Parser.parseLLaMa2ConfigFile
+    transformerConfig = parseLLaMa2 modelBinary
     tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabularySize)
 
   -- Handle prompt tokenization more carefully
@@ -122,7 +122,7 @@ optionsParser =
 #else
       "./data/stories260K.bin" 
 #endif
-    <> OA.metavar "MODEL_FILE" <> OA.help "Model binary file")
+    <> OA.metavar "MODEL_FILE" <> OA.help "LLaMa2 binary file")
     <*> OA.option OA.auto (OA.long "temperature" <> OA.value 0.0 <> OA.metavar "TEMPERATURE" <> OA.help "Temperature")
     <*> OA.option OA.auto (OA.long "steps" <> OA.value 256 <> OA.metavar "STEPS" <> OA.help "Number of steps")
     <*> OA.optional (OA.strArgument (OA.metavar "PROMPT" <> OA.help "Initial prompt"))

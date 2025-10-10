@@ -101,7 +101,7 @@ cabal install clash-ghc --overwrite-policy=always
 Run:
 
 ```shell
-cabal exec -- clash --verilog -package llama2 -v3 project/llama2/Model/Top.hs
+cabal exec -- clash --verilog -package llama2 -v3 project/llama2/LLaMa2/Top.hs
 ```
 
 
