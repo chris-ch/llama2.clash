@@ -88,30 +88,40 @@ multiCycleTransformerLayer layer layerIndex processingState layerData =
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
   -- === Per-head WO projection (with proper handshaking) ===
-  (perHeadProjected
+  ( perHeadProjected
     , perHeadValidOuts
     , perHeadReadyOuts
-    , allWODone) = 
-    perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
+    ) = perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
-  -- Combine projected heads into WO result (only valid when allWODone)
-  -- First convert Vec of Signals to Signal of Vec, then sum
+  -- Gating based on readyOuts (stable done condition)
+  gatedHeads :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
+  gatedHeads =
+    zipWith3
+      (\proj _valid ready ->
+         -- Only pass through projection when the consumer (layer) is ready for it
+         mux ready proj (pure (repeat 0))
+      )
+      perHeadProjected
+      perHeadValidOuts
+      perHeadReadyOuts
+
+  -- Combine all heads that are marked ready (stable “done” condition)
   woHeads :: Signal dom (Vec ModelDimension FixedPoint)
-  woHeads = foldl1 (zipWith (+)) <$> sequenceA perHeadProjected
+  woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
 
-  -- WO projection is complete when all heads are projected
+  -- Treat all heads ready as the WO projection completion
   validProjected :: Signal dom Bool
-  validProjected = allWODone
+  validProjected = and <$> sequenceA perHeadReadyOuts
 
+  -- Attention output aggregation
   xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
   xAfterAttn = liftA2 inputsAggregator layerData woHeads
 
-  -- Attention done pulses on rising edge of validProjected
+  -- Rising edge of allHeadsReady -> attentionDone pulse
   attentionDone :: Signal dom Bool
-  attentionDone = 
-    let prevValid = register False validProjected
-        risingEdge = validProjected .&&. (not <$> prevValid)
-    in risingEdge
+  attentionDone =
+    let prevReady = register False validProjected
+    in validProjected .&&. (not <$> prevReady)
 
   nextLayerData :: Signal dom LayerData
   nextLayerData = liftA4 (layerDataAttnDone layerIndex) processingState baseNextLayerData xAfterAttn attentionDone
@@ -129,13 +139,11 @@ perHeadWOController ::
   -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)  -- validOuts
      , Vec NumQueryHeads (Signal dom Bool)  -- readyOuts
-     , Signal dom Bool                      -- all projections done
      )
 perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
   (perHeadProjected
   , perHeadValidOuts
   , perHeadReadyOuts
-   , allProjectionsDone
   )
   where
 
@@ -148,9 +156,6 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
-    
-    -- All projections done when all validOut signals are high
-    allProjectionsDone = and <$> sequenceA perHeadValidOuts
 
 kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
 kvWriteDoneCond layerIndex state banksDone = processingStage state == Stage2_WriteKV
