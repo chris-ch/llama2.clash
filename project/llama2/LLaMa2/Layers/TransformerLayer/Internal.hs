@@ -15,9 +15,9 @@ data FSMState = IDLE | PROJECTING | DONE
 -- Controller for one head's WO projection
 singleHeadController :: forall dom .
   HiddenClockResetEnable dom
-  => Signal dom (Vec HeadDimension FixedPoint)           -- head vector
+  => Signal dom (Vec HeadDimension FixedPoint)            -- head vector
   -> Signal dom Bool                                      -- head done
-  -> MatI8E LLaMa2Dimension HeadDimension               -- WO matrix
+  -> MatI8E LLaMa2Dimension HeadDimension                 -- WO matrix
   -> ( Signal dom (Vec LLaMa2Dimension FixedPoint)        -- projected output
      , Signal dom Bool                                    -- validOut
      , Signal dom Bool                                    -- readyOut
@@ -42,7 +42,7 @@ singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut
     (woResult
       , woValidOut
       , woReadyOut
-       ) = matrixMultiplierStub validIn woMatrix headVector
+       ) = matrixMultiplierStub validIn (pure True) woMatrix headVector
 
     -- Start WO projection when entering state 1
     validIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut

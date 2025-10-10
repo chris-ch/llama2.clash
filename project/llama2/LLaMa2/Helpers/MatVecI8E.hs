@@ -35,14 +35,15 @@ matrixMultiplierStub
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )
-  => Signal dom Bool               
-  -> MatI8E rows cols                           -- ^ validIn
-  -> Signal dom (Vec cols FixedPoint)             -- ^ inputVec
-  -> ( Signal dom (Vec rows FixedPoint)           -- ^ outputVec
-     , Signal dom Bool                            -- ^ validOut
-     , Signal dom Bool                            -- ^ readyOut
+  => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
+  -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
+  -> MatI8E rows cols -- ^ matrix as row vectors.
+  -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
+  -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
+     , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
+     , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
      )
-matrixMultiplierStub validIn rowsQ vecIn = (outVec, validOut, readyOut)
+matrixMultiplierStub validIn readyIn rowsQ vecIn = (outVec, validOut, readyOut)
   where
 
     -- Compute result combinationally
@@ -184,7 +185,7 @@ matrixMultiplierStateMachine  :: forall dom rows .
   -> Signal dom (Index rows)
   -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
 matrixMultiplierStateMachine enable rowDone currentRow =
-  (state, rowReset, rowEnable, validOut, readyOut)
+  (state, rowReset, rowEnable, validOut, readyIn)
   where
     state = register MIdle nextState
 
@@ -206,7 +207,7 @@ matrixMultiplierStateMachine enable rowDone currentRow =
     -- Disable enable on the cycle when rowDone arrives
     rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. (not <$> rowReset)
     validOut = state .==. pure MDone
-    readyOut = state .==. pure MIdle
+    readyIn = state .==. pure MIdle
 
 -- | Sequential matrix-vector multiplication processor
 matrixMultiplier
@@ -214,23 +215,24 @@ matrixMultiplier
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )
-  => Signal dom Bool -- ^ validIn
-  -> MatI8E rows cols -- ^ matrix
-  -> Signal dom (Vec cols FixedPoint) -- ^ inputVec
-  -> ( Signal dom (Vec rows FixedPoint) -- ^ outputVec
-     , Signal dom Bool -- ^ validOut
-     , Signal dom Bool -- ^ readyOut
+  => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
+  -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
+  -> MatI8E rows cols -- ^ matrix as row vectors.
+  -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
+  -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
+     , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
+     , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
      )
-matrixMultiplier validIn rowsQ inputVec = (outputVec, validOut, readyOut)
+matrixMultiplier validIn readyIn rowVectors inputVector = (outputVector, validOut, readyOut)
   where
     -- Row counter to track which row we're processing
     rowIndex = register (0 :: Index rows) nextRowIndex
 
     -- Current row from the matrix
-    currentRow = (!!) rowsQ <$> rowIndex
+    currentRow = (!!) rowVectors <$> rowIndex
 
     -- Single row processor
-    (rowResult, rowDone) = singleRowProcessor rowReset rowEnable currentRow inputVec
+    (rowResult, rowDone) = singleRowProcessor rowReset rowEnable currentRow inputVector
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
@@ -245,7 +247,7 @@ matrixMultiplier validIn rowsQ inputVec = (outputVec, validOut, readyOut)
 
     -- Accumulate results into output vector
     -- When rowDone is high, store the result at the current row index
-    outputVec = register (repeat 0) nextOutput
+    outputVector = register (repeat 0) nextOutput
     nextOutput = mux rowDone
-                     (replace <$> rowIndex <*> rowResult <*> outputVec)
-                     outputVec
+                     (replace <$> rowIndex <*> rowResult <*> outputVector)
+                     outputVector

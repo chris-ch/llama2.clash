@@ -550,6 +550,7 @@ spec = do
               CS.resetGen
               CS.enableGen
               enable
+              (pure True) -- previous output aways considered as consumed
               matrix
               inputVec
 
@@ -670,6 +671,7 @@ spec = do
               CS.resetGen
               CS.enableGen
               validIn
+              (pure True) -- previous output always considered as consumed
               matrix
               (pure inputVector)
 
