@@ -662,8 +662,10 @@ spec = do
           validIn :: Signal System Bool
           validIn = fromList validInStream
 
+          readyIn :: Signal System Bool
+          readyIn = pure True  -- previous output always considered as consumed
+
           -- Run simulation
-          --(outputVec, validOut, readyOut, _, _, _, _, _, _, _, _, _, _, _) =
           (outputVec, validOut, readyOut) =
             exposeClockResetEnable
               matrixMultiplierStub
@@ -671,23 +673,31 @@ spec = do
               CS.resetGen
               CS.enableGen
               validIn
-              (pure True) -- previous output always considered as consumed
+              readyIn
               matrix
               (pure inputVector)
 
           outputs = P.take maxCycles $ sample outputVec
-          valids = P.take maxCycles $ sample validOut
-          readys = P.take maxCycles $ sample readyOut
+          validOuts = P.take maxCycles $ sample validOut
+          validIns = P.take maxCycles $ sample validIn
+          readyOuts = P.take maxCycles $ sample readyOut
+          readyIns = P.take maxCycles $ sample readyIn
 
           -- Find when validOut goes high
-          validIndices = DL.findIndices id valids
+          validIndices = DL.findIndices id validOuts
           completionCycle = if null validIndices then 0 else DL.head validIndices
           finalOutput = if null validIndices then repeat 0 else outputs P.!! completionCycle
 
       it "asserts readyOut initially (ready to accept transaction)" $ do
-        DL.head readys `shouldBe` True
+        DL.head readyOuts `shouldBe` True
 
       it "completes multiplication and asserts validOut" $ do
+        putStrLn $ "validIns: " P.++ show validIns
+        putStrLn $ "readyIn: " P.++ show readyIns
+        putStrLn $ "validOuts: " P.++ show validOuts
+        putStrLn $ "readyOuts: " P.++ show readyOuts
+        putStrLn $ "Valid indices: " P.++ show validIndices
+        putStrLn $ "completionCycle: " P.++ show completionCycle
         P.length validIndices `shouldBe` 1
         completionCycle > 0 `shouldBe` True
 
@@ -701,6 +711,6 @@ spec = do
 
       it "returns to ready state after completion" $ do
         if completionCycle < maxCycles - 1
-          then readys P.!! (completionCycle + 1) `shouldBe` True
+          then readyOuts P.!! (completionCycle + 1) `shouldBe` True
           else True `shouldBe` False -- can't test if at end of sampled cycles
 

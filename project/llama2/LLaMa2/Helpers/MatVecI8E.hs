@@ -45,28 +45,23 @@ matrixMultiplierStub
      )
 matrixMultiplierStub validIn readyIn rowsQ vecIn = (outVec, validOut, readyOut)
   where
-
-    -- Compute result combinationally
+    -- Combinational result
     resultComb :: Signal dom (Vec rows FixedPoint)
     resultComb = matrixVectorMult rowsQ <$> vecIn
 
-    -- Latch input when we accept it
+    -- Latch output when we accept input
     outVec :: Signal dom (Vec rows FixedPoint)
-    outVec = regEn (repeat 0) validIn resultComb
+    outVec = regEn (repeat 0) (validIn .&&. readyOut) resultComb
 
-    -- ValidOut pulses one cycle after validIn (when computation "completes")
+    -- Valid out: high while output is waiting for downstream
     validOut :: Signal dom Bool
-    validOut = register False validIn
+    validOut = register False $
+          mux validOut (not <$> readyIn)  -- stay busy until downstream consumes
+                    (validIn .&&. readyOut)  -- start busy on new input
 
-    -- State machine should ensure busy period
-    state :: Signal dom Bool  -- False = ready/idle, True = busy
-    state = register False $
-      mux (validIn .&&. (not <$> state)) (pure True) $   -- Start only when idle and validIn
-      mux state (pure False) state                        -- Complete next cycle
-
-    -- Ready only when truly idle
+    -- Ready out: can accept new input when idle
     readyOut :: Signal dom Bool
-    readyOut = not <$> state
+    readyOut = not <$> validOut
 
 -- ============================================================================
 -- SEQUENTIAL IMPLEMENTATION
