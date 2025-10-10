@@ -546,7 +546,7 @@ spec = do
           inputVec = pure inputVector
 
           -- Run simulation
-          (outputVec, validOut, readyOut, _innerState, _rowResult, 
+          (outputVec, validOut, readyOut, _innerState, _rowResult,
            _rowDone, _rowIndex, _acc, _resetRow, _enableRow,
            _currentRow, _colIdx, _mantissa, _columnComponent) =
             exposeClockResetEnable
@@ -626,3 +626,85 @@ spec = do
         abs ((output20 !! (0 :: Int)) - (expectedResult !! (0 :: Int))) < tolerance `shouldBe` True
         abs ((output20 !! (1 :: Int)) - (expectedResult !! (1 :: Int))) < tolerance `shouldBe` True
         abs ((output20 !! (2 :: Int)) - (expectedResult !! (2 :: Int))) < tolerance `shouldBe` True
+
+    context "computes matrix-vector multiplication using handshake protocol" $ do
+      let maxCycles = 30
+
+          -- Define a 3x4 matrix
+          -- Row 0: [2, 1, 3, 2]
+          -- Row 1: [1, 2, 1, 3]
+          -- Row 2: [3, 2, 2, 1]
+          row0 :: RowI8E 4
+          row0 = (2 :> 1 :> 3 :> 2 :> Nil, 0)
+
+          row1 :: RowI8E 4
+          row1 = (1 :> 2 :> 1 :> 3 :> Nil, 0)
+
+          row2 :: RowI8E 4
+          row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
+
+          matrix :: QArray2D 3 4
+          matrix = QArray2D (row0 :> row1 :> row2 :> Nil)
+
+          -- Input vector: [2.0, 1.5, 1.0, 0.5]
+          inputVector :: Vec 4 FixedPoint
+          inputVector = 2.0 :> 1.5 :> 1.0 :> 0.5 :> Nil
+
+          -- Expected outputs:
+          -- Row 0: 2*2.0 + 1*1.5 + 3*1.0 + 2*0.5 = 4.0 + 1.5 + 3.0 + 1.0 = 9.5
+          -- Row 1: 1*2.0 + 2*1.5 + 1*1.0 + 3*0.5 = 2.0 + 3.0 + 1.0 + 1.5 = 7.5
+          -- Row 2: 3*2.0 + 2*1.5 + 2*1.0 + 1*0.5 = 6.0 + 3.0 + 2.0 + 0.5 = 11.5
+          expectedResult :: Vec 3 FixedPoint
+          expectedResult = 9.5 :> 7.5 :> 11.5 :> Nil
+
+          tolerance = 0.01
+
+          -- Input signals
+          -- validIn: pulse high only on cycle 1 (when ready to start transaction)
+          validInStream = [False, True] P.++ P.replicate (maxCycles - 2) False
+          validIn :: Signal System Bool
+          validIn = fromList validInStream
+
+          -- Run simulation
+          --(outputVec, validOut, readyOut, _, _, _, _, _, _, _, _, _, _, _) =
+          (outputVec, validOut, readyOut) =
+            exposeClockResetEnable
+              (matrixMultiplierStub matrix)
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              validIn
+              (pure inputVector)
+
+          outputs = P.take maxCycles $ sample outputVec
+          valids = P.take maxCycles $ sample validOut
+          readys = P.take maxCycles $ sample readyOut
+
+          -- Find when validOut goes high
+          validIndices = DL.findIndices id valids
+          completionCycle = if null validIndices then 0 else DL.head validIndices
+          finalOutput = if null validIndices then repeat 0 else outputs P.!! completionCycle
+
+      it "asserts readyOut initially (ready to accept transaction)" $ do
+        DL.head readys `shouldBe` True
+
+      it "completes multiplication and asserts validOut" $ do
+        P.length validIndices `shouldBe` 1
+        completionCycle > 0 `shouldBe` True
+
+      it "produces correct result vector when validOut is asserted" $ do
+        let matches =
+              P.zipWith
+                (\a e -> abs (a - e) < tolerance)
+                (toList finalOutput)
+                (toList expectedResult)
+        DL.and matches `shouldBe` True
+
+      it "returns to ready state after completion" $ do
+        putStrLn $ "completionCycles: " P.++ show completionCycle
+        putStrLn $ "ready cycles: " P.++ show readys
+        putStrLn $ "valid cycles: " P.++ show valids
+        if completionCycle < maxCycles - 1
+          then readys P.!! (completionCycle + 1) `shouldBe` True
+          else True `shouldBe` False -- can't test if at end of sampled cycles
+

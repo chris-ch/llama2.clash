@@ -1,6 +1,6 @@
 module Model.Helpers.MatVecI8E
   ( matrixVectorMult
-  , sequentialMatVecStub
+  , matrixMultiplierStub
   , matrixMultiplier
   , singleRowProcessor
   , cyclicalCounter
@@ -13,8 +13,6 @@ import Clash.Prelude
 import Model.Numeric.Types (FixedPoint, scalePow2F)
 import Model.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
 import Model.Helpers.FixedPoint (dotProductF)
-import Clash.Debug (trace)
-import qualified Prelude as P
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
 dotProductRowI8E :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint
@@ -31,7 +29,7 @@ matrixVectorMult (QArray2D byRows) xF =
 
 -- Ready/Valid sequential façade for matrix-vector multiplication (STUB)
 -- This stub adds proper ready/valid handshaking even though computation is combinational
-sequentialMatVecStub
+matrixMultiplierStub
   :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
@@ -43,7 +41,7 @@ sequentialMatVecStub
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-sequentialMatVecStub (QArray2D rowsQ) validIn vecIn = (outVec, validOut, readyOut)
+matrixMultiplierStub (QArray2D rowsQ) validIn vecIn = (outVec, validOut, readyOut)
   where
 
     -- Compute result combinationally
@@ -66,7 +64,7 @@ sequentialMatVecStub (QArray2D rowsQ) validIn vecIn = (outVec, validOut, readyOu
 
     -- Ready only when truly idle
     readyOut :: Signal dom Bool
-    readyOut = register True $ not <$> (validIn .||. state)
+    readyOut = not <$> state
 
 -- ============================================================================
 -- SEQUENTIAL IMPLEMENTATION
@@ -220,7 +218,7 @@ matrixMultiplier
      , KnownNat cols, KnownNat rows
      )
   => QArray2D rows cols -- ^ matrix
-  -> Signal dom Bool -- ^ enable
+  -> Signal dom Bool -- ^ validIn
   -> Signal dom (Vec cols FixedPoint) -- ^ inputVec
   -> ( Signal dom (Vec rows FixedPoint) -- ^ outputVec
      , Signal dom Bool -- ^ validOut
@@ -237,7 +235,7 @@ matrixMultiplier
      , Signal dom FixedPoint  -- ^ mantissaFP
      , Signal dom FixedPoint  -- ^ columnComponent
      )
-matrixMultiplier (QArray2D rowsQ) enable inputVec = (outputVec, validOut, readyOut,
+matrixMultiplier (QArray2D rowsQ) validIn inputVec = (outputVec, validOut, readyOut,
       state, rowResult, rowDone, rowIndex, acc, rowReset, rowEnable, currentRow, columnIndex, mantissa, columnComponent
     )
   where
@@ -252,7 +250,7 @@ matrixMultiplier (QArray2D rowsQ) enable inputVec = (outputVec, validOut, readyO
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
-      matrixMultiplierStateMachine enable rowDone rowIndex
+      matrixMultiplierStateMachine validIn rowDone rowIndex
 
     -- Increment row index when a row completes, but not on the last row
     nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))

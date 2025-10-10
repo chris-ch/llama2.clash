@@ -4,7 +4,7 @@ module Model.Layers.TransformerLayer.Internal (
 
 import Clash.Prelude
 import Model.Config (ModelDimension, HeadDimension)
-import Model.Helpers.MatVecI8E (sequentialMatVecStub, matrixMultiplier)
+import Model.Helpers.MatVecI8E (matrixMultiplierStub, matrixMultiplier)
 import Model.Numeric.Types (FixedPoint)
 import Model.Numeric.ParamPack (QArray2D)
 
@@ -39,7 +39,11 @@ controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
       state                                              -- Hold state
 
     -- Call the sequential matmul
-    (woResult, woValidOut, woReadyOut, _, _, _, _, _, _, _, _, _, _, _) = matrixMultiplier woMatrix startWO headOutput
+    (woResult
+      , woValidOut
+      , woReadyOut
+       --, _, _, _, _, _, _, _, _, _, _, _
+       ) = matrixMultiplierStub woMatrix startWO headOutput
 
     -- Start WO projection when entering state 1
     startWO = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
