@@ -104,5 +104,11 @@ Run:
 cabal exec -- clash --verilog -package llama2 -v3 project/llama2/LLaMa2/Top.hs
 ```
 
+## Handshaking conventions
 
-
+| Signal        | Direction | Purpose                        | Behavior                                                                                                 |
+| ------------- | --------- | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| **Ready Out** | Output    | Indicates consumer readiness   | Asserted (high) when the consumer can accept/process data; deasserted when busy (e.g., stalled or full). |
+| **Valid Out** | Output    | Indicates valid output data    | Asserted (high) for one clock cycle (pulse) when new data is available; deasserted otherwise.            |
+| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data (keeps `validOut` high) only when `readyIn` is high; holds data if low.          |
+| **Valid In**  | Input     | Indicates valid input data     | Consumer processes `dataIn` only when `validIn` is high and it asserts `readyOut`.                       |

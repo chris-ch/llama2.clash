@@ -209,8 +209,13 @@ matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
     readyOut = state .==. pure MIdle
 
 -- | Sequential matrix-vector multiplication processor
-matrixMultiplier
-  :: forall dom rows cols .
+-- Handshaking via ready/valid signals
+--
+--          | ----validIn---> |            | ----validOut---> |
+-- Upstream |                 | Multiplier |                  | Downstream
+--          | <---readyOut--- |            | <---readyIn----- |
+--
+matrixMultiplier :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )

@@ -1,5 +1,5 @@
 module LLaMa2.Layers.TransformerLayer (
-    multiCycleTransformerLayer
+    transformerLayer
     , getKeyVector
     , getValueVector
     , getQueryVector
@@ -46,7 +46,7 @@ data TransformerDecoderComponent = TransformerDecoderComponent
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
-multiCycleTransformerLayer :: forall dom . HiddenClockResetEnable dom
+transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
   -> Signal dom ProcessingState
@@ -56,7 +56,7 @@ multiCycleTransformerLayer :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom LayerData
   )
-multiCycleTransformerLayer layer layerIndex processingState layerData =
+transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData
   , writeDone
   , attentionDone

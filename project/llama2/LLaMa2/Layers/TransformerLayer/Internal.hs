@@ -38,8 +38,17 @@ singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut
       mux (fmap ( == DONE) state) (pure IDLE)                        -- Reset to idle next cycle
       state                                              -- Hold state
 
+    readyIn = fmap (== PROJECTING) state
+
     -- Call the sequential matmul
-    (woResult, woValidOut, woReadyOut) = matrixMultiplier validIn (pure True) woMatrix headVector
+    --
+    -- Handshaking via ready/valid signals
+    --
+    --          | ----validIn---> |            | ----validOut---> |
+    -- Upstream |                 | Multiplier |                  | Downstream
+    --          | <---readyOut--- |            | <---readyIn----- |
+    --
+    (woResult, woValidOut, woReadyOut) = matrixMultiplier validIn readyIn woMatrix headVector
 
     -- Start WO projection when entering state 1
     validIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut

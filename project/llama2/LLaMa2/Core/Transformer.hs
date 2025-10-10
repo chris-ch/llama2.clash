@@ -17,7 +17,7 @@ import LLaMa2.Config
   )
 import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
-  , multiCycleTransformerLayer
+  , transformerLayer
   )
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
 import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
@@ -125,7 +125,7 @@ layerProcessor :: forall dom
 layerProcessor processingState currentLayerData (layerIndex, layerComp) =
   let
     (newLayerData, writeDone, attnDone, commitC3) =
-      TransformerLayer.multiCycleTransformerLayer layerComp layerIndex processingState currentLayerData
+      TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
 
     selectedLayerData =
       liftA4 (layerDataSelector layerIndex) processingState currentLayerData newLayerData commitC3
