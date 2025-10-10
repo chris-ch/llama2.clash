@@ -42,8 +42,8 @@ controlOneHead headOutput headDone woMatrix = (projOut, validOut, readyOut)
     (woResult
       , woValidOut
       , woReadyOut
-       --, _, _, _, _, _, _, _, _, _, _, _
-       ) = matrixMultiplierStub woMatrix startWO headOutput
+       , _, _, _, _, _, _, _, _, _, _, _
+       ) = matrixMultiplier woMatrix startWO headOutput
 
     -- Start WO projection when entering state 1
     startWO = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut

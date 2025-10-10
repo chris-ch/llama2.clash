@@ -1,4 +1,3 @@
-{-# LANGUAGE TypeApplications #-}
 module Model.Layers.TransformerLayer.ControlOneHeadSpec (spec) where
 
 import Clash.Prelude
@@ -9,9 +8,9 @@ import qualified Prelude as P
 
 import Model.Config (ModelDimension, HeadDimension)
 import Model.Numeric.Types (FixedPoint, Mantissa, Exponent)
-import Model.Numeric.ParamPack (QArray2D(..))
-import Model.Helpers.MatVecI8E (matrixVectorMult)
+import Model.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
 import Model.Layers.TransformerLayer.Internal (controlOneHead)
+import Model.Helpers.FixedPoint (dotProductF)
 
 -- ==========
 -- Fixtures
@@ -35,6 +34,19 @@ makeHeadVec =
   map (\j -> realToFrac (1.0 / (1.0 + fromIntegral (fromEnum j) :: Double)))
       (indicesI @HeadDimension)
 
+-- Dot product: dequantize a row once, then reuse existing F dot-product.
+dotProductRowI8E :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint
+dotProductRowI8E row = dotProductF (dequantRowToF row)
+
+-- Matrix @ vector where matrix is quantized (I8E rows) and vector is FixedPoint.
+matrixVectorMult
+  :: (KnownNat cols)
+  => QArray2D rows cols
+  -> Vec cols FixedPoint
+  -> Vec rows FixedPoint
+matrixVectorMult (QArray2D byRows) xF =
+  map (`dotProductRowI8E` xF) byRows
+
 -- Golden projected vector using combinational kernel
 goldenWOx :: Vec ModelDimension FixedPoint
 goldenWOx = matrixVectorMult makeWO makeHeadVec
@@ -49,13 +61,13 @@ worstLatency :: Int
 worstLatency =
   let rows = natToNum @ModelDimension :: Int
       cols = natToNum @HeadDimension  :: Int
-  in rows * cols + rows + cols + 16
+  in rows * (cols + 2) + 16
 
 -- ==========
 -- DUT wrapper
 -- ==========
 
--- Expose controlOneHead, fixing WO matrix and head output
+-- Expose controlOneHead
 controlOneHeadDUT
   :: HiddenClockResetEnable System
   => Signal System Bool                         -- headDone (start request)
@@ -124,8 +136,7 @@ runNHandshaked nReq maxCycles =
      , DL.take maxCycles (sample readySig)
      )
 
-collectValidEvents
-  :: [Vec ModelDimension FixedPoint]
+collectValidEvents :: [Vec ModelDimension FixedPoint]
   -> [Bool]
   -> [(Int, Vec ModelDimension FixedPoint)]
 collectValidEvents outs valids =
@@ -137,32 +148,31 @@ collectValidEvents outs valids =
 
 spec :: Spec
 spec = do
-  describe "controlOneHead with sequentialMatVec - handshaked behavior" $ do
-    it "always checks" $ do
-      True `shouldBe` True
-   {-  
-    it "produces correct projection for a single start pulse" $ do
-      let maxCycles = worstLatency + 32
+  describe "controlOneHead - handshaked behavior" $ do
+    context "produces correct projection for a single start pulse" $ do
+      it "produces correct projection for a single start pulse" $ do
+        let
+          maxCycles = worstLatency + 32
           fireAt    = 1
           (outs, valids, _readys) = runSingleStart maxCycles fireAt
           events    = collectValidEvents outs valids
-      P.length events `shouldSatisfy` (>= 1)
-      let (_, got) = P.head events
+          (_, got) = P.head events
           tol      = 0.01
-      withinTolVec tol got goldenWOx `shouldBe` True
+          
+        P.length (DL.elemIndices True valids) `shouldSatisfy` (== 1)
+        withinTolVec tol got goldenWOx `shouldBe` True
 
-    it "accepts exactly N handshaked starts and produces N completions with correct results" $ do
-      let nReq      = 3
-          maxCycles = nReq * worstLatency + 64
-          (outs, valids, _readys) = runNHandshaked nReq maxCycles
-          events    = collectValidEvents outs valids
-      P.length events `shouldBe` nReq
-      let tol = 0.01
-      P.all (\(_, got) -> withinTolVec tol got goldenWOx) events `shouldBe` True
+      it "accepts exactly N handshaked starts and produces N completions with correct results" $ do
+        let nReq      = 3
+            maxCycles = nReq * worstLatency + 64
+            (outs, valids, _readys) = runNHandshaked nReq maxCycles
+            events    = collectValidEvents outs valids
+        P.length events `shouldBe` nReq
+        let tol = 0.01
+        P.all (\(_, got) -> withinTolVec tol got goldenWOx) events `shouldBe` True
 
-    it "readyOut toggles (not stuck) during an operation" $ do
-      let maxCycles = worstLatency + 32
-          fireAt    = 1
-          (_outs, _valids, readys) = runSingleStart maxCycles fireAt
-      (P.length (DL.nub (DL.take maxCycles readys)) > 1) `shouldBe` True
- -}
+      it "readyOut toggles (not stuck) during an operation" $ do
+        let maxCycles = worstLatency + 32
+            fireAt    = 1
+            (_outs, _valids, readys) = runSingleStart maxCycles fireAt
+        (P.length (DL.nub (DL.take maxCycles readys)) > 1) `shouldBe` True

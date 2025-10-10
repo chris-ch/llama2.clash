@@ -701,9 +701,6 @@ spec = do
         DL.and matches `shouldBe` True
 
       it "returns to ready state after completion" $ do
-        putStrLn $ "completionCycles: " P.++ show completionCycle
-        putStrLn $ "ready cycles: " P.++ show readys
-        putStrLn $ "valid cycles: " P.++ show valids
         if completionCycle < maxCycles - 1
           then readys P.!! (completionCycle + 1) `shouldBe` True
           else True `shouldBe` False -- can't test if at end of sampled cycles

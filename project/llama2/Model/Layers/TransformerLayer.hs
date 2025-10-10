@@ -134,8 +134,8 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
       zipWith3 controlOneHead perHeadOutputs perHeadDoneFlags mWoQs
     
     -- Unpack results
-    perHeadProjected = map (\(out, _, _) -> out) perHeadResults
-    perHeadValidOuts = map (\(_, v, _) -> v) perHeadResults
+    perHeadProjected = map (\(result, _, _) -> result) perHeadResults
+    perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     
     -- All projections done when all validOut signals are high
     allProjectionsDone = and <$> sequenceA perHeadValidOuts
