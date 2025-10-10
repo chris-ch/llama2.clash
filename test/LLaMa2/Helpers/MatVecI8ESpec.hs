@@ -385,6 +385,9 @@ spec = do
           currentRow :: Signal System (Index 3)
           currentRow = fromList currentRowStream
 
+          readyIn :: Signal System Bool
+          readyIn = pure True
+          
           -- Run simulation
           (state, rowReset, rowEnable, validOut, readyOut) =
             exposeClockResetEnable
@@ -393,6 +396,7 @@ spec = do
               CS.resetGen
               CS.enableGen
               enable
+              readyIn
               rowDone
               currentRow
 
@@ -591,7 +595,7 @@ spec = do
 
       it "completes at cycle 20" $ do
         completionCycle `shouldBe` 20
-        
+
       it "produces correct result vector" $ do
         let matches =
               P.zipWith

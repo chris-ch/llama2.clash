@@ -27,40 +27,53 @@ matrixVectorMult
 matrixVectorMult byRows xF =
   map (`dotProductRowI8E` xF) byRows
 
-
 -- Ready/Valid sequential façade for matrix-vector multiplication (STUB)
 -- This stub adds proper ready/valid handshaking even though computation is combinational
 matrixMultiplierStub
-  :: forall dom rows cols .
-     ( HiddenClockResetEnable dom
-     , KnownNat cols, KnownNat rows
-     )
-  => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
-  -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
-  -> MatI8E rows cols -- ^ matrix as row vectors.
-  -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
-  -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
-     , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
-     , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
-     )
+ :: forall dom rows cols .
+ ( HiddenClockResetEnable dom
+ , KnownNat cols, KnownNat rows
+ )
+ => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
+ -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
+ -> MatI8E rows cols -- ^ matrix as row vectors.
+ -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
+ -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
+ , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
+ , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
+ )
 matrixMultiplierStub validIn readyIn rowsQ vecIn = (outVec, validOut, readyOut)
-  where
-    -- Combinational result
-    resultComb = matrixVectorMult rowsQ <$> vecIn
-
-    -- Latch output when we accept input
-    outVec :: Signal dom (Vec rows FixedPoint)
-    outVec = regEn (repeat 0) (validIn .&&. readyOut) resultComb
-
-    -- Valid out: high while output is waiting for downstream
-    validOut :: Signal dom Bool
-    validOut = register False $
-          mux validOut (not <$> readyIn)  -- stay busy until downstream consumes
-                    (validIn .&&. readyOut)  -- start busy on new input
-
-    -- Ready out: can accept new input when idle
-    readyOut :: Signal dom Bool
-    readyOut = not <$> validOut
+ where
+  -- Combinational result
+  resultComb = matrixVectorMult rowsQ <$> vecIn
+  
+  -- State: busy when we have valid output waiting for downstream
+  busy = register False nextBusy
+  
+  -- Accept new input when not busy and validIn is high
+  acceptInput = validIn .&&. (not <$> busy)
+  
+  -- Output consumed when busy and downstream is ready
+  outputConsumed = busy .&&. readyIn
+  
+  -- Next busy state: become busy on new input, stay busy until consumed
+  nextBusy = mux acceptInput
+                 (pure True)                    -- become busy on new input
+                 (mux outputConsumed
+                      (pure False)              -- become idle when output consumed
+                      busy)                     -- otherwise maintain state
+  
+  -- Latch output when we accept input
+  outVec :: Signal dom (Vec rows FixedPoint)
+  outVec = regEn (repeat 0) acceptInput resultComb
+  
+  -- Valid out: high when we have data waiting for downstream
+  validOut :: Signal dom Bool
+  validOut = busy
+  
+  -- Ready out: can accept new input when not busy
+  readyOut :: Signal dom Bool
+  readyOut = not <$> busy
 
 -- ============================================================================
 -- SEQUENTIAL IMPLEMENTATION
@@ -159,17 +172,24 @@ data MultiplierState = MIdle | MReset | MProcessing | MDone
 matrixMultiplierStateMachine  :: forall dom rows .
   (HiddenClockResetEnable dom, KnownNat rows)
   => Signal dom Bool
-  -> Signal dom Bool
+  -> Signal dom Bool -- readyIn from downstream
+  -> Signal dom Bool  
   -> Signal dom (Index rows)
   -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
-matrixMultiplierStateMachine enable rowDone currentRow =
-  (state, rowReset, rowEnable, validOut, readyIn)
+matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
+  (state, rowReset, rowEnable, validOut, readyOut)
   where
     state = register MIdle nextState
 
     lastRow = currentRow .==. pure (maxBound :: Index rows)
 
-    nextState = mux (state .==. pure MIdle .&&. enable)
+    -- Accept input when idle and validIn is high
+    acceptInput = (state .==. pure MIdle) .&&. validIn
+
+    -- Move to next state when done and downstream is ready
+    outputAccepted = (state .==. pure MDone) .&&. readyInDownstream
+
+    nextState = mux acceptInput
                     (pure MReset)
                     (mux (state .==. pure MReset)
                          (pure MProcessing)
@@ -177,15 +197,16 @@ matrixMultiplierStateMachine enable rowDone currentRow =
                               (pure MDone)
                               (mux (state .==. pure MProcessing .&&. rowDone .&&. (not <$> lastRow))
                                    (pure MReset)
-                                   (mux (state .==. pure MDone)
+                                   (mux outputAccepted
                                         (pure MIdle)
                                         state))))
 
     rowReset = state .==. pure MReset
-    -- Disable enable on the cycle when rowDone arrives
-    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. (not <$> rowReset)
+    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone)
     validOut = state .==. pure MDone
-    readyIn = state .==. pure MIdle
+
+    -- Ready to accept new input when idle
+    readyOut = state .==. pure MIdle
 
 -- | Sequential matrix-vector multiplication processor
 matrixMultiplier
@@ -201,7 +222,7 @@ matrixMultiplier
      , Signal dom Bool      -- validOut
      , Signal dom Bool      -- readyOut
      )
-matrixMultiplier validIn readyIn rowVectors inputVector = (outputVector, validOut, readyOut)
+matrixMultiplier validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
   where
     -- Row counter
     rowIndex = register (0 :: Index rows) nextRowIndex
@@ -212,17 +233,16 @@ matrixMultiplier validIn readyIn rowVectors inputVector = (outputVector, validOu
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
-      matrixMultiplierStateMachine validIn rowDone rowIndex
+      matrixMultiplierStateMachine validIn readyInDownstream rowDone rowIndex
 
     -- Increment row index when row completes, reset after last row
     nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
                        (rowIndex + 1)
-                       (mux (state .==. pure MDone)
+                       (mux ((state .==. pure MDone) .&&. readyInDownstream)
                             (pure 0)
                             rowIndex)
 
     -- Accumulate results into output vector
-    -- When rowDone is high, store the result at the current row index
     outputVector = register (repeat 0) nextOutput
     nextOutput = mux rowDone
                      (replace <$> rowIndex <*> rowResult <*> outputVector)
