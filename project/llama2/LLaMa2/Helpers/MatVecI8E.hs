@@ -46,7 +46,6 @@ matrixMultiplierStub
 matrixMultiplierStub validIn readyIn rowsQ vecIn = (outVec, validOut, readyOut)
   where
     -- Combinational result
-    resultComb :: Signal dom (Vec rows FixedPoint)
     resultComb = matrixVectorMult rowsQ <$> vecIn
 
     -- Latch output when we accept input
@@ -150,22 +149,6 @@ singleRowProcessor reset enable row columnVec = (output, rowDone)
 -- | Sequential matrix-vector multiplication processor that computes the product
 -- of a quantized matrix with an input vector in a row-by-row, column-by-column manner.
 -- The function processes one column per cycle, completing one row before moving to the next.
---
--- Inputs:
--- - matrix: A quantized 2D array (QArray2D) containing the matrix in I8E format
--- - validIn: A signal indicating when the input vector is valid and processing should begin
--- - inputVec: A signal carrying the input vector of FixedPoint values
---
--- Outputs:
--- - outputVec: A signal carrying the resulting vector after matrix-vector multiplication
--- - validOut: A signal indicating when the output vector is valid (all rows processed)
--- - readyOut: A signal indicating when the processor is ready to accept new input
---
--- The processor operates as a finite state machine that:
--- 1. Waits for validIn to be asserted (IDLE state)
--- 2. Processes each row sequentially using singleRowProcessor (PROCESSING state)
--- 3. Outputs the complete result vector and asserts validOut (DONE state)
--- 4. Returns to IDLE state
 
 -- | State for the matrix multiplier state machine
 data MultiplierState = MIdle | MReset | MProcessing | MDone
@@ -210,30 +193,28 @@ matrixMultiplier
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )
-  => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
-  -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
-  -> MatI8E rows cols -- ^ matrix as row vectors.
-  -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
-  -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
-     , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
-     , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
+  => Signal dom Bool        -- validIn
+  -> Signal dom Bool        -- readyIn (downstream)
+  -> MatI8E rows cols
+  -> Signal dom (Vec cols FixedPoint)
+  -> ( Signal dom (Vec rows FixedPoint)
+     , Signal dom Bool      -- validOut
+     , Signal dom Bool      -- readyOut
      )
 matrixMultiplier validIn readyIn rowVectors inputVector = (outputVector, validOut, readyOut)
   where
-    -- Row counter to track which row we're processing
+    -- Row counter
     rowIndex = register (0 :: Index rows) nextRowIndex
-
-    -- Current row from the matrix
     currentRow = (!!) rowVectors <$> rowIndex
 
-    -- Single row processor
+    -- Single-row processor
     (rowResult, rowDone) = singleRowProcessor rowReset rowEnable currentRow inputVector
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
       matrixMultiplierStateMachine validIn rowDone rowIndex
 
-    -- Increment row index when a row completes, but not on the last row
+    -- Increment row index when row completes, reset after last row
     nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
                        (rowIndex + 1)
                        (mux (state .==. pure MDone)

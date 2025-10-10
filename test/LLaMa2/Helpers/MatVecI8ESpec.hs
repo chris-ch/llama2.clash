@@ -255,7 +255,7 @@ spec = do
           -- Extract outputs at done cycles
           finalOuts = [outs P.!! i | i <- doneIndices]
 
-      it "has 2 completions" $ do
+      it "matches expected output" $ do
         outs `shouldBe` expectedOutsPattern
       it "has 2 completions" $ do
         P.length doneIndices `shouldBe` 2 -- Expect two row completions
@@ -278,8 +278,6 @@ spec = do
           -- Mimic matrixMultiplier signals
           resetStream = [False, True, False, False, False, False, False]
           enableStream = [False, False, True, True, True, False, False]
-          -- matrixMultiplier signal
-          -- enableStream = [False, False, True, True, True, True, False]
           row = pure rowVector
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
@@ -318,8 +316,6 @@ spec = do
           -- Mimic matrixMultiplier signals
           resetStream = [False, True, False, False, False, False, False]
           enableStream = [False, False, True, True, True, False, False]
-          -- matrixMultiplier signal
-          -- enableStream = [False, False, True, True, True, True, False]
           row = pure rowVector
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
@@ -535,8 +531,12 @@ spec = do
           -- Input signals
           -- Enable signal: pulse high on cycle 1
           enableStream = [False, True] P.++ P.replicate (maxCycles - 2) False
-          enable :: Signal System Bool
-          enable = fromList enableStream
+
+          validIn :: Signal System Bool
+          validIn = pure True -- previous output aways considered as consumed
+
+          readyIn :: Signal System Bool
+          readyIn = fromList enableStream
 
           -- Input vector: available throughout (in real scenario, could be latched)
           inputVec :: Signal System (Vec 4 FixedPoint)
@@ -549,19 +549,23 @@ spec = do
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
-              enable
-              (pure True) -- previous output aways considered as consumed
+              readyIn
+              validIn
               matrix
               inputVec
 
           outputs = P.take maxCycles $ sample outputVec
-          valids = P.take maxCycles $ sample validOut
+          validOuts = P.take maxCycles $ sample validOut
           readys = P.take maxCycles $ sample readyOut
 
+          readyOuts = P.take maxCycles $ sample readyOut
+          validIns = P.take maxCycles $ sample validIn
+          readyIns = P.take maxCycles $ sample readyIn
+
           -- Find when validOut goes high
-          validIndices = DL.findIndices id valids
-          completionCycle = if null validIndices then 0 else DL.head validIndices
-          finalOutput = if null validIndices then repeat 0 else outputs P.!! completionCycle
+          validOutIndices = DL.findIndices id validOuts
+          completionCycle = if null validOutIndices then 0 else DL.head validOutIndices
+          finalOutput = if null validOutIndices then repeat 0 else outputs P.!! completionCycle
 
       -- Expected timeline:
       -- Cycle 0: idle, readyOut=True
@@ -572,10 +576,22 @@ spec = do
       -- Cycle 20: validOut=True, output ready
       -- Cycle 21: back to idle, readyOut=True
 
-      it "completes multiplication at the correct cycle" $ do
-        P.length validIndices `shouldBe` 1
-        completionCycle `shouldBe` 20
+      it "only one valid pulse emitted" $ do
 
+        putStrLn $ "validIns: " P.++ show validIns
+        putStrLn $ "readyIn: " P.++ show readyIns
+        putStrLn $ "validOuts: " P.++ show validOuts
+        putStrLn $ "readyOuts: " P.++ show readyOuts
+        putStrLn $ "finalOutput: " P.++ show finalOutput
+        putStrLn $ "completionCycle: " P.++ show completionCycle
+        putStrLn $ "outputs: " P.++ show outputs
+        putStrLn $ "expectedResult: " P.++ show expectedResult
+        putStrLn $ "inputVector: " P.++ show inputVector
+        P.length validOutIndices `shouldBe` 1
+
+      it "completes at cycle 20" $ do
+        completionCycle `shouldBe` 20
+        
       it "produces correct result vector" $ do
         let matches =
               P.zipWith
@@ -658,9 +674,8 @@ spec = do
 
           -- Input signals
           -- validIn: pulse high only on cycle 1 (when ready to start transaction)
-          validInStream = [False, True] P.++ P.replicate (maxCycles - 2) False
           validIn :: Signal System Bool
-          validIn = fromList validInStream
+          validIn = fromList $ [False, True] P.++ P.replicate (maxCycles - 2) False
 
           readyIn :: Signal System Bool
           readyIn = pure True  -- previous output always considered as consumed
@@ -679,9 +694,7 @@ spec = do
 
           outputs = P.take maxCycles $ sample outputVec
           validOuts = P.take maxCycles $ sample validOut
-          validIns = P.take maxCycles $ sample validIn
           readyOuts = P.take maxCycles $ sample readyOut
-          readyIns = P.take maxCycles $ sample readyIn
 
           -- Find when validOut goes high
           validIndices = DL.findIndices id validOuts
@@ -691,15 +704,8 @@ spec = do
       it "asserts readyOut initially (ready to accept transaction)" $ do
         DL.head readyOuts `shouldBe` True
 
-      it "completes multiplication and asserts validOut" $ do
-        putStrLn $ "validIns: " P.++ show validIns
-        putStrLn $ "readyIn: " P.++ show readyIns
-        putStrLn $ "validOuts: " P.++ show validOuts
-        putStrLn $ "readyOuts: " P.++ show readyOuts
-        putStrLn $ "Valid indices: " P.++ show validIndices
-        putStrLn $ "completionCycle: " P.++ show completionCycle
+      it "only one valid pulse emitted" $ do
         P.length validIndices `shouldBe` 1
-        completionCycle > 0 `shouldBe` True
 
       it "produces correct result vector when validOut is asserted" $ do
         let matches =

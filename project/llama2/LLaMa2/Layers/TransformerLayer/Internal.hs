@@ -39,10 +39,7 @@ singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut
       state                                              -- Hold state
 
     -- Call the sequential matmul
-    (woResult
-      , woValidOut
-      , woReadyOut
-       ) = matrixMultiplierStub validIn (pure True) woMatrix headVector
+    (woResult, woValidOut, woReadyOut) = matrixMultiplier validIn (pure True) woMatrix headVector
 
     -- Start WO projection when entering state 1
     validIn = fmap ( == IDLE) state .&&. headDoneRising .&&. woReadyOut
