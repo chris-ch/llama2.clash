@@ -3,7 +3,7 @@ module LLaMa2.Layers.TransformerLayer.Internal (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
+import LLaMa2.Config (ModelDimension, HeadDimension)
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplierStub, matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.ParamPack (MatI8E)
@@ -23,8 +23,8 @@ singleHeadController :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool                              -- validIn (head done signal)
   -> Signal dom (Vec HeadDimension FixedPoint)    -- head vector
-  -> MatI8E LLaMa2Dimension HeadDimension         -- WO matrix
-  -> ( Signal dom (Vec LLaMa2Dimension FixedPoint) -- projected output
+  -> MatI8E ModelDimension HeadDimension         -- WO matrix
+  -> ( Signal dom (Vec ModelDimension FixedPoint) -- projected output
      , Signal dom Bool                             -- validOut
      , Signal dom Bool                             -- readyOut (can accept new head)
      )

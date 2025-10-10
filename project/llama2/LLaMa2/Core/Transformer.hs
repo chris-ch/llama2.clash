@@ -13,7 +13,7 @@ import LLaMa2.Core.Types
   , Token
   )
 import LLaMa2.Config
-  (  NumLayers, VocabularySize, LLaMa2Dimension
+  (  NumLayers, VocabularySize, ModelDimension
   )
 import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
@@ -43,7 +43,7 @@ transformer :: forall dom
 transformer decoder inputToken inputTokenValid temperature seed =
   ( selectedToken, readyPulse)
  where
-  vocabulary :: MatI8E VocabularySize LLaMa2Dimension
+  vocabulary :: MatI8E VocabularySize ModelDimension
   vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
@@ -76,13 +76,13 @@ transformer decoder inputToken inputTokenValid temperature seed =
   selectedToken = mux inputTokenValid inputToken feedbackToken
 
   -- Quantized embedding lookup via ROM (1-cycle)
-  tokenEmbedding :: Signal dom (Vec LLaMa2Dimension FixedPoint)
+  tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
   tokenEmbedding = Embedding.embedder vocabulary selectedToken
 
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
 
-  layerInputSelector :: ProcessingState -> LayerData -> Vec LLaMa2Dimension FixedPoint -> LayerData
+  layerInputSelector :: ProcessingState -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
   layerInputSelector ps currentLayerData tokenEmbed
     | processingStage ps /= Stage1_ProjectQKV = currentLayerData
     | processingLayer ps == 0                 = currentLayerData { inputVector = tokenEmbed }

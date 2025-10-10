@@ -16,7 +16,7 @@ import LLaMa2.Core.Types
   ( ProcessingState(..), LayerData(..), CycleStage(..)
   )
 import LLaMa2.Config
-  ( LLaMa2Dimension
+  ( ModelDimension
   , NumLayers, NumQueryHeads, NumKeyValueHeads
   , HeadDimension,  SequenceLength
   )
@@ -108,7 +108,7 @@ transformerLayer layer layerIndex processingState layerData =
     ) = perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
   -- Gating based on readyOuts (stable done condition)
-  gatedHeads :: Vec NumQueryHeads (Signal dom (Vec LLaMa2Dimension FixedPoint))
+  gatedHeads :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
   gatedHeads =
     zipWith3
       (\proj _valid ready ->
@@ -119,7 +119,7 @@ transformerLayer layer layerIndex processingState layerData =
       perHeadReadyOuts
 
   -- Combine all heads that are marked ready
-  woHeads :: Signal dom (Vec LLaMa2Dimension FixedPoint)
+  woHeads :: Signal dom (Vec ModelDimension FixedPoint)
   woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
 
   -- All heads ready = WO projection completion
@@ -127,7 +127,7 @@ transformerLayer layer layerIndex processingState layerData =
   validProjected = and <$> sequenceA perHeadReadyOuts
 
   -- Attention output aggregation
-  xAfterAttn :: Signal dom (Vec LLaMa2Dimension FixedPoint)
+  xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
   xAfterAttn = liftA2 inputsAggregator layerData woHeads
 
   -- Rising edge of validProjected -> attentionDone pulse
@@ -205,8 +205,8 @@ perHeadWOController ::
   HiddenClockResetEnable dom
   => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))  -- head outputs
   -> Vec NumQueryHeads (Signal dom Bool)                            -- head done flags
-  -> Vec NumQueryHeads (MatI8E LLaMa2Dimension HeadDimension)      -- WO matrices
-  -> ( Vec NumQueryHeads (Signal dom (Vec LLaMa2Dimension FixedPoint))
+  -> Vec NumQueryHeads (MatI8E ModelDimension HeadDimension)      -- WO matrices
+  -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)  -- validOuts
      , Vec NumQueryHeads (Signal dom Bool)  -- readyOuts
      )
@@ -232,13 +232,13 @@ kvWriteDoneCond layerIndex state banksDone = processingStage state == Stage2_Wri
       && processingLayer state == layerIndex
       && banksDone
 
-inputsAggregator :: LayerData -> Vec LLaMa2Dimension FixedPoint -> Vec LLaMa2Dimension FixedPoint
+inputsAggregator :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 inputsAggregator layerData = zipWith (+) (inputVector layerData)
 
 layerDataAttnDone :: Index NumLayers
   -> ProcessingState
   -> LayerData
-  -> Vec LLaMa2Dimension FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> Bool
   -> LayerData
 layerDataAttnDone layerIndex stage cur attOut attnDone =

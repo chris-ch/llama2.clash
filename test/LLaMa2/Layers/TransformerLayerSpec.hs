@@ -8,16 +8,16 @@ import LLaMa2.Numeric.Types (FixedPoint, Exponent)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Layers.TransformerLayer.Internal (singleHeadController)
-import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
+import LLaMa2.Config (ModelDimension, HeadDimension)
 
 -- | Simple deterministic WO matrix for testing
-makeSimpleWOMatrix :: MatI8E LLaMa2Dimension HeadDimension
+makeSimpleWOMatrix :: MatI8E ModelDimension HeadDimension
 makeSimpleWOMatrix = imap
       (\i _ ->
          ( imap (\j _ -> fromIntegral (i * headDim) + (fromIntegral j + 1) :: Signed 8)
                 (repeat 0 :: Vec HeadDimension (Signed 8))
          , 0))
-      (repeat (repeat 0 :: Vec HeadDimension Int, 0 :: Int) :: Vec LLaMa2Dimension (Vec HeadDimension Int, Int))
+      (repeat (repeat 0 :: Vec HeadDimension Int, 0 :: Int) :: Vec ModelDimension (Vec HeadDimension Int, Int))
  where
    headDim = snatToNum (SNat @HeadDimension)
 
@@ -27,9 +27,9 @@ makeSimpleHeadOutput = imap (\i _ -> 1.0 / fromIntegral (i+1)) (repeat (0 :: Int
 
 -- | Compute expected projection given WO and headOutput
 expectedProjection ::
-  MatI8E LLaMa2Dimension HeadDimension ->
+  MatI8E ModelDimension HeadDimension ->
   Vec HeadDimension FixedPoint ->
-  Vec LLaMa2Dimension FixedPoint
+  Vec ModelDimension FixedPoint
 expectedProjection rows headOut =
   imap (\i _ -> dotProduct (rows !! i) headOut) (repeat (0 :: Int))
  where
@@ -45,7 +45,7 @@ expectedProjection rows headOut =
 simulateControlOneHeadUntilValid ::
   Int -> -- Max cycles to simulate
   Vec HeadDimension FixedPoint -> -- Head output value
-  IO (Maybe (Vec LLaMa2Dimension FixedPoint)) -- Result
+  IO (Maybe (Vec ModelDimension FixedPoint)) -- Result
 simulateControlOneHeadUntilValid maxCycles headOut = do
   let
       -- Create input streams with explicit System domain
@@ -78,8 +78,8 @@ simulateControlOneHeadUntilValid maxCycles headOut = do
 
 -- | Tolerance-based check
 checkResultWithinTolerance ::
-  Vec LLaMa2Dimension FixedPoint ->
-  Vec LLaMa2Dimension FixedPoint ->
+  Vec ModelDimension FixedPoint ->
+  Vec ModelDimension FixedPoint ->
   FixedPoint -> Bool
 checkResultWithinTolerance actual expected tolerance =
   let diffs = P.zipWith (\a b -> abs (a - b)) (toList actual) (toList expected)
@@ -116,7 +116,7 @@ spec = do
 {-     it "handles zero input correctly" $ do
       let headOut = repeat 0 :: Vec HeadDimension FixedPoint
       result <- simulateControlOneHeadUntilValid 200 headOut
-      let expected = repeat 0 :: Vec LLaMa2Dimension FixedPoint
+      let expected = repeat 0 :: Vec ModelDimension FixedPoint
           tolerance = 0.01
       case result of
         Just outVec ->

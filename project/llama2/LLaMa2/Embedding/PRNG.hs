@@ -6,7 +6,7 @@ import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import LLaMa2.Core.Types
   ( Temperature, LayerData (..), Token, Seed)
-import LLaMa2.Config ( VocabularySize , LLaMa2Dimension )
+import LLaMa2.Config ( VocabularySize , ModelDimension )
 
 import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
@@ -26,7 +26,7 @@ xorshift32 s0 =
 
 -- classifier logits in FixedPoint using quantized tied embeddings
 transformerLogits :: TransformerLayer.TransformerDecoderComponent
-                   -> Vec LLaMa2Dimension FixedPoint
+                   -> Vec ModelDimension FixedPoint
                    -> Vec VocabularySize FixedPoint
 transformerLogits decoder tokenVector =
   let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ

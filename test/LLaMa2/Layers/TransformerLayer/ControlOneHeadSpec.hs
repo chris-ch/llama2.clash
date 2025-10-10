@@ -6,7 +6,7 @@ import qualified Data.List as DL
 import Test.Hspec
 import qualified Prelude as P
 
-import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
+import LLaMa2.Config (ModelDimension, HeadDimension)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E, dequantRowToF)
 import LLaMa2.Layers.TransformerLayer.Internal (singleHeadController)
@@ -18,7 +18,7 @@ import LLaMa2.Helpers.FixedPoint (dotProductF)
 
 -- Deterministic WO matrix:
 -- each output row uses mantissas [1..HeadDimension], exponent 0
-makeWO :: MatI8E LLaMa2Dimension HeadDimension
+makeWO :: MatI8E ModelDimension HeadDimension
 makeWO = 
   let rowMant :: Vec HeadDimension Mantissa
       rowMant = map (fromIntegral . (1 +) . fromEnum) (indicesI @HeadDimension)
@@ -46,10 +46,10 @@ matrixVectorMult byRows xF =
   map (`dotProductRowI8E` xF) byRows
 
 -- Golden projected vector using combinational kernel
-goldenWOx :: Vec LLaMa2Dimension FixedPoint
+goldenWOx :: Vec ModelDimension FixedPoint
 goldenWOx = matrixVectorMult makeWO makeHeadVec
 
-withinTolVec :: FixedPoint -> Vec LLaMa2Dimension FixedPoint -> Vec LLaMa2Dimension FixedPoint -> Bool
+withinTolVec :: FixedPoint -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint -> Bool
 withinTolVec tol a b =
   let diffs = P.zipWith (\x y -> abs (x - y)) (toList a) (toList b)
   in P.all (< tol) diffs
@@ -57,7 +57,7 @@ withinTolVec tol a b =
 -- Conservative latency bound for sequentialMatVec
 worstLatency :: Int
 worstLatency =
-  let rows = natToNum @LLaMa2Dimension :: Int
+  let rows = natToNum @ModelDimension :: Int
       cols = natToNum @HeadDimension  :: Int
   in rows * (cols + 2) + 16
 
@@ -69,7 +69,7 @@ worstLatency =
 singleHeadControllerDUT
   :: HiddenClockResetEnable System
   => Signal System Bool                         -- validIn (start request)
-  -> ( Signal System (Vec LLaMa2Dimension FixedPoint) -- projOut (held at valid)
+  -> ( Signal System (Vec ModelDimension FixedPoint) -- projOut (held at valid)
      , Signal System Bool                       -- validOut (pulse)
      , Signal System Bool )                     -- readyOut (level)
 singleHeadControllerDUT validIn =
@@ -83,7 +83,7 @@ singleHeadControllerDUT validIn =
 runSingleStart ::
   Int ->                     -- total cycles to sample
   Int ->                     -- cycle to fire (>=1 recommended)
-  ( [Vec LLaMa2Dimension FixedPoint]  -- projOut samples
+  ( [Vec ModelDimension FixedPoint]  -- projOut samples
   , [Bool]                           -- validOut samples
   , [Bool] )                         -- readyOut samples
 runSingleStart n fireAt =
@@ -104,7 +104,7 @@ runSingleStart n fireAt =
 runNHandshaked ::
   Int ->  -- N completions to request
   Int ->  -- max cycles to simulate (must be >= N*worstLatency + margin)
-  ( [Vec LLaMa2Dimension FixedPoint]  -- projOut samples
+  ( [Vec ModelDimension FixedPoint]  -- projOut samples
   , [Bool]                           -- validOut samples
   , [Bool] )                         -- readyOut samples
 runNHandshaked nReq maxCycles =
@@ -134,9 +134,9 @@ runNHandshaked nReq maxCycles =
      , DL.take maxCycles (sample readySig)
      )
 
-collectValidEvents :: [Vec LLaMa2Dimension FixedPoint]
+collectValidEvents :: [Vec ModelDimension FixedPoint]
   -> [Bool]
-  -> [(Int, Vec LLaMa2Dimension FixedPoint)]
+  -> [(Int, Vec ModelDimension FixedPoint)]
 collectValidEvents outs valids =
   [ (i, o) | (i,(v,o)) <- P.zip [0..] (P.zip valids outs), v ]
 

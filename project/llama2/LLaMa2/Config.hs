@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 module LLaMa2.Config (
-    LLaMa2Dimension,
+    ModelDimension,
     HiddenDimension,
     NumLayers,
     NumQueryHeads,
@@ -20,7 +20,7 @@ import qualified GHC.TypeNats as TN
 
 #ifdef MODEL_260K
 -- model config 260K
-type LLaMa2Dimension = 64
+type ModelDimension = 64
 type HiddenDimension = 172
 type NumLayers = 5
 type NumQueryHeads = 8
@@ -32,7 +32,7 @@ type SequenceLength = 512
 
 #elif MODEL_15M
 -- model config 15M
-type LLaMa2Dimension = 288
+type ModelDimension = 288
 type HiddenDimension = 768
 type NumLayers = 6
 type NumQueryHeads = 6
@@ -44,7 +44,7 @@ type SequenceLength = 256
 
 #elif MODEL_42M
 -- model config 42M
-type LLaMa2Dimension = 512
+type ModelDimension = 512
 type HiddenDimension = 1376
 type NumLayers = 8
 type NumQueryHeads = 8
@@ -56,7 +56,7 @@ type SequenceLength = 1024
 
 #elif MODEL_110M
 -- model config 110M
-type LLaMa2Dimension = 768
+type ModelDimension = 768
 type HiddenDimension = 2048
 type NumLayers = 12
 type NumQueryHeads = 12
@@ -68,7 +68,7 @@ type SequenceLength = 1024
 
 #else
 -- defaults to model config 15M
-type LLaMa2Dimension = 288
+type ModelDimension = 288
 type HiddenDimension = 768
 type NumLayers = 6
 type NumQueryHeads = 6
@@ -83,7 +83,7 @@ type SequenceLength = 256
 
 {-
 -- LLaMA 2 7B
-type LLaMa2Dimension = 4096
+type ModelDimension = 4096
 type HiddenDimension = 11008
 type NumLayers = 32
 type NumQueryHeads = 32
@@ -96,7 +96,7 @@ type SequenceLength = 4096
 
 {-
 -- LLaMA 2 13B
-type LLaMa2Dimension = 5120
+type ModelDimension = 5120
 type HiddenDimension = 13824
 type NumLayers = 40
 type NumQueryHeads = 40
@@ -109,7 +109,7 @@ type SequenceLength = 4096
 
 {-
 -- LLaMA 2 70B
-type LLaMa2Dimension = 7168
+type ModelDimension = 7168
 type HiddenDimension = 28672
 type NumLayers = 70
 type NumQueryHeads = 64

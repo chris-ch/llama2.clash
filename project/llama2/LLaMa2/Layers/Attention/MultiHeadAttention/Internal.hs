@@ -7,11 +7,11 @@ module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
 
 import Clash.Prelude
 import LLaMa2.Config
-    ( LLaMa2Dimension,
+    ( ModelDimension,
       HeadDimension,
       RotaryPositionalEmbeddingDimension,
       SequenceLength,
-      LLaMa2Dimension,
+      ModelDimension,
       HeadDimension,
       RotaryPositionalEmbeddingDimension,
       SequenceLength  )
@@ -24,7 +24,7 @@ import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
 computeHeadQ
   :: SingleHeadComponentQ
   -> Index SequenceLength
-  -> Vec LLaMa2Dimension FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> Vec HeadDimension FixedPoint
 computeHeadQ headComp stepCount xHat =
   let q   = matrixVectorMult (wqHeadQ headComp) xHat
@@ -34,7 +34,7 @@ computeHeadQ headComp stepCount xHat =
 computeHeadKV
   :: SingleHeadComponentQ
   -> Index SequenceLength
-  -> Vec LLaMa2Dimension FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
 computeHeadKV headComp stepCount xHat =
   let k   = matrixVectorMult (wkHeadQ headComp) xHat

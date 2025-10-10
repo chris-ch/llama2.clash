@@ -6,7 +6,7 @@ module LLaMa2.Layers.Attention.MultiHeadAttention (
 
 import Clash.Prelude
 import LLaMa2.Config
-  ( NumQueryHeads, LLaMa2Dimension, NumKeyValueHeads
+  ( NumQueryHeads, ModelDimension, NumKeyValueHeads
   , HeadDimension, SequenceLength)
 
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -21,7 +21,7 @@ import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 projectQKV
   :: MultiHeadAttentionComponentQ
   -> Index SequenceLength
-  -> Vec LLaMa2Dimension FixedPoint
+  -> Vec ModelDimension FixedPoint
   -> ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint) )

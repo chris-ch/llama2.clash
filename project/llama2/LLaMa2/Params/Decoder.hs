@@ -2,7 +2,7 @@ module LLaMa2.Params.Decoder (decoderConst) where
 
 import Clash.Prelude
 import LLaMa2.Config
-  ( LLaMa2Dimension, HiddenDimension
+  ( ModelDimension, HiddenDimension
   , HeadDimension
   , RotaryPositionalEmbeddingDimension, SequenceLength
   , VocabularySize
@@ -35,30 +35,30 @@ rotaryZerosF = RotaryEncodingComponent
 
 singleHeadF :: SingleHeadComponent
 singleHeadF = SingleHeadComponent
-  { wqHead = zeroMatF @HeadDimension @LLaMa2Dimension
-  , wkHead = zeroMatF @HeadDimension @LLaMa2Dimension
-  , wvHead = zeroMatF @HeadDimension @LLaMa2Dimension
+  { wqHead = zeroMatF @HeadDimension @ModelDimension
+  , wkHead = zeroMatF @HeadDimension @ModelDimension
+  , wvHead = zeroMatF @HeadDimension @ModelDimension
   , rotary = rotaryZerosF
   }
 
 mhaFloat :: MultiHeadAttentionComponent
 mhaFloat = MultiHeadAttentionComponent
   { heads  = repeat singleHeadF                 -- Vec NumQueryHeads
-  , mWo    = repeat (zeroMatF @LLaMa2Dimension @HeadDimension)
-  , rmsAtt = repeat 0.0                         -- Vec LLaMa2Dimension
+  , mWo    = repeat (zeroMatF @ModelDimension @HeadDimension)
+  , rmsAtt = repeat 0.0                         -- Vec ModelDimension
   }
 
 ffnFloat :: FeedForwardNetworkComponent
 ffnFloat = FeedForwardNetworkComponent
-  { fW1     = zeroMatF @HiddenDimension @LLaMa2Dimension
-  , fW2     = zeroMatF @LLaMa2Dimension @HiddenDimension
-  , fW3     = zeroMatF @HiddenDimension @LLaMa2Dimension
+  { fW1     = zeroMatF @HiddenDimension @ModelDimension
+  , fW2     = zeroMatF @ModelDimension @HiddenDimension
+  , fW3     = zeroMatF @HiddenDimension @ModelDimension
   , fRMSFfn = repeat 0.0
   }
 
 embeddingFloat :: EmbeddingComponent
 embeddingFloat = EmbeddingComponent
-  { vocabulary     = zeroMatF @VocabularySize @LLaMa2Dimension
+  { vocabulary     = zeroMatF @VocabularySize @ModelDimension
   , rmsFinalWeight = repeat 0.0
   }
 

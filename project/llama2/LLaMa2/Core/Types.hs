@@ -18,7 +18,7 @@ import Clash.Prelude
 import GHC.Stack (HasCallStack)
 import LLaMa2.Config
   ( HeadDimension,
-    LLaMa2Dimension,
+    ModelDimension,
     NumKeyValueHeads,
     NumLayers,
     NumQueryHeads,
@@ -78,12 +78,12 @@ data ProcessingState = ProcessingState
 -- Per-layer intermediate data vectors carried through the pipeline.
 -- Updated selectively depending on cycle stage.
 data LayerData = LayerData
-  { inputVector :: Vec LLaMa2Dimension FixedPoint,
+  { inputVector :: Vec ModelDimension FixedPoint,
     queryVectors :: Vec NumQueryHeads (Vec HeadDimension FixedPoint),
     keyVectors :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint),
     valueVectors :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint),
-    attentionOutput :: Vec LLaMa2Dimension FixedPoint,
-    feedForwardOutput :: Vec LLaMa2Dimension FixedPoint
+    attentionOutput :: Vec ModelDimension FixedPoint,
+    feedForwardOutput :: Vec ModelDimension FixedPoint
   }
   deriving (Show, Generic, NFDataX, Eq)
 
@@ -98,8 +98,8 @@ type Seed = Unsigned 32
 -- Data definitions for LLM architecture
 
 data EmbeddingComponent = EmbeddingComponent
-  { vocabulary :: CArray2D VocabularySize LLaMa2Dimension,
-    rmsFinalWeight :: Vec LLaMa2Dimension Float
+  { vocabulary :: CArray2D VocabularySize ModelDimension,
+    rmsFinalWeight :: Vec ModelDimension Float
   }
   deriving (Show)
 
@@ -110,9 +110,9 @@ data RotaryEncodingComponent = RotaryEncodingComponent
   deriving (Show, Generic, Eq)
 
 data SingleHeadComponent = SingleHeadComponent
-  { wqHead :: CArray2D HeadDimension LLaMa2Dimension,
-    wkHead :: CArray2D HeadDimension LLaMa2Dimension,
-    wvHead :: CArray2D HeadDimension LLaMa2Dimension,
+  { wqHead :: CArray2D HeadDimension ModelDimension,
+    wkHead :: CArray2D HeadDimension ModelDimension,
+    wvHead :: CArray2D HeadDimension ModelDimension,
     rotary :: RotaryEncodingComponent
   }
   deriving (Show)
