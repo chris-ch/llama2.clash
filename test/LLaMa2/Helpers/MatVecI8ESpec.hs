@@ -4,7 +4,7 @@ import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
 import LLaMa2.Helpers.MatVecI8E
-import LLaMa2.Numeric.ParamPack (QArray2D (..), RowI8E)
+import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
@@ -516,8 +516,8 @@ spec = do
           row2 :: RowI8E 4
           row2 = (1 :> 1 :> 1 :> 1 :> Nil, 0)
 
-          matrix :: QArray2D 3 4
-          matrix = QArray2D (row0 :> row1 :> row2 :> Nil)
+          matrix :: MatI8E 3 4
+          matrix = row0 :> row1 :> row2 :> Nil
 
           -- Input vector: [1.0, 0.5, 0.25, 0.125]
           inputVector :: Vec 4 FixedPoint
@@ -639,8 +639,8 @@ spec = do
           row2 :: RowI8E 4
           row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
 
-          matrix :: QArray2D 3 4
-          matrix = QArray2D (row0 :> row1 :> row2 :> Nil)
+          matrix :: MatI8E 3 4
+          matrix = row0 :> row1 :> row2 :> Nil
 
           -- Input vector: [2.0, 1.5, 1.0, 0.5]
           inputVector :: Vec 4 FixedPoint

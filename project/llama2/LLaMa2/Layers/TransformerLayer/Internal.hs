@@ -6,7 +6,7 @@ import Clash.Prelude
 import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplierStub, matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.ParamPack (QArray2D)
+import LLaMa2.Numeric.ParamPack (MatI8E)
 
 -- FSM states
 data FSMState = IDLE | PROJECTING | DONE
@@ -17,7 +17,7 @@ singleHeadController :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom (Vec HeadDimension FixedPoint)           -- head vector
   -> Signal dom Bool                                      -- head done
-  -> QArray2D LLaMa2Dimension HeadDimension               -- WO matrix
+  -> MatI8E LLaMa2Dimension HeadDimension               -- WO matrix
   -> ( Signal dom (Vec LLaMa2Dimension FixedPoint)        -- projected output
      , Signal dom Bool                                    -- validOut
      , Signal dom Bool                                    -- readyOut
@@ -42,7 +42,6 @@ singleHeadController headVector headDone woMatrix = (projOut, validOut, readyOut
     (woResult
       , woValidOut
       , woReadyOut
-       --, _, _, _, _, _, _, _, _, _, _, _
        ) = matrixMultiplierStub validIn woMatrix headVector
 
     -- Start WO projection when entering state 1

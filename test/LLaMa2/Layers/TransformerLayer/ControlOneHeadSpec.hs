@@ -8,7 +8,7 @@ import qualified Prelude as P
 
 import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
-import LLaMa2.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
+import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E, dequantRowToF)
 import LLaMa2.Layers.TransformerLayer.Internal (singleHeadController)
 import LLaMa2.Helpers.FixedPoint (dotProductF)
 
@@ -18,15 +18,13 @@ import LLaMa2.Helpers.FixedPoint (dotProductF)
 
 -- Deterministic WO matrix:
 -- each output row uses mantissas [1..HeadDimension], exponent 0
-makeWO :: QArray2D LLaMa2Dimension HeadDimension
-makeWO =
+makeWO :: MatI8E LLaMa2Dimension HeadDimension
+makeWO = 
   let rowMant :: Vec HeadDimension Mantissa
       rowMant = map (fromIntegral . (1 +) . fromEnum) (indicesI @HeadDimension)
       oneRow :: (Vec HeadDimension Mantissa, Exponent)
       oneRow = (rowMant, 0)
-      rows :: Vec LLaMa2Dimension (Vec HeadDimension Mantissa, Exponent)
-      rows = repeat oneRow
-  in QArray2D rows
+  in repeat oneRow
 
 -- Deterministic head vector: x_j = 1/(j+1)
 makeHeadVec :: Vec HeadDimension FixedPoint
@@ -41,10 +39,10 @@ dotProductRowI8E row = dotProductF (dequantRowToF row)
 -- Matrix @ vector where matrix is quantized (I8E rows) and vector is FixedPoint.
 matrixVectorMult
   :: (KnownNat cols)
-  => QArray2D rows cols
+  => MatI8E rows cols
   -> Vec cols FixedPoint
   -> Vec rows FixedPoint
-matrixVectorMult (QArray2D byRows) xF =
+matrixVectorMult byRows xF =
   map (`dotProductRowI8E` xF) byRows
 
 -- Golden projected vector using combinational kernel

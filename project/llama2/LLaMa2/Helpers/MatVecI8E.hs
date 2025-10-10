@@ -11,7 +11,7 @@ module LLaMa2.Helpers.MatVecI8E
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
-import LLaMa2.Numeric.ParamPack (QArray2D(..), RowI8E, dequantRowToF)
+import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E, dequantRowToF)
 import LLaMa2.Helpers.FixedPoint (dotProductF)
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
@@ -21,10 +21,10 @@ dotProductRowI8E row = dotProductF (dequantRowToF row)
 -- Matrix @ vector where matrix is quantized (I8E rows) and vector is FixedPoint.
 matrixVectorMult
   :: (KnownNat cols)
-  => QArray2D rows cols
+  => MatI8E rows cols
   -> Vec cols FixedPoint
   -> Vec rows FixedPoint
-matrixVectorMult (QArray2D byRows) xF =
+matrixVectorMult byRows xF =
   map (`dotProductRowI8E` xF) byRows
 
 
@@ -36,18 +36,18 @@ matrixMultiplierStub
      , KnownNat cols, KnownNat rows
      )
   => Signal dom Bool               
-  -> QArray2D rows cols                           -- ^ validIn
+  -> MatI8E rows cols                           -- ^ validIn
   -> Signal dom (Vec cols FixedPoint)             -- ^ inputVec
   -> ( Signal dom (Vec rows FixedPoint)           -- ^ outputVec
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-matrixMultiplierStub validIn (QArray2D rowsQ) vecIn = (outVec, validOut, readyOut)
+matrixMultiplierStub validIn rowsQ vecIn = (outVec, validOut, readyOut)
   where
 
     -- Compute result combinationally
     resultComb :: Signal dom (Vec rows FixedPoint)
-    resultComb = matrixVectorMult (QArray2D rowsQ) <$> vecIn
+    resultComb = matrixVectorMult rowsQ <$> vecIn
 
     -- Latch input when we accept it
     outVec :: Signal dom (Vec rows FixedPoint)
@@ -215,13 +215,13 @@ matrixMultiplier
      , KnownNat cols, KnownNat rows
      )
   => Signal dom Bool -- ^ validIn
-  -> QArray2D rows cols -- ^ matrix
+  -> MatI8E rows cols -- ^ matrix
   -> Signal dom (Vec cols FixedPoint) -- ^ inputVec
   -> ( Signal dom (Vec rows FixedPoint) -- ^ outputVec
      , Signal dom Bool -- ^ validOut
      , Signal dom Bool -- ^ readyOut
      )
-matrixMultiplier validIn (QArray2D rowsQ) inputVec = (outputVec, validOut, readyOut)
+matrixMultiplier validIn rowsQ inputVec = (outputVec, validOut, readyOut)
   where
     -- Row counter to track which row we're processing
     rowIndex = register (0 :: Index rows) nextRowIndex

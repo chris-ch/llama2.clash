@@ -34,7 +34,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Helpers (liftA4)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
 import LLaMa2.Memory.RamOps (toRamOperation)
-import LLaMa2.Numeric.ParamPack (QArray2D)
+import LLaMa2.Numeric.ParamPack (MatI8E)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -133,7 +133,7 @@ perHeadWOController ::
   HiddenClockResetEnable dom
   => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))  -- head outputs
   -> Vec NumQueryHeads (Signal dom Bool)                            -- head done flags
-  -> Vec NumQueryHeads (QArray2D LLaMa2Dimension HeadDimension)      -- WO matrices
+  -> Vec NumQueryHeads (MatI8E LLaMa2Dimension HeadDimension)      -- WO matrices
   -> ( Vec NumQueryHeads (Signal dom (Vec LLaMa2Dimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)  -- validOuts
      , Vec NumQueryHeads (Signal dom Bool)  -- readyOuts

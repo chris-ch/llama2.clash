@@ -27,7 +27,7 @@ import LLaMa2.Config (
   , VocabularySize
   )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.ParamPack (QArray2D(..), quantizeMatI8E)
+import LLaMa2.Numeric.ParamPack (MatI8E, quantizeMatI8E)
 import LLaMa2.Layers.Components.RotaryQ (quantizeRotary, RotaryEncodingComponentF)
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
@@ -45,30 +45,30 @@ data FeedForwardNetworkComponent = FeedForwardNetworkComponent
 
 -- Float-free, quantized single head (per-row I8E weights).
 data SingleHeadComponentQ = SingleHeadComponentQ
-  { wqHeadQ :: QArray2D HeadDimension LLaMa2Dimension
-  , wkHeadQ :: QArray2D HeadDimension LLaMa2Dimension
-  , wvHeadQ :: QArray2D HeadDimension LLaMa2Dimension
+  { wqHeadQ :: MatI8E HeadDimension LLaMa2Dimension
+  , wkHeadQ :: MatI8E HeadDimension LLaMa2Dimension
+  , wvHeadQ :: MatI8E HeadDimension LLaMa2Dimension
   , rotaryQ :: RotaryEncodingComponentF
   } deriving (Generic, Show, Eq)
 
 -- MHA with quantized per-head WO and preconverted RMS weights.
 data MultiHeadAttentionComponentQ = MultiHeadAttentionComponentQ
   { headsQ  :: Vec NumQueryHeads SingleHeadComponentQ
-  , mWoQ    :: Vec NumQueryHeads (QArray2D LLaMa2Dimension HeadDimension)
+  , mWoQ    :: Vec NumQueryHeads (MatI8E LLaMa2Dimension HeadDimension)
   , rmsAttF :: Vec LLaMa2Dimension FixedPoint
   } deriving (Generic, Show, Eq)
 
 -- FFN with quantized matrices and preconverted RMS.
 data FeedForwardNetworkComponentQ = FeedForwardNetworkComponentQ
-  { fW1Q     :: QArray2D HiddenDimension LLaMa2Dimension
-  , fW2Q     :: QArray2D LLaMa2Dimension HiddenDimension
-  , fW3Q     :: QArray2D HiddenDimension LLaMa2Dimension
+  { fW1Q     :: MatI8E HiddenDimension LLaMa2Dimension
+  , fW2Q     :: MatI8E LLaMa2Dimension HiddenDimension
+  , fW3Q     :: MatI8E HiddenDimension LLaMa2Dimension
   , fRMSFfnF :: Vec LLaMa2Dimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- Embedding with quantized vocabulary sized by the active VocabularySize alias.
 data EmbeddingComponentQ = EmbeddingComponentQ
-  { vocabularyQ     :: QArray2D VocabularySize LLaMa2Dimension
+  { vocabularyQ     :: MatI8E VocabularySize LLaMa2Dimension
   , rmsFinalWeightF :: Vec LLaMa2Dimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 

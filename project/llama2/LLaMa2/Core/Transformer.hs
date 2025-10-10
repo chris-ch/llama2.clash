@@ -27,7 +27,7 @@ import qualified LLaMa2.Core.PipelineController as PipelineController
   )
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
-import LLaMa2.Numeric.ParamPack (QArray2D)
+import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 
 type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool))
@@ -43,7 +43,7 @@ multiCycleTransformer :: forall dom
 multiCycleTransformer decoder inputToken inputTokenValid temperature seed =
   ( selectedToken, readyPulse)
  where
-  vocabulary :: QArray2D VocabularySize LLaMa2Dimension
+  vocabulary :: MatI8E VocabularySize LLaMa2Dimension
   vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent

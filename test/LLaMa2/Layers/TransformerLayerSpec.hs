@@ -3,7 +3,7 @@ module LLaMa2.Layers.TransformerLayerSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.ParamPack (QArray2D (..))
+import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint, Exponent)
 import Test.Hspec
 import qualified Prelude as P
@@ -11,10 +11,8 @@ import LLaMa2.Layers.TransformerLayer.Internal (singleHeadController)
 import LLaMa2.Config (LLaMa2Dimension, HeadDimension)
 
 -- | Simple deterministic WO matrix for testing
-makeSimpleWOMatrix :: QArray2D LLaMa2Dimension HeadDimension
-makeSimpleWOMatrix =
-  QArray2D $
-    imap
+makeSimpleWOMatrix :: MatI8E LLaMa2Dimension HeadDimension
+makeSimpleWOMatrix = imap
       (\i _ ->
          ( imap (\j _ -> fromIntegral (i * headDim) + (fromIntegral j + 1) :: Signed 8)
                 (repeat 0 :: Vec HeadDimension (Signed 8))
@@ -29,10 +27,10 @@ makeSimpleHeadOutput = imap (\i _ -> 1.0 / fromIntegral (i+1)) (repeat (0 :: Int
 
 -- | Compute expected projection given WO and headOutput
 expectedProjection ::
-  QArray2D LLaMa2Dimension HeadDimension ->
+  MatI8E LLaMa2Dimension HeadDimension ->
   Vec HeadDimension FixedPoint ->
   Vec LLaMa2Dimension FixedPoint
-expectedProjection (QArray2D rows) headOut =
+expectedProjection rows headOut =
   imap (\i _ -> dotProduct (rows !! i) headOut) (repeat (0 :: Int))
  where
    dotProduct :: (Vec HeadDimension (Signed 8), Exponent)
