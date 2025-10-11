@@ -1,9 +1,14 @@
 {
-	"image": "ghcr.io/chris-ch/docker-ghcup:v1.1.0",
+	"build": {
+        "dockerfile": "Dockerfile",
+        "context": "."
+    },
 	"customizations": {
 			"vscode": {
 					"extensions": [
-						"haskell.haskell"
+						"haskell.haskell",
+						"yzhang.markdown-all-in-one",
+						"shd101wyy.markdown-preview-enhanced"
 					]
 			}
 	},
