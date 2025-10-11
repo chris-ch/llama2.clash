@@ -39,19 +39,18 @@ logitsConverter :: TransformerLayer.TransformerDecoderComponent
 logitsConverter decoder nextLayerDataSignal =
   transformerLogits decoder . feedForwardOutput <$> nextLayerDataSignal
 
-readyPulseRegister :: forall dom. HiddenClockResetEnable dom
-   => Signal dom Bool -> Signal dom Bool
-readyPulseRegister readyPulseSignal = regEn True readyPulseSignal (pure False)
-
-seedMixer :: Signal dom (Unsigned 32) -> Signal dom (Unsigned 32)
-seedMixer seedSignal = (`xor` 0x9E3779B9) <$> seedSignal
-
-pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
-  => Signal dom Bool -> Signal dom (Unsigned 32) -> Signal dom (Unsigned 32)
-pseudoRandomGenerator readyPulse seedSignal =
-  let nextVal = mux (readyPulseRegister readyPulse) (xorshift32 <$> seedMixer seedSignal)
-                                      (xorshift32 <$> pseudoRandomGenerator readyPulse seedSignal)
-  in regEn 2463534242 readyPulse nextVal
+pseudoRandomGenerator
+  :: forall dom. HiddenClockResetEnable dom
+  => Signal dom Bool           -- ^ readyPulse
+  -> Signal dom (Unsigned 32)  -- ^ seed
+  -> Signal dom (Unsigned 32)  -- ^ prng state/output
+pseudoRandomGenerator readyPulse seedSig =
+  mealyB step 0 (readyPulse, seedSig)
+  where
+    step :: Unsigned 32 -> (Bool, Unsigned 32) -> (Unsigned 32, Unsigned 32)
+    step s (rdy, seedNow) =
+      let s' = if rdy then xorshift32 (seedNow `xor` 0x9E3779B9) else xorshift32 s
+      in  (s', s')
 
 uniformRandom01Generator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool -> Signal dom (Unsigned 32) -> Signal dom FixedPoint

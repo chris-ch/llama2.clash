@@ -13,14 +13,6 @@ Scope
 
 # GPT-5 Notes
 
-Reasoning, assumptions, approach
-- Goal: turn the current Clash design into a synthesizable LLaMa2 decoder core (Clash 1.8.2, GHC 9.6.7).
-- Constraints:
-  - No on-FPGA float; only SFixed and I8E are allowed on the datapath. Elaboration-time Float is fine.
-- Approach: enumerate concrete, verifiable tasks per module; fix the few non-synthesizable constructs (Integer in runtime datapath; RAM op wrapper); replace simulation facades with sequential versions; lock ready/valid handshakes; and ensure BRAM/ROM inference. Each item has a definition of done (DoD). Where helpful, I include complete drop-in functions so you can copy-paste without stitching.
-
-TODO.md
-
 1) Global build, config, and lint
 - Task G1: Pin toolchain and Clash options.
   - Do: Use Clash 1.8.2, GHC 9.6.7. Build with -O2 -fclash-aggressive-x-optimization -fconstraint-solver-iterations=10.
@@ -53,7 +45,9 @@ TODO.md
   - DoD: Formal/Sim: readyPulse rises once per generated token; no double pulses.
 
 3) Numeric: fixed-point helpers
-- Task N1: Done
+- Task N1: Replace scalePow2F with shift-only implementation.
+  - Why: current version multiplies by fromInteger (1 `shiftL` n) at runtime, introducing Integer.
+  - Action: Replace function with a Bits-based shifter. 
 - Task N2: Accumulator width audit in dot products.
   - Do: Consider widening accumulators for long vectors (e.g., HeadDimension 64/128). Option: use SFixed (intBitsF+8) 20 in accumulation then truncate with saturation.
   - DoD: No overflow observed vs. golden (simulation), or document acceptable error.
@@ -67,10 +61,8 @@ TODO.md
   - Second pass: Replace qkvProjectionController’s “compute in one cycle” with three sequential matrixMultiplier instances scheduled across heads.
   - DoD: For first pass, netlist produced; For second pass, resource usage drops; controller handshakes remain correct.
 
-1) RAM/ROM usage and KV cache
+5) RAM/ROM usage and KV cache
 - Task R1: Done
-  - DoD: KV banks infer TDP BRAMs; no custom RamOp type is on the synthesis path.
-
 - Task R2: One-pulse KV write is correct but verify same-cycle R/W policy.
   - Do: Confirm vendor BRAM is write-first or no-collision on different ports (we write on Port B at pos and read Port A at t=0..pos during Stage3; Stage2 and Stage3 are mutually exclusive so safe).
   - DoD: Simulate a layer with pos=0 and pos>0; attendHeadSeq reads the just-written row next Stage3.
@@ -92,26 +84,7 @@ TODO.md
   - DoD: No X-propagation when all masked.
 
 7) PRNG and sampling
-- Task P1: Rewrite PRNG mealy to avoid self-recursive signal in RHS.
-  - Do: Replace pseudoRandomGenerator with a clean state machine. Drop-in below.
-  - DoD: Lint shows no combinational loops; functional sim matches previous sequence.
-
-  Haskell code:
-  ```haskell
-  -- project/llama2/LLaMa2/Embedding/PRNG.hs (replace pseudoRandomGenerator)
-  pseudoRandomGenerator
-    :: forall dom. HiddenClockResetEnable dom
-    => Signal dom Bool           -- ^ readyPulse
-    -> Signal dom (Unsigned 32)  -- ^ seed
-    -> Signal dom (Unsigned 32)  -- ^ prng state/output
-  pseudoRandomGenerator readyPulse seedSig =
-    mealyB step 0 (bundle (readyPulse, seedSig))
-    where
-      step :: Unsigned 32 -> (Bool, Unsigned 32) -> (Unsigned 32, Unsigned 32)
-      step s (rdy, seedNow) =
-        let s' = if rdy then xorshift32 (seedNow `xor` 0x9E3779B9) else xorshift32 s
-        in  (s', s')
-  ```
+  - Do: Done
 
 8) Pipeline and stage control
 - Task C1: Stage-finish generation in PipelineController
@@ -158,8 +131,3 @@ References and tips
 - Clash Prelude, Block RAM/ROM: Clash.Prelude.BlockRam and Clash.Prelude.ROM.
 - SFixed arithmetic and Bits: Clash docs for Fixed point types; shiftL/shiftR are synthesizable on SFixed.
 - Handshake patterns in Clash: mealyB, regEn, and ready/valid recipes in Clash tutorials.
-
-Notes
-- Relative dates and tool versions: as of October 10, 2025, Clash 1.8.2 is the baseline assumed here.
-- If you want me to also provide a sequential QKV engine and scheduler as drop-in code for qkvProjectionController, say the word and I’ll supply the complete function.
-  
