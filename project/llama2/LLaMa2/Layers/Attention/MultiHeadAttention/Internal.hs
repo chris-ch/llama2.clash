@@ -18,7 +18,7 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Layers.Components.Quantized
     ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
-import LLaMa2.Helpers.MatVecI8E (matrixVectorMult)
+import Simulation.MatVecSim (matrixVectorMult)
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
 
 computeHeadQ

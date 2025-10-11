@@ -4,7 +4,7 @@ module LLaMa2.Layers.TransformerLayer.Internal (
 
 import Clash.Prelude
 import LLaMa2.Config (ModelDimension, HeadDimension)
-import LLaMa2.Helpers.MatVecI8E (matrixMultiplierStub, matrixMultiplier)
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Helpers (liftA4)
@@ -74,7 +74,7 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     woReadyIn = liftA2 (==) state (pure PROJECTING)
     
     -- Call the matrix multiplier
-    (woResult, woValidOut, woReadyOut) = matrixMultiplierStub woValidIn woReadyIn woMatrix latchedVector
+    (woResult, woValidOut, woReadyOut) = matrixMultiplier woValidIn woReadyIn woMatrix latchedVector
     
     -- Latch result when we accept it
     projOut = regEn (repeat 0) multiplierResultHandshake woResult

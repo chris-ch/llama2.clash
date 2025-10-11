@@ -1,7 +1,6 @@
 module LLaMa2.Memory.RamOps (
-    RamOp(..),
     toRamOperation,
-    runTdpRamOps
+    runTdpRam
 ) where
 
 import Clash.Prelude
@@ -18,17 +17,20 @@ toRamOperation rdAddr wrM =
       (uncurry RamWrite . fromJustX <$> wrM)
       (RamRead <$> rdAddr)
 
--- Run a true-dual-port BRAM from two RamOp streams.
+-- True-dual-port BRAM runner using standard Clash interface.
 -- Initializes memory to zero.
-runTdpRamOps
+runTdpRam
   :: forall dom n a
-   . ( HiddenClockResetEnable dom
-     , KnownNat n
-     , NFDataX a )
-  => Signal dom (RamOp n a)  -- ^ Port A op stream
-  -> Signal dom (RamOp n a)  -- ^ Port B op stream
-  -> ( Signal dom a          -- ^ Port A read data
-     , Signal dom a )        -- ^ Port B read data
-runTdpRamOps opA opB = (qA, qB)
- where
-  (qA, qB) = trueDualPortBlockRam opA opB
+    . ( HiddenClockResetEnable dom
+      , KnownNat n
+      , NFDataX a )
+  => Signal dom (Index n)              -- Port A read address
+  -> Signal dom (Maybe (Index n, a))   -- Port A optional write
+  -> Signal dom (Index n)              -- Port B read address
+  -> Signal dom (Maybe (Index n, a))   -- Port B optional write
+  -> ( Signal dom a                    -- Port A read data
+      , Signal dom a )                 -- Port B read data
+runTdpRam rdAddrA wrM_A rdAddrB wrM_B =
+  trueDualPortBlockRam
+    (toRamOperation rdAddrA wrM_A)
+    (toRamOperation rdAddrB wrM_B)

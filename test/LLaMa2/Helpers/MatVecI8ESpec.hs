@@ -3,7 +3,8 @@ module LLaMa2.Helpers.MatVecI8ESpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Helpers.MatVecI8E
+import LLaMa2.Helpers.MatVecI8E (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier)
+import Simulation.MatVecSim ()
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
@@ -747,7 +748,7 @@ spec = do
           -- Run simulation
           (outputVec, validOut, readyOut) =
             exposeClockResetEnable
-              matrixMultiplierStub
+              matrixMultiplier
               CS.systemClockGen
               CS.resetGen
               CS.enableGen

@@ -11,7 +11,7 @@ import LLaMa2.Config ( VocabularySize , ModelDimension )
 import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
 import qualified Clash.Sized.Vector as CV
 import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
-import LLaMa2.Helpers.MatVecI8E (matrixVectorMult)
+import Simulation.MatVecSim (matrixVectorMult)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Fixed (expF)
 import LLaMa2.Layers.Components.Quantized (EmbeddingComponentQ(..))

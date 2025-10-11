@@ -33,7 +33,7 @@ import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetw
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Helpers (liftA4)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
-import LLaMa2.Memory.RamOps (toRamOperation)
+import LLaMa2.Memory.RamOps (toRamOperation, runTdpRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
 
 data TransformerLayerComponent = TransformerLayerComponent
@@ -346,12 +346,16 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     wrKVRowV = mux wrPulse (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
 
     (kRowA, _kRowB) =
-      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                           (toRamOperation seqPosSignal wrKVRowK)
+          runTdpRam tAddrRow
+                    (pure Nothing)
+                    seqPosSignal
+                    wrKVRowK
 
     (vRowA, _vRowB) =
-      trueDualPortBlockRam (toRamOperation tAddrRow (pure Nothing))
-                           (toRamOperation seqPosSignal wrKVRowV)
+      runTdpRam tAddrRow
+                (pure Nothing)
+                seqPosSignal
+                wrKVRowV
 
     (tAddrRow, stepEnRow, lastTRow) =
       attentionRowSequencer clearS3 isStage3Attention seqPosSignal

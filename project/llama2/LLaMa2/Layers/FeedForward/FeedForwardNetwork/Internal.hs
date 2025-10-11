@@ -10,7 +10,7 @@ import LLaMa2.Config
       ModelDimension )
 
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Helpers.MatVecI8E (matrixVectorMult)
+import Simulation.MatVecSim (matrixVectorMult)
 import qualified LLaMa2.Numeric.Fixed
 import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
 
