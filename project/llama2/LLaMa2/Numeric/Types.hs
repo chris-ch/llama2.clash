@@ -47,8 +47,8 @@ scalePow2F :: Exponent -> FixedPoint -> FixedPoint
 scalePow2F n x =
   let nInt = fromIntegral n :: Integer
   in if nInt >= 0
-        then x *  fromInteger (1 `shiftL` fromInteger nInt)
-        else x / fromInteger (1 `shiftL` fromInteger (negate nInt))
+        then x *  fromInteger (1 `shiftL` fromIntegral nInt)
+        else x / fromInteger (1 `shiftL` fromIntegral (negate nInt))
 
 clampExp :: Exponent -> Exponent
 clampExp e = max (-64) (min 63 e)

@@ -1,5 +1,4 @@
 module LLaMa2.Memory.RamOps (
-    toRamOperation,
     runTdpRam
 ) where
 

@@ -68,38 +68,8 @@ TODO.md
   - DoD: For first pass, netlist produced; For second pass, resource usage drops; controller handshakes remain correct.
 
 1) RAM/ROM usage and KV cache
-- Task R1: Fix RAM op API mismatch and missing type.
-  - Issue: LLaMa2.Memory.RamOps exports RamOp(..) but does not define it, and uses trueDualPortBlockRam with a non-standard RamOp stream.
-  - Action: Replace the RamOp pathway with Clash’s standard TDP BRAM interface (rdAddr, wrM) or provide a wrapper that converts signals. Minimal change: provide runTdpRam that matches the calls in TransformerLayer.
+- Task R1: Done
   - DoD: KV banks infer TDP BRAMs; no custom RamOp type is on the synthesis path.
-
-  Haskell code (drop-in replacement for RamOps):
-  ```haskell
-  -- project/llama2/LLaMa2/Memory/RamOps.hs
-  module LLaMa2.Memory.RamOps
-    ( runTdpRam
-    ) where
-
-  import Clash.Prelude
-
-  -- True-dual-port BRAM runner using standard Clash interface.
-  -- Initializes memory to zero.
-  runTdpRam
-    :: forall dom n a
-     . ( HiddenClockResetEnable dom
-       , KnownNat n
-       , NFDataX a )
-    => Signal dom (Index n)              -- Port A read address
-    -> Signal dom (Maybe (Index n, a))   -- Port A optional write
-    -> Signal dom (Index n)              -- Port B read address
-    -> Signal dom (Maybe (Index n, a))   -- Port B optional write
-    -> ( Signal dom a                    -- Port A read data
-       , Signal dom a )                  -- Port B read data
-  runTdpRam rdA wrA rdB wrB =
-    trueDualPortBlockRam (repeat (deepErrorX "uninit")) rdA wrA rdB wrB
-  ```
-
-  - Then, in TransformerLayer.fillOneBank, replace the two trueDualPortBlockRam calls with runTdpRam.
 
 - Task R2: One-pulse KV write is correct but verify same-cycle R/W policy.
   - Do: Confirm vendor BRAM is write-first or no-collision on different ports (we write on Port B at pos and read Port A at t=0..pos during Stage3; Stage2 and Stage3 are mutually exclusive so safe).
