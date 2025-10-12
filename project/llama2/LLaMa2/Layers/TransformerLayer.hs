@@ -91,9 +91,14 @@ transformerLayer layer layerIndex processingState layerData =
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
+  -- === Updated stageProcessor with gating ===
   baseNextLayerData :: Signal dom LayerData
   baseNextLayerData =
-    liftA3 (stageProcessor ffn layerIndex) processingState layerData qkvProjected
+    liftA4 (stageProcessor ffn layerIndex) 
+           processingState 
+           layerData 
+           qkvProjected 
+           qkvReadyOut  -- Pass ready signal
 
   allBanksDone :: Signal dom Bool
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
@@ -146,58 +151,71 @@ transformerLayer layer layerIndex processingState layerData =
 data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
 
--- QKV Projection Controller with handshaking for future sequential operation
+-- State: Idle | Computing | Done
+data QKVCtrlState = QKVCtrlIdle | QKVCtrlComputing | QKVCtrlDone
+  deriving (Show, Eq, Generic, NFDataX)
+
+-- QKV Projection Controller with handshaking for sequential operation
 qkvProjectionController ::
   forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool  -- validIn (isStage1ThisLayer)
+  => Signal dom Bool  -- validIn (isStage1ThisLayer - level signal, high during Stage1)
   -> Signal dom LayerData
   -> MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
   -> ( Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Signal dom Bool  -- validOut
-     , Signal dom Bool  -- readyOut (stable done signal)
+     , Signal dom Bool  -- validOut (pulse when computation completes)
+     , Signal dom Bool  -- readyOut (stable high when done, used for stage advancement)
      )
 qkvProjectionController validIn layerData mhaQ psSig = (result, validOut, readyOut)
   where
-    -- Rising edge detection for stage entry
-    validInPrev = register False validIn
-    startPulse = validIn .&&. (not <$> validInPrev)
-
-    -- State machine
-    qkvState :: Signal dom QKVState
-    qkvState = register QKVIdle nextState
+    seqPos = sequencePosition <$> psSig
+    input = inputVector <$> layerData
     
-    nextState :: Signal dom QKVState
-    nextState = liftA2 qkvStateTransition qkvState startPulse
-
-    qkvStateTransition :: QKVState -> Bool -> QKVState
-    qkvStateTransition QKVIdle start = if start then QKVComputing else QKVIdle
-    qkvStateTransition QKVComputing _ = QKVDone  -- For now, single cycle
-    qkvStateTransition QKVDone _ = QKVIdle  -- Reset when stage advances
-
-    -- Perform projection (currently combinational, will be sequential later)
-    projectionResult = liftA2 doProjection psSig layerData
+    -- ===== Controller State Machine =====
+    ctrlState :: Signal dom QKVCtrlState
+    ctrlState = register QKVCtrlIdle nextCtrlState
     
-    doProjection ps idata = 
-      MultiHeadAttention.projectQKV mhaQ (sequencePosition ps) (inputVector idata)
-
-    -- Hold result when done
-    heldResult = regEn (repeat (repeat 0), repeat (repeat 0), repeat (repeat 0))
-                       (liftA2 (==) qkvState (pure QKVComputing))
-                       projectionResult
-
-    result = mux (liftA2 (==) qkvState (pure QKVDone)) heldResult projectionResult
-
-    -- Valid signal (pulse when entering Done state)
-    validOut = liftA2 (\curr prev -> curr == QKVDone && prev == QKVComputing)
-                      qkvState
-                      (register QKVIdle qkvState)
-
-    -- Ready signal (stable high in Done state)
-    readyOut = liftA2 (==) qkvState (pure QKVDone)
+    -- State transitions
+    nextCtrlState :: Signal dom QKVCtrlState
+    nextCtrlState = liftA3 ctrlStateTransition ctrlState validIn qkvReadyOutInternal
+    
+    ctrlStateTransition :: QKVCtrlState -> Bool -> Bool -> QKVCtrlState
+    ctrlStateTransition QKVCtrlIdle stageActive _ = 
+      if stageActive then QKVCtrlComputing else QKVCtrlIdle
+      
+    ctrlStateTransition QKVCtrlComputing stageActive qkvReady = 
+      if qkvReady then QKVCtrlDone 
+      else if stageActive then QKVCtrlComputing 
+      else QKVCtrlIdle
+      
+    ctrlStateTransition QKVCtrlDone stageActive _ = 
+      -- Stay in Done while stage is active, return to Idle when stage ends
+      if stageActive then QKVCtrlDone else QKVCtrlIdle
+    
+    -- ===== Call projectQKV =====
+    ctrlStatePrev = register QKVCtrlIdle ctrlState
+    validInQKV = liftA2 (\curr prev -> 
+        curr == QKVCtrlComputing && prev == QKVCtrlIdle
+      ) ctrlState ctrlStatePrev
+    
+    -- readyDownstream: acknowledge signal
+    -- projectQKV should reset when stage ends (validIn goes low)
+    -- So readyIn should be HIGH when stage ends
+    readyDownstream = not <$> validIn
+    
+    -- Call sequential projection
+    (qs, ks, vs, qkvValidOut, qkvReadyOutInternal) =
+      MultiHeadAttention.projectQKV validInQKV readyDownstream mhaQ seqPos input
+    
+    -- ===== Outputs =====
+    result = bundle (qs, ks, vs)
+    validOut = qkvValidOut
+    
+    isDone = liftA2 (==) ctrlState (pure QKVCtrlDone)
+    readyOut = isDone
 
 -- Per-head WO projection with proper handshaking
 perHeadWOController ::
@@ -221,7 +239,7 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
 
     -- For each head: create a controller that starts WO projection when head completes
     perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
-    
+
     -- Unpack results
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
@@ -248,7 +266,6 @@ layerDataAttnDone layerIndex stage cur attOut attnDone =
           then cur { attentionOutput = attOut }
           else cur
 
--- Updated to use pre-computed QKV results
 stageProcessor :: FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState
@@ -256,21 +273,22 @@ stageProcessor :: FeedForwardNetworkComponentQ
   -> (Vec NumQueryHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+  -> Bool  -- qkvReady
   -> LayerData
-stageProcessor ffnQ layerIndex ps idata (qs, ks, vs)
+stageProcessor ffnQ layerIndex ps idata (qs, ks, vs) qkvReady
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->
-        -- Use pre-computed QKV from controller
-        idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
+        -- Only update when QKV is ready
+        if qkvReady
+          then idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
+          else idata
 
       Stage2_WriteKV     -> idata
       Stage3_Attend      -> idata
-
       Stage4_FeedForward ->
         let ffnOut = FeedForwardNetwork.computeFeedForward ffnQ (attentionOutput idata)
         in  idata { feedForwardOutput = ffnOut }
-
       Stage5_Bookkeeping -> idata
 
 -- Query heads per KV head

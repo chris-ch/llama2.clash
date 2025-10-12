@@ -18,29 +18,50 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Layers.Components.Quantized
     ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
-import Simulation.MatVecSim (matrixVectorMult)
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
 computeHeadQ
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> Vec HeadDimension FixedPoint
-computeHeadQ headComp stepCount xHat =
-  let q   = matrixVectorMult (wqHeadQ headComp) xHat
-      qRo = applyRotation (rotaryQ headComp) stepCount q
-  in qRo
+  :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom Bool                              -- validIn
+  -> Signal dom Bool                              -- readyIn (downstream)
+  -> SingleHeadComponentQ
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> ( Signal dom (Vec HeadDimension FixedPoint)  -- qRo result
+     , Signal dom Bool                            -- validOut
+     , Signal dom Bool                            -- readyOut
+     )
+computeHeadQ validIn readyInDownstream headComp stepCount xHat =
+  let (q, validQ, readyQ) = matrixMultiplier validIn readyInDownstream (wqHeadQ headComp) xHat
+      qRo = applyRotation (rotaryQ headComp) <$> stepCount <*> q
+  in (qRo, validQ, readyQ)
 
 computeHeadKV
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
-computeHeadKV headComp stepCount xHat =
-  let k   = matrixVectorMult (wkHeadQ headComp) xHat
-      v   = matrixVectorMult (wvHeadQ headComp) xHat
-      kRo = applyRotation (rotaryQ headComp) stepCount k
-  in (kRo, v)
+  :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom Bool                              -- validIn
+  -> Signal dom Bool                              -- readyIn (downstream)
+  -> SingleHeadComponentQ
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> ( Signal dom (Vec HeadDimension FixedPoint)  -- kRo result
+     , Signal dom (Vec HeadDimension FixedPoint)  -- v result
+     , Signal dom Bool                            -- validOut
+     , Signal dom Bool                            -- readyOut
+     )
+computeHeadKV validIn readyInDownstream headComp stepCount xHat =
+  let -- K and V in parallel
+      (k, validK, readyK) = matrixMultiplier validIn readyInDownstream (wkHeadQ headComp) xHat
+      (v, validV, _)      = matrixMultiplier validIn readyInDownstream (wvHeadQ headComp) xHat
+      
+      kRo = applyRotation (rotaryQ headComp) <$> stepCount <*> k
+      
+      -- Both must be valid
+      validOut = validK .&&. validV
+      
+  in (kRo, v, validOut, readyK)
 
 -- helper: safely destructure a Vec 2
 vec2ToPair :: NFDataX a => Vec 2 a -> (a, a)
