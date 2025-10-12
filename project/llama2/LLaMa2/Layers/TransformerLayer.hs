@@ -56,6 +56,7 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool           -- attentionDone (Stage3)
      , Signal dom Bool           -- qkvDone (Stage1)  [level, not pulse]
      , Signal dom LayerData      -- layerDataAfterAttention
+     , Signal dom Bool           -- qkvInReady
   )
 transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData
@@ -63,6 +64,7 @@ transformerLayer layer layerIndex processingState layerData =
   , attentionDone
   , qkvDone
   , layerDataAfterAttention
+  , qkvInReady
   )
  where
   mha = multiHeadAttention layer
@@ -82,7 +84,7 @@ transformerLayer layer layerIndex processingState layerData =
   -- Proper ready/valid controller around a combinational QKV datapath
   ( qkvProjected
     , qkvValidOut
-    , _qkvInReady   -- currently unused; will matter once QKV becomes sequential
+    , qkvInReady   -- currently unused; will matter once QKV becomes sequential
     ) = qkvProjectionController
           isStage1ThisLayer  -- inValid
           qkvOutReady        -- outReady (consumer accept)
