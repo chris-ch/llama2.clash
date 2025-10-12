@@ -4,7 +4,6 @@ import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
 import LLaMa2.Helpers.MatVecI8E (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier)
-import Simulation.MatVecSim ()
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
@@ -705,6 +704,7 @@ spec = do
             P.length doneIndices `shouldBe` 3 -- Cycles 20, 21, 22
             DL.head doneIndices `shouldBe` 20
 
+  describe "matrixMultiplier" $ do
     context "computes matrix-vector multiplication using handshake protocol" $ do
       let maxCycles = 30
 
