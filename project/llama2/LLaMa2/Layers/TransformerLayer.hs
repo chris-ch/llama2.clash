@@ -22,7 +22,6 @@ import LLaMa2.Config
   )
 import qualified LLaMa2.Memory.KVCacheBank as Cache
 
-import qualified LLaMa2.Layers.Attention.MultiHeadAttention as MultiHeadAttention (projectQKV)
 import LLaMa2.Layers.Components.Quantized
   ( FeedForwardNetworkComponentQ(..)
   , MultiHeadAttentionComponentQ(..)

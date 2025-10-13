@@ -1,7 +1,5 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
-  , computeHeadQ
-  , computeHeadKV
   , applyRotation
   , computeHeadQSeq  -- NEW: sequential version
   , computeHeadKVSeq -- NEW: sequential version
@@ -16,32 +14,9 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types ( FixedPoint )
 import LLaMa2.Layers.Components.Quantized
     ( SingleHeadComponentQ(..) )
-import Simulation.MatVecSim (matrixVectorMult, matrixMultiplierStub)
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
--- Original combinational versions (kept for backwards compatibility)
-computeHeadQ
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> Vec HeadDimension FixedPoint
-computeHeadQ headComp stepCount xHat =
-  let q   = matrixVectorMult (wqHeadQ headComp) xHat
-      qRo = applyRotation (rotaryQ headComp) stepCount q
-  in qRo
-
-computeHeadKV
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
-computeHeadKV headComp stepCount xHat =
-  let k   = matrixVectorMult (wkHeadQ headComp) xHat
-      v   = matrixVectorMult (wvHeadQ headComp) xHat
-      kRo = applyRotation (rotaryQ headComp) stepCount k
-  in (kRo, v)
-
--- NEW: Sequential Q projection with handshaking
 computeHeadQSeq
   :: forall dom .
   HiddenClockResetEnable dom
@@ -59,13 +34,10 @@ computeHeadQSeq validIn readyIn headComp stepCountSig xHatSig =
   where
     -- Matrix multiply with handshaking
     (qOut, qValidOut, qReadyOut) =
-      matrixMultiplierStub validIn (pure True) (wqHeadQ headComp) xHatSig
+      matrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
     
     -- Apply rotary encoding (combinational, but gated by valid)
-    qRoOut = liftA3 applyRotationGated (pure $ rotaryQ headComp) stepCountSig qOut
-    
-    applyRotationGated rot step q =
-      applyRotation rot step q
+    qRoOut = liftA3 applyRotation (pure $ rotaryQ headComp) stepCountSig qOut
     
     -- Pass through handshaking signals
     validOut = qValidOut
@@ -90,17 +62,14 @@ computeHeadKVSeq validIn readyIn headComp stepCountSig xHatSig =
   where
     -- K matrix multiply
     (kOut, kValidOut, kReadyOut) =
-      matrixMultiplierStub validIn (pure True) (wkHeadQ headComp) xHatSig
+      matrixMultiplier validIn (pure True) (wkHeadQ headComp) xHatSig
     
     -- V matrix multiply (runs in parallel with K)
     (vOut, vValidOut, vReadyOut) =
-      matrixMultiplierStub validIn (pure True) (wvHeadQ headComp) xHatSig
+      matrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
     
     -- Apply rotary to K
-    kRoOut = liftA3 applyRotationGated (pure $ rotaryQ headComp) stepCountSig kOut
-    
-    applyRotationGated rot step k =
-      applyRotation rot step k
+    kRoOut = liftA3 applyRotation (pure $ rotaryQ headComp) stepCountSig kOut
     
     -- Both K and V must be valid (should happen simultaneously since same input)
     validOut = kValidOut .&&. vValidOut
