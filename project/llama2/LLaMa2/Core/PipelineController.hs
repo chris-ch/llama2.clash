@@ -42,13 +42,12 @@ data PipelineOutputs dom = PipelineOutputs
   , stageFinished     :: Signal dom Bool
   }
 
--- Updated to accept qkvValidThisLayer (outValid from QKV controller)
 runPipelineController
   :: HiddenClockResetEnable dom
   => Signal dom Bool     -- ^ attnDoneThisLayer (Stage3)
   -> Signal dom Bool     -- ^ writeDoneThisLayer (Stage2)
-  -> Signal dom Bool     -- ^ qkvValidThisLayer (Stage1 outValid from controller)
-  -> Signal dom Bool     -- ^ inputTokenValid (only used at very first (L0,P0))
+  -> Signal dom Bool     -- ^ qkvValidThisLayer (Stage1 completion)
+  -> Signal dom Bool     -- ^ inputTokenValid
   -> PipelineOutputs dom
 runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer inputTokenValid = outs
  where
@@ -76,11 +75,12 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer inp
 
   isStage st = (== st) <$> stageSig
   
-  -- Stage1 completion logic for sequential QKV:
-  -- Wait for qkvValidThisLayer to assert, indicating QKV computation is done
+  -- For first token at (L0,P0), also need inputTokenValid
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
-         (mux atFirstStage1 inputTokenValid qkvValidThisLayer) $  -- CHANGED: use valid signal
+         (mux atFirstStage1 
+              (inputTokenValid .&&. qkvValidThisLayer)  -- Both conditions
+              qkvValidThisLayer) $                       -- Just QKV valid
     mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $
     mux (isStage Stage3_Attend)      attnDoneThisLayer       $
     mux (isStage Stage4_FeedForward) (not <$> readyPulseRaw) $

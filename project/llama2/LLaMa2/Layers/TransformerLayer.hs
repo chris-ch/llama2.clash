@@ -35,6 +35,7 @@ import LLaMa2.Helpers (liftA4)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
 import LLaMa2.Memory.RamOps (runTdpRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
+import LLaMa2.Layers.Attention.MultiHeadAttention (projectQKVSeq)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -161,31 +162,25 @@ transformerLayer layer layerIndex processingState layerData =
                                    xAfterAttn
                                    attentionDone
 
--- State for QKV controller; ready/valid wrapper around a combinational datapath
-data QKVState = QKVIdle | QKVDone
+data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
 
--- QKV Projection Controller with full ready/valid.
--- Today the datapath is combinational; later you can move it behind this FSM.
 qkvProjectionController ::
   forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ inValid   (Stage1 active for this layer)
-  -> Signal dom Bool  -- ^ outReady  (consumer accepts result; here: Stage1 ends)
+  -> Signal dom Bool  -- ^ outReady  (consumer accepts result)
   -> Signal dom LayerData
   -> MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Signal dom Bool  -- ^ outValid (level while result is available)
-     , Signal dom Bool  -- ^ inReady  (high in Idle; upstream may present new work)
+     , Signal dom Bool  -- ^ outValid
+     , Signal dom Bool  -- ^ inReady
      )
 qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, inReady)
   where
-    -- Simple 2-state controller:
-    --   Idle: wait for inValid, then enter Done (one "transaction" per Stage1).
-    --   Done: hold outValid until outReady; then return to Idle.
     state :: Signal dom QKVState
     state = register QKVIdle nextState
 
@@ -204,15 +199,25 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, i
     nextState :: Signal dom QKVState
     nextState =
       mux (state .==. pure QKVIdle)
-          (mux startTx (pure QKVDone) (pure QKVIdle))
-          (mux consume (pure QKVIdle) (pure QKVDone))
+          (mux startTx (pure QKVComputing) (pure QKVIdle))
+          (mux (state .==. pure QKVComputing)
+              -- KEY FIX: Wait for matVecValid (all heads done)
+              (mux matVecValid (pure QKVDone) (pure QKVComputing))
+              (mux consume (pure QKVIdle) (pure QKVDone)))
 
-    -- Datapath is combinational today (future: compute only when enabled)
-    result =
-      liftA2
-        (\ps ld -> MultiHeadAttention.projectQKV mhaQ (sequencePosition ps) (inputVector ld))
-        psSig
-        idSig
+    -- Enable computation when starting OR already computing
+    -- This keeps the multipliers running until they all complete
+    computeEnable = startTx .||. (state .==. pure QKVComputing)
+    
+    -- KEY FIX: Downstream is always ready during our computation
+    -- We control the transaction with our FSM
+    (result, matVecValid, _matVecReady) =
+      projectQKVSeq
+        computeEnable              -- validIn: pulse to start, then hold
+        (pure True)                -- readyIn: always ready (we control with FSM)
+        mhaQ
+        (sequencePosition <$> psSig)
+        (inputVector <$> idSig)
 
 -- Per-head WO projection with proper handshaking
 perHeadWOController ::

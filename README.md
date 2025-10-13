@@ -114,3 +114,15 @@ cabal exec -- clash --verilog -package llama2 -v3 project/llama2/LLaMa2/Top.hs
 | **Valid Out** | Output    | Indicates valid output data    | Asserted (high) for one clock cycle (pulse) when new data is available; deasserted otherwise.            |
 | **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data (keeps `validOut` high) only when `readyIn` is high; holds data if low.          |
 | **Valid In**  | Input     | Indicates valid input data     | Consumer processes `dataIn` only when `validIn` is high and it asserts `readyOut`.                       |
+
+## SUMMARY OF TOKEN FLOW
+1. Pipeline controller enters Stage1 for layer L
+2. isStage1ThisLayer goes HIGH (inValid to QKV controller)
+3. QKV controller transitions: Idle -> Computing
+4. computeEnable stays HIGH, feeding all matrix multipliers
+5. All heads compute in parallel (multiple cycles per matvec)
+6. When ALL heads complete, matVecValid goes HIGH
+7. QKV controller transitions: Computing -> Done (outValid HIGH)
+8. Pipeline controller sees qkvValidThisLayer, advances to Stage2
+9. Pipeline advances, isStage1ThisLayer goes LOW (outReady asserted)
+10. QKV controller transitions: Done -> Idle
