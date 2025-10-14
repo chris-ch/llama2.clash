@@ -47,9 +47,10 @@ runPipelineController
   => Signal dom Bool     -- ^ attnDoneThisLayer (Stage3)
   -> Signal dom Bool     -- ^ writeDoneThisLayer (Stage2)
   -> Signal dom Bool     -- ^ qkvValidThisLayer (Stage1 completion)
+  -> Signal dom Bool     -- ^ ffnDoneThisLayer (Stage4 completion)
   -> Signal dom Bool     -- ^ inputTokenValid
   -> PipelineOutputs dom
-runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer inputTokenValid = outs
+runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffnDoneThisLayer inputTokenValid = outs
  where
   advance s done = if done then nextProcessingState s else s
   procState = register initialProcessingState (advance <$> procState <*> stageFinishedSig)
@@ -83,7 +84,7 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer inp
               qkvValidThisLayer) $                       -- Just QKV valid
     mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $
     mux (isStage Stage3_Attend)      attnDoneThisLayer       $
-    mux (isStage Stage4_FeedForward) (not <$> readyPulseRaw) $
+    mux (isStage Stage4_FeedForward) ffnDoneThisLayer        $
     mux (isStage Stage5_Bookkeeping) (pure True)             $
     pure False
 

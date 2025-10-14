@@ -1,5 +1,5 @@
 module LLaMa2.Layers.FeedForward.FeedForwardNetwork (
-   feedForwardStage
+   feedForwardStage, feedForwardStageSeq
 ) where
 
 import Clash.Prelude

@@ -11,6 +11,7 @@ module LLaMa2.Helpers.MatVecI8E
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
+import qualified Simulation.MatVecSim
 
 -- | A stateful column counter for tracking the current column index in a sequential
 -- matrix-vector multiplication process. The counter cyclicylly increments when enabled
@@ -141,13 +142,6 @@ matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
     -- Ready to accept new input when idle
     readyOut = state .==. pure MIdle
 
--- | Sequential matrix-vector multiplication processor
--- Handshaking via ready/valid signals
---
---          | ----validIn---> |            | ----validOut---> |
--- Upstream |                 | Multiplier |                  | Downstream
---          | <---readyOut--- |            | <---readyIn----- |
---
 matrixMultiplier :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
@@ -160,7 +154,28 @@ matrixMultiplier :: forall dom rows cols .
      , Signal dom Bool      -- validOut
      , Signal dom Bool      -- readyOut
      )
-matrixMultiplier validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
+matrixMultiplier = Simulation.MatVecSim.matrixMultiplierStub
+
+-- | Sequential matrix-vector multiplication processor
+-- Handshaking via ready/valid signals
+--
+--          | ----validIn---> |            | ----validOut---> |
+-- Upstream |                 | Multiplier |                  | Downstream
+--          | <---readyOut--- |            | <---readyIn----- |
+--
+matrixMultiplier' :: forall dom rows cols .
+     ( HiddenClockResetEnable dom
+     , KnownNat cols, KnownNat rows
+     )
+  => Signal dom Bool        -- validIn
+  -> Signal dom Bool        -- readyIn (downstream)
+  -> MatI8E rows cols
+  -> Signal dom (Vec cols FixedPoint)
+  -> ( Signal dom (Vec rows FixedPoint)
+     , Signal dom Bool      -- validOut
+     , Signal dom Bool      -- readyOut
+     )
+matrixMultiplier' validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
   where
     -- Row counter
     rowIndex = register (0 :: Index rows) nextRowIndex

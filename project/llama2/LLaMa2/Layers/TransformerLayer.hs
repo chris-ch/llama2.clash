@@ -28,7 +28,7 @@ import LLaMa2.Layers.Components.Quantized
   , EmbeddingComponentQ(..)
   )
 
-import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
+import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage, feedForwardStageSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Helpers (liftA4)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
@@ -51,13 +51,14 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
   -> Index NumLayers
   -> Signal dom ProcessingState
   -> Signal dom LayerData
-  -> ( Signal dom LayerData      -- next layer data
-     , Signal dom Bool           -- writeDone (Stage2)
-     , Signal dom Bool           -- attentionDone (Stage3)
-     , Signal dom Bool           -- qkvDone (Stage1)  [level, not pulse]
+  -> ( Signal dom LayerData
+     , Signal dom Bool           -- writeDone
+     , Signal dom Bool           -- attentionDone
+     , Signal dom Bool           -- qkvDone
      , Signal dom LayerData      -- layerDataAfterAttention
      , Signal dom Bool           -- qkvInReady
-  )
+     , Signal dom Bool           -- ffnDone
+     )
 transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData
   , writeDone
@@ -65,6 +66,7 @@ transformerLayer layer layerIndex processingState layerData =
   , qkvDone
   , layerDataAfterAttention
   , qkvInReady
+  , pure True  -- ffnDone
   )
  where
   mha = multiHeadAttention layer
@@ -267,7 +269,6 @@ layerDataAttnDone layerIndex stage cur attOut attnDone =
           then cur { attentionOutput = attOut }
           else cur
 
--- Updated to use pre-computed QKV results
 stageProcessor :: FeedForwardNetworkComponentQ
   -> Index NumLayers
   -> ProcessingState

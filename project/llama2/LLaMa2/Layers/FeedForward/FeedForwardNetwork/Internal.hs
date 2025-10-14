@@ -102,11 +102,7 @@ feedForwardCoreSeq validIn readyIn ffn xHat =
     -- Apply SiLU activation to gate output and latch when valid
     gateSiLU :: Signal dom (Vec HiddenDimension FixedPoint)
     gateSiLU = regEn (repeat 0) gateValidOut (map sigmoidLinearUnitF <$> gateRaw)
-    
-    -- Latch up result when valid
-    upLatched :: Signal dom (Vec HiddenDimension FixedPoint)
-    upLatched = regEn (repeat 0) upValidOut upRaw
-    
+
     -- Element-wise multiplication: gate ⊙ up, computed when up becomes valid
     gateUpLatched :: Signal dom (Vec HiddenDimension FixedPoint)
     gateUpLatched = regEn (repeat 0) upValidOut (zipWith (*) <$> gateSiLU <*> upRaw)
