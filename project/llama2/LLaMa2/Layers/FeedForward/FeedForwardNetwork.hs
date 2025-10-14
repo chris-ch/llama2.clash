@@ -1,5 +1,5 @@
 module LLaMa2.Layers.FeedForward.FeedForwardNetwork (
-   computeFeedForward
+   feedForwardStage
 ) where
 
 import Clash.Prelude
@@ -9,13 +9,13 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Layers.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
-import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (runFeedForward)
+import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (feedForwardCore)
 
-computeFeedForward
+feedForwardStage
   :: FeedForwardNetworkComponentQ
   -> Vec ModelDimension FixedPoint
   -> Vec ModelDimension FixedPoint
-computeFeedForward ffn inputVector =
+feedForwardStage ffn inputVector =
   let xHat    = rmsNormFwFix inputVector (fRMSFfnF ffn)
-      ffnCore = runFeedForward ffn xHat
+      ffnCore = feedForwardCore ffn xHat
   in zipWith (+) inputVector ffnCore

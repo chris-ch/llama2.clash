@@ -28,7 +28,7 @@ import LLaMa2.Layers.Components.Quantized
   , EmbeddingComponentQ(..)
   )
 
-import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (computeFeedForward)
+import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Helpers (liftA4)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
@@ -287,7 +287,7 @@ stageProcessor ffnQ layerIndex ps idata (qs, ks, vs)
       Stage3_Attend      -> idata
 
       Stage4_FeedForward ->
-        let ffnOut = FeedForwardNetwork.computeFeedForward ffnQ (attentionOutput idata)
+        let ffnOut = FeedForwardNetwork.feedForwardStage ffnQ (attentionOutput idata)
         in  idata { feedForwardOutput = ffnOut }
 
       Stage5_Bookkeeping -> idata

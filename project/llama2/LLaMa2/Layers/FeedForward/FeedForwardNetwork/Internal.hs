@@ -1,5 +1,5 @@
 module LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal  (
-  runFeedForward
+  feedForwardCore
   , sigmoidLinearUnitF
 )where
 
@@ -15,11 +15,10 @@ import qualified LLaMa2.Numeric.Fixed
 import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
 
 -- Same topology as before, but weights are I8E and mat-vec is quantized.
-runFeedForward
-  :: FeedForwardNetworkComponentQ
+feedForwardCore :: FeedForwardNetworkComponentQ
   -> Vec ModelDimension FixedPoint
   -> Vec ModelDimension FixedPoint
-runFeedForward ffn xHat =
+feedForwardCore ffn xHat =
   let gate = map sigmoidLinearUnitF $ matrixVectorMult (fW1Q ffn) xHat
       up   =                           matrixVectorMult (fW3Q ffn) xHat
   in  matrixVectorMult (fW2Q ffn) (zipWith (*) gate up)
