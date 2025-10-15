@@ -1,5 +1,5 @@
 module LLaMa2.Embedding.PRNG (
-    tokenSampler
+    tokenSampler, tokenSamplerFromLogits, transformerLogitsSeq
 ) where
 
 import Clash.Prelude
@@ -15,6 +15,7 @@ import Simulation.MatVecSim (matrixVectorMult)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Fixed (expF)
 import LLaMa2.Layers.Components.Quantized (EmbeddingComponentQ(..))
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
 -- xorshift32 unchanged
 xorshift32 :: Unsigned 32 -> Unsigned 32
@@ -32,6 +33,44 @@ transformerLogits decoder tokenVector =
   let emb = TransformerLayer.modelEmbedding decoder            -- EmbeddingComponentQ
       tokenWithRms = rmsNormFwFix tokenVector (rmsFinalWeightF emb)
   in matrixVectorMult (vocabularyQ emb) tokenWithRms
+
+transformerLogitsSeq :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ validIn (readyPulse from pipeline)
+  -> Signal dom Bool  -- ^ readyIn (always True for now, sampler is combinational)
+  -> TransformerLayer.TransformerDecoderComponent
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> ( Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits output
+     , Signal dom Bool  -- ^ validOut
+     , Signal dom Bool  -- ^ readyOut
+     )
+transformerLogitsSeq validIn readyIn decoder tokenVecSig =
+  (logitsOut, validOut, readyOut)
+  where
+    emb = TransformerLayer.modelEmbedding decoder
+    
+    -- Pre-normalize (combinational)
+    tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> pure (rmsFinalWeightF emb)
+    
+    -- Sequential matrix multiply (tied embeddings as classifier)
+    (logitsOut, validOut, readyOut) = 
+      matrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
+
+-- Pure sampling function (combinational)
+tokenSamplerFromLogits :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom Bool          -- ^ logitsValid
+  -> Signal dom Temperature
+  -> Signal dom Seed
+  -> Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits
+  -> Signal dom Token
+tokenSamplerFromLogits logitsValid temperature seed logits =
+  liftA3
+    (\temperature' logits' u ->
+        if temperature' <= 0 then argMax logits'
+        else let probabilities = softmax temperature' logits'
+             in sampleFromProbs u probabilities)
+    temperature logits (uniformRandom01Generator logitsValid seed)
 
 logitsConverter :: TransformerLayer.TransformerDecoderComponent
               -> Signal dom LayerData
@@ -58,10 +97,9 @@ uniformRandom01Generator readyPulse seed =
   (/ realToFrac (16777216.0 :: Double)) . fromIntegral . (`shiftR` 8)
     <$> pseudoRandomGenerator readyPulse seed
 
--- Top-level sampler in FixedPoint
 tokenSampler :: forall dom
    . HiddenClockResetEnable dom
-  => Signal dom Bool
+  => Signal dom Bool  -- ^ readyPulse
   -> Signal dom Temperature
   -> Signal dom Seed
   -> TransformerLayer.TransformerDecoderComponent
@@ -74,6 +112,32 @@ tokenSampler readyPulse temperature seed decoder nextLayerData =
         else let probabilities = softmax temperature' logits
              in sampleFromProbs u probabilities)
     temperature (logitsConverter decoder nextLayerData) (uniformRandom01Generator readyPulse seed)
+
+tokenSamplerSeq :: forall dom
+   . HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ readyPulse
+  -> Signal dom Temperature
+  -> Signal dom Seed
+  -> TransformerLayer.TransformerDecoderComponent
+  -> Signal dom LayerData
+  -> Signal dom Token
+tokenSamplerSeq readyPulse temperature seed decoder nextLayerData =
+  liftA3
+    (\temperature' logits u ->
+        if temperature' <= 0 then argMax logits
+        else let probabilities = softmax temperature' logits
+             in sampleFromProbs u probabilities)
+    temperature logitsSeq (uniformRandom01Generator readyPulse seed)
+  where
+    -- Sequential logits computation
+    ffnOut = feedForwardOutput <$> nextLayerData
+    
+    (logitsSeq, _logitsValid, _logitsReady) = 
+      transformerLogitsSeq 
+        readyPulse        -- Start computation when pipeline signals ready
+        (pure True)       -- Sampler always ready (combinational)
+        decoder
+        ffnOut
 
 -- categorical sampling from FixedPoint probabilities
 sampleFromProbs :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32

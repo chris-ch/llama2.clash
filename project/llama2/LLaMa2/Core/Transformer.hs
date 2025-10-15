@@ -19,7 +19,7 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   , transformerLayer
   )
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
-import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
+import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits, tokenSampler)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
@@ -28,6 +28,7 @@ import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Embedding.PRNG (transformerLogitsSeq)
 
 type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
 
@@ -66,9 +67,22 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
+  -- Extract final layer output
+  finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
+  finalLayerOutput = feedForwardOutput <$> nextLayerData
+
+  -- Sequential classifier
+  (logits, logitsValid, logitsReady) = 
+    transformerLogitsSeq readyPulse (pure True) decoder finalLayerOutput
+
+  -- Sample token when logits are valid
+  tokenSampleSeq :: Signal dom Token
+  tokenSampleSeq = PRNG.tokenSamplerFromLogits logitsValid temperature seed logits
+  
   tokenSample :: Signal dom Token
   tokenSample = PRNG.tokenSampler readyPulse temperature seed decoder nextLayerData
 
+  -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
   feedbackToken = regEn 0 readyPulse tokenSample
 
