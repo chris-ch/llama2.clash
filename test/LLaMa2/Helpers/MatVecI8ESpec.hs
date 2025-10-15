@@ -137,7 +137,6 @@ spec = do
             fromList $ DL.replicate 5 columnVector
               P.++ DL.repeat (pure 0)
 
-          -- Run simulation
           (outputComponent, rowDone) =
             exposeClockResetEnable
               singleRowProcessor
@@ -235,7 +234,6 @@ spec = do
           column :: Signal System (Vec 4 FixedPoint)
           column = fromList columnStream
 
-          -- Run simulation
           (outputComponent, rowDone) =
             exposeClockResetEnable
               singleRowProcessor
@@ -283,7 +281,6 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = fromList $ pure 0 : pure 0 : P.replicate maxCycles columnVector -- padding with zero before enable
-          -- Run simulation
           (outputComponent, rowDone) =
             exposeClockResetEnable
               singleRowProcessor
@@ -321,7 +318,7 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = pure columnVector
-          -- Run simulation
+          
           (outputComponent, rowDone) =
             exposeClockResetEnable
               singleRowProcessor
@@ -389,7 +386,6 @@ spec = do
           readyIn :: Signal System Bool
           readyIn = pure True
 
-          -- Run simulation
           (state, rowReset, rowEnable, validOut, readyOut) =
             exposeClockResetEnable
               matrixMultiplierStateMachine
@@ -557,7 +553,6 @@ spec = do
               readyIn :: Signal System Bool
               readyIn = fromList readyInStream
 
-              -- Run simulation
               (state, rowReset, rowEnable, validOut, readyOut) =
                 exposeClockResetEnable
                   matrixMultiplierStateMachine
@@ -745,7 +740,6 @@ spec = do
           readyIn :: Signal System Bool
           readyIn = pure True  -- previous output always considered as consumed
 
-          -- Run simulation
           (outputVec, validOut, readyOut) =
             exposeClockResetEnable
               matrixMultiplier
