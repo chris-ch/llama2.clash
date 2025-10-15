@@ -1,5 +1,5 @@
 module LLaMa2.Embedding.PRNG (
-    tokenSampler, tokenSamplerFromLogits, transformerLogitsSeq
+    tokenSampler, tokenSamplerFromLogits, transformerLogitsSeq, pseudoRandomGenerator
 ) where
 
 import Clash.Prelude
@@ -78,8 +78,7 @@ logitsConverter :: TransformerLayer.TransformerDecoderComponent
 logitsConverter decoder nextLayerDataSignal =
   transformerLogits decoder . feedForwardOutput <$> nextLayerDataSignal
 
-pseudoRandomGenerator
-  :: forall dom. HiddenClockResetEnable dom
+pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool           -- ^ readyPulse
   -> Signal dom (Unsigned 32)  -- ^ seed
   -> Signal dom (Unsigned 32)  -- ^ prng state/output

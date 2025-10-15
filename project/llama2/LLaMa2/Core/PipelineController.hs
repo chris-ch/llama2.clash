@@ -61,11 +61,11 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
 
   -- NEW readyPulse: one-cycle pulse when the last layer's FFN asserts done
   isStage st = (== st) <$> stageSig
-  lastLayer  = (layerIx .==. pure maxBound)
+  lastLayer  = layerIx .==. pure maxBound
   lastLayerFfnDone = isStage Stage4_FeedForward .&&. lastLayer .&&. ffnDoneThisLayer
   readyPulseRaw =
     let rising now prev = now && not prev
-    in  liftA2 rising lastLayerFfnDone (register False lastLayerFfnDone)
+    in  rising <$> lastLayerFfnDone <*> register False lastLayerFfnDone
 
   atFirstStage1 =
     liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
@@ -76,7 +76,7 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
   -- Stage completion: unchanged, but now ffnDoneThisLayer is the real FFN validOut
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
-         (mux atFirstStage1 
+         (mux atFirstStage1
               (inputTokenValid .&&. qkvValidThisLayer)
               qkvValidThisLayer) $
     mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $

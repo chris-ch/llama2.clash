@@ -85,9 +85,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
   -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
   feedbackToken = regEn 0 readyPulse tokenSample
-  -- TODO Switch later
+  -- TODO Switch
   --feedbackToken = regEn 0 logitsValid tokenSampleSeq
-
 
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken
@@ -106,7 +105,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
     | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
-  selectedInput = liftA3 layerInputSelector processingState layerDataRegister tokenEmbedding
+  selectedInput = layerInputSelector <$> processingState <*> layerDataRegister <*> tokenEmbedding
 
   (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
 

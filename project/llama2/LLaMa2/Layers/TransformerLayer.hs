@@ -28,7 +28,7 @@ import LLaMa2.Layers.Components.Quantized
   , EmbeddingComponentQ(..)
   )
 
-import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage, feedForwardStageSeq)
+import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStageSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
 import LLaMa2.Memory.RamOps (runTdpRam)
@@ -81,10 +81,7 @@ transformerLayer layer layerIndex processingState layerData =
   qkvOutReady :: Signal dom Bool
   qkvOutReady = not <$> isStage1ThisLayer
 
-  ( qkvProjected
-    , qkvValidOut
-    , qkvInReady
-    ) = qkvProjectionController
+  ( qkvProjected, qkvValidOut, qkvInReady) = qkvProjectionController
           isStage1ThisLayer
           qkvOutReady
           layerData
@@ -105,8 +102,7 @@ transformerLayer layer layerIndex processingState layerData =
           indicesI
 
   baseNextLayerData :: Signal dom LayerData
-  baseNextLayerData =
-    liftA3 (stageProcessor ffn layerIndex) processingState layerData qkvProjected
+  baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qkvProjected
 
   allBanksDone :: Signal dom Bool
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
@@ -137,7 +133,7 @@ transformerLayer layer layerIndex processingState layerData =
   validProjected = and <$> sequenceA perHeadReadyOuts
 
   xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
-  xAfterAttn = liftA2 inputsAggregator layerData woHeads
+  xAfterAttn = inputsAggregator <$> layerData <*> woHeads
 
   attentionDone :: Signal dom Bool
   attentionDone =
@@ -244,7 +240,7 @@ ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
 
     -- Enable computation when starting OR already computing
     computeEnable = startTx .||. (state .==. pure FFNComputing)
-    
+
     -- Call sequential FFN
     (result, ffnSeqValid, _ffnSeqReady) =
       FeedForwardNetwork.feedForwardStageSeq
@@ -299,7 +295,7 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, i
     -- Enable computation when starting OR already computing
     -- This keeps the multipliers running until they all complete
     computeEnable = startTx .||. (state .==. pure QKVComputing)
-    
+
     -- KEY FIX: Downstream is always ready during our computation
     -- We control the transaction with our FSM
     (result, matVecValid, _matVecReady) =
@@ -332,7 +328,7 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
 
     -- For each head: create a controller that starts WO projection when head completes
     perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
-    
+
     -- Unpack results
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
@@ -359,23 +355,20 @@ layerDataAttnDone layerIndex stage cur attOut attnDone =
           then cur { attentionOutput = attOut }
           else cur
 
-stageProcessor :: FeedForwardNetworkComponentQ
-  -> Index NumLayers
+updateLayerDataForStage ::
+  Index NumLayers
   -> ProcessingState
   -> LayerData
   -> (Vec NumQueryHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
   -> LayerData
-stageProcessor _ffnQ layerIndex ps idata (qs, ks, vs)
+updateLayerDataForStage layerIndex ps idata (qs, ks, vs)
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->
         idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
-      Stage2_WriteKV     -> idata
-      Stage3_Attend      -> idata
-      Stage4_FeedForward -> idata   -- CHANGED: no combinational FFN update here
-      Stage5_Bookkeeping -> idata
+      _ -> idata
 
 -- Query heads per KV head
 queryHeadsPerKeyValueHead :: Int
@@ -507,14 +500,14 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
 
     -- === Step 2: detect step enable ===
     stepNow :: Signal dom Bool
-    stepNow = liftA2 const isStage3Attention rowCounter
+    stepNow = const <$> isStage3Attention <*> rowCounter
 
     stepEnRow :: Signal dom Bool
     stepEnRow = register False stepNow
 
     -- === Step 3: detect last row ===
     lastNow :: Signal dom Bool
-    lastNow = liftA2 (==) rowCounter seqPosSignal
+    lastNow = (==) <$> rowCounter <*> seqPosSignal
 
     lastTRow :: Signal dom Bool
     lastTRow = register False lastNow

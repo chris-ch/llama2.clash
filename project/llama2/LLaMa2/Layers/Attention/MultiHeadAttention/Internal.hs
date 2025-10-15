@@ -35,10 +35,10 @@ computeHeadQSeq validIn readyIn headComp stepCountSig xHatSig =
     -- Matrix multiply with handshaking
     (qOut, qValidOut, qReadyOut) =
       matrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
-    
+
     -- Apply rotary encoding (combinational, but gated by valid)
-    qRoOut = liftA3 applyRotation (pure $ rotaryQ headComp) stepCountSig qOut
-    
+    qRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> qOut
+
     -- Pass through handshaking signals
     validOut = qValidOut
     readyOut = qReadyOut
@@ -63,17 +63,17 @@ computeHeadKVSeq validIn readyIn headComp stepCountSig xHatSig =
     -- K matrix multiply
     (kOut, kValidOut, kReadyOut) =
       matrixMultiplier validIn (pure True) (wkHeadQ headComp) xHatSig
-    
+
     -- V matrix multiply (runs in parallel with K)
     (vOut, vValidOut, vReadyOut) =
       matrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
-    
+
     -- Apply rotary to K
-    kRoOut = liftA3 applyRotation (pure $ rotaryQ headComp) stepCountSig kOut
-    
+    kRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> kOut
+
     -- Both K and V must be valid (should happen simultaneously since same input)
     validOut = kValidOut .&&. vValidOut
-    
+
     -- Can accept input only when both multipliers are ready
     readyOut = kReadyOut .&&. vReadyOut
 

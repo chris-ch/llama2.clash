@@ -93,8 +93,6 @@ library
     LLaMa2.Config
     , LLaMa2.Core.Embedding
     , LLaMa2.Core.PipelineController
-    , LLaMa2.Core.LayerController
-    , LLaMa2.Core.StageEnable
     , LLaMa2.Core.Transformer
     , LLaMa2.Core.Transformer.Internal
     , LLaMa2.Core.Types
