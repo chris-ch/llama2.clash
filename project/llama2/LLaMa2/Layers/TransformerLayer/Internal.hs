@@ -7,7 +7,6 @@ import LLaMa2.Config (ModelDimension, HeadDimension)
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Helpers (liftA4)
 
 -- FSM states
 data FSMState = IDLE | REQUESTING | PROJECTING | DONE
@@ -40,7 +39,10 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     multiplierResultHandshake = woValidOut .&&. woReadyIn   -- We accept result
     
     -- State transitions
-    nextState = liftA4 transition state upstreamHandshake multiplierRequestHandshake multiplierResultHandshake
+    nextState = transition <$> state 
+                <*> upstreamHandshake 
+                <*> multiplierRequestHandshake 
+                <*> multiplierResultHandshake
     
     transition :: FSMState -> Bool -> Bool -> Bool -> FSMState
     transition IDLE upHS _ _ 

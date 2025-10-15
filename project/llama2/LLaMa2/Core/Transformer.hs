@@ -4,7 +4,6 @@ module LLaMa2.Core.Transformer (
 
 import Clash.Prelude
 import LLaMa2.Core.Transformer.Internal
-import LLaMa2.Helpers (liftA4)
 import LLaMa2.Core.Types
   ( LayerData(..)
   , ProcessingState (..)
@@ -51,9 +50,9 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   pipelineController :: PipelineController.PipelineOutputs dom
   pipelineController =
-    PipelineController.runPipelineController 
-      attnDoneThisLayer 
-      writeDoneThisLayer 
+    PipelineController.runPipelineController
+      attnDoneThisLayer
+      writeDoneThisLayer
       qkvDoneThisLayer
       ffnDoneThisLayer
       inputTokenValid
@@ -106,9 +105,6 @@ transformer decoder inputToken inputTokenValid temperature seed =
   qkvDoneThisLayer :: Signal dom Bool
   qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> layerIndex
 
-  qkvReadyThisLayer :: Signal dom Bool
-  qkvReadyThisLayer = (!!) <$> sequenceA qkvReady <*> layerIndex
-
   ffnDoneThisLayer :: Signal dom Bool
   ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> layerIndex
 
@@ -138,9 +134,11 @@ layerProcessor processingState currentLayerData (layerIndex, layerComp) =
     (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention, qkvReady, ffnDone) =
       TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
 
-    selectedLayerData =
-      liftA4 (layerDataSelector layerIndex) processingState currentLayerData layerData layerDataAfterAttention
-
+    selectedLayerData = layerDataSelector layerIndex <$>
+              processingState
+              <*> currentLayerData
+              <*> layerData
+              <*> layerDataAfterAttention
   in
     -- Return all three completion signals
     (selectedLayerData, (writeDone, attnDone, qkvDone, qkvReady, ffnDone))

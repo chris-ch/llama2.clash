@@ -99,7 +99,6 @@ library
     , LLaMa2.Core.Transformer.Internal
     , LLaMa2.Core.Types
     , LLaMa2.Embedding.PRNG
-    , LLaMa2.Helpers
     , LLaMa2.Helpers.FixedPoint
     , LLaMa2.Helpers.MatVecI8E
     , LLaMa2.Layers.Attention.AttendSequential

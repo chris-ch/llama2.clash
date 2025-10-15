@@ -30,7 +30,6 @@ import LLaMa2.Layers.Components.Quantized
 
 import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage, feedForwardStageSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Helpers (liftA4, liftA5, liftA6)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
 import LLaMa2.Memory.RamOps (runTdpRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
@@ -172,26 +171,24 @@ transformerLayer layer layerIndex processingState layerData =
           ffnInput
           ffn
 
-  -- ffnDone: use the valid from controller
-  ffnDone :: Signal dom Bool
-  ffnDone = ffnValidOut
+  numLayer :: Signal dom (Index NumLayers)
+  numLayer = pure layerIndex
 
-  -- Update nextLayerData to use sequential FFN output
   nextLayerData :: Signal dom LayerData
-  nextLayerData = liftA6 (layerDataWithFFN layerIndex)
-                         processingState
-                         baseNextLayerData
-                         xAfterAttn
-                         attentionDone
-                         ffnOutput
-                         ffnValidOut
+  nextLayerData = layerDataWithFFN <$> numLayer
+                         <*> processingState
+                         <*> baseNextLayerData
+                         <*> xAfterAttn
+                         <*> attentionDone
+                         <*> ffnOutput
+                         <*> ffnValidOut
 
   layerDataAfterAttention :: Signal dom LayerData
-  layerDataAfterAttention = liftA4 (layerDataAttnDone layerIndex)
-                                   processingState
-                                   layerData
-                                   xAfterAttn
-                                   attentionDone
+  layerDataAfterAttention = layerDataAttnDone <$> numLayer
+                                   <*> processingState
+                                   <*> layerData
+                                   <*> xAfterAttn
+                                   <*> attentionDone
 
 -- Helper function to update LayerData with FFN output
 layerDataWithFFN :: Index NumLayers
