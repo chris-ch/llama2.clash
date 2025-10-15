@@ -59,14 +59,13 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
   layerIx  = processingLayer <$> procState
   posIx    = sequencePosition <$> procState
 
-  -- readyPulse = rising edge when entering last-layer FFN
-  isLastLayerFFN =
-    liftA2 (\ps _ -> processingStage ps == Stage4_FeedForward
-                  && processingLayer ps == maxBound)
-           procState (pure ())
+  -- NEW readyPulse: one-cycle pulse when the last layer's FFN asserts done
+  isStage st = (== st) <$> stageSig
+  lastLayer  = (layerIx .==. pure maxBound)
+  lastLayerFfnDone = isStage Stage4_FeedForward .&&. lastLayer .&&. ffnDoneThisLayer
   readyPulseRaw =
     let rising now prev = now && not prev
-    in  liftA2 rising isLastLayerFFN (register False isLastLayerFFN)
+    in  liftA2 rising lastLayerFfnDone (register False lastLayerFfnDone)
 
   atFirstStage1 =
     liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
@@ -74,14 +73,12 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
                   && sequencePosition ps == 0)
            procState (pure ())
 
-  isStage st = (== st) <$> stageSig
-  
-  -- For first token at (L0,P0), also need inputTokenValid
+  -- Stage completion: unchanged, but now ffnDoneThisLayer is the real FFN validOut
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
          (mux atFirstStage1 
-              (inputTokenValid .&&. qkvValidThisLayer)  -- Both conditions
-              qkvValidThisLayer) $                       -- Just QKV valid
+              (inputTokenValid .&&. qkvValidThisLayer)
+              qkvValidThisLayer) $
     mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $
     mux (isStage Stage3_Attend)      attnDoneThisLayer       $
     mux (isStage Stage4_FeedForward) ffnDoneThisLayer        $

@@ -67,24 +67,27 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
-  -- Extract final layer output
+  -- Extract final layer output (updated by ffnValidOut at Stage4)
   finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
   finalLayerOutput = feedForwardOutput <$> nextLayerData
 
-  -- Sequential classifier
-  (logits, logitsValid, logitsReady) = 
+  -- Sequential classifier: start at readyPulse; sampler waits for logitsValid
+  (logits, logitsValid, logitsReady) =
     transformerLogitsSeq readyPulse (pure True) decoder finalLayerOutput
 
-  -- Sample token when logits are valid
+  -- keep 
   tokenSampleSeq :: Signal dom Token
   tokenSampleSeq = PRNG.tokenSamplerFromLogits logitsValid temperature seed logits
-  
+
   tokenSample :: Signal dom Token
   tokenSample = PRNG.tokenSampler readyPulse temperature seed decoder nextLayerData
 
   -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
   feedbackToken = regEn 0 readyPulse tokenSample
+  -- TODO Switch later
+  --feedbackToken = regEn 0 logitsValid tokenSampleSeq
+
 
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken
@@ -107,8 +110,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
 
-  -- Unpack the three completion signals
-  (writeDone, attnDone, qkvDone, qkvReady, ffnDone) = unzip5 doneFlags
+  -- Unpack the completion signals
+  (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
 
   writeDoneThisLayer :: Signal dom Bool
   writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex

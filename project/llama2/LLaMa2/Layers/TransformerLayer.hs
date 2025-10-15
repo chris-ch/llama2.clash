@@ -56,7 +56,7 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool           -- qkvDone
      , Signal dom LayerData      -- layerDataAfterAttention
      , Signal dom Bool           -- qkvInReady
-     , Signal dom Bool           -- ffnDone
+     , Signal dom Bool           -- ffnDone  (CHANGED: now equals ffnValidOut)
      )
 transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData
@@ -65,35 +65,32 @@ transformerLayer layer layerIndex processingState layerData =
   , qkvDone
   , layerDataAfterAttention
   , qkvInReady
-  , pure True  -- ffnDone
+  , ffnValidOut  -- CHANGED: was 'pure True'
   )
  where
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
-  -- === Stage1: QKV Projection with Handshaking (combinational datapath today) ===
+  -- === Stage1: QKV Projection with Handshaking (sequential controller) ===
   isStage1ThisLayer :: Signal dom Bool
   isStage1ThisLayer =
     liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
                   && processingLayer ps == layerIndex)
            processingState (pure ())
 
-  -- OutReady for QKV: consumer accepts exactly when Stage1 deasserts for this layer.
   qkvOutReady :: Signal dom Bool
   qkvOutReady = not <$> isStage1ThisLayer
 
-  -- Proper ready/valid controller around a combinational QKV datapath
   ( qkvProjected
     , qkvValidOut
-    , qkvInReady   -- currently unused; will matter once QKV becomes sequential
+    , qkvInReady
     ) = qkvProjectionController
-          isStage1ThisLayer  -- inValid
-          qkvOutReady        -- outReady (consumer accept)
+          isStage1ThisLayer
+          qkvOutReady
           layerData
           mha
           processingState
 
-  -- s1DoneThisLayer: use the level-valid from the controller
   qkvDone :: Signal dom Bool
   qkvDone = qkvValidOut
 
@@ -124,7 +121,6 @@ transformerLayer layer layerIndex processingState layerData =
     ) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
-  -- Gate each head contribution by its own ready (stable-done) signal
   gatedHeads :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
   gatedHeads =
     zipWith3
@@ -147,27 +143,26 @@ transformerLayer layer layerIndex processingState layerData =
   attentionDone =
     let prevReady = register False validProjected
     in validProjected .&&. (not <$> prevReady)
-  -- === Stage4: Feed-Forward Network with Handshaking ===
+
+  -- === Stage4: Sequential FFN with handshaking ===
   isStage4ThisLayer :: Signal dom Bool
   isStage4ThisLayer =
     liftA2 (\ps _ -> processingStage ps == Stage4_FeedForward
                   && processingLayer ps == layerIndex)
            processingState (pure ())
 
-  -- FFN input: use attention output when Stage4 is active
   ffnInput :: Signal dom (Vec ModelDimension FixedPoint)
   ffnInput = attentionOutput <$> layerDataAfterAttention
 
-  -- FFN ready/valid controller
   ffnOutReady :: Signal dom Bool
-  ffnOutReady = not <$> isStage4ThisLayer  -- Consumer accepts when Stage4 deasserts
+  ffnOutReady = not <$> isStage4ThisLayer
 
   ( ffnOutput
     , ffnValidOut
-    , ffnInReady
+    , _ffnInReady
     ) = ffnController
-          isStage4ThisLayer  -- inValid
-          ffnOutReady        -- outReady
+          isStage4ThisLayer
+          ffnOutReady
           ffnInput
           ffn
 
@@ -372,20 +367,14 @@ stageProcessor :: FeedForwardNetworkComponentQ
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
      , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
   -> LayerData
-stageProcessor ffnQ layerIndex ps idata (qs, ks, vs)
+stageProcessor _ffnQ layerIndex ps idata (qs, ks, vs)
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->
-        -- Use pre-computed QKV from controller
         idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
-
       Stage2_WriteKV     -> idata
       Stage3_Attend      -> idata
-
-      Stage4_FeedForward ->
-        let ffnOut = FeedForwardNetwork.feedForwardStage ffnQ (attentionOutput idata)
-        in  idata { feedForwardOutput = ffnOut }
-
+      Stage4_FeedForward -> idata   -- CHANGED: no combinational FFN update here
       Stage5_Bookkeeping -> idata
 
 -- Query heads per KV head
