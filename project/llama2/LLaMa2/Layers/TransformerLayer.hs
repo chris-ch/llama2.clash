@@ -30,7 +30,7 @@ import LLaMa2.Layers.Components.Quantized
 
 import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage, feedForwardStageSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Helpers (liftA4)
+import LLaMa2.Helpers (liftA4, liftA5, liftA6)
 import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
 import LLaMa2.Memory.RamOps (runTdpRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
@@ -148,13 +148,43 @@ transformerLayer layer layerIndex processingState layerData =
   attentionDone =
     let prevReady = register False validProjected
     in validProjected .&&. (not <$> prevReady)
+  -- === Stage4: Feed-Forward Network with Handshaking ===
+  isStage4ThisLayer :: Signal dom Bool
+  isStage4ThisLayer =
+    liftA2 (\ps _ -> processingStage ps == Stage4_FeedForward
+                  && processingLayer ps == layerIndex)
+           processingState (pure ())
 
+  -- FFN input: use attention output when Stage4 is active
+  ffnInput :: Signal dom (Vec ModelDimension FixedPoint)
+  ffnInput = attentionOutput <$> layerDataAfterAttention
+
+  -- FFN ready/valid controller
+  ffnOutReady :: Signal dom Bool
+  ffnOutReady = not <$> isStage4ThisLayer  -- Consumer accepts when Stage4 deasserts
+
+  ( ffnOutput
+    , ffnValidOut
+    , ffnInReady
+    ) = ffnController
+          isStage4ThisLayer  -- inValid
+          ffnOutReady        -- outReady
+          ffnInput
+          ffn
+
+  -- ffnDone: use the valid from controller
+  ffnDone :: Signal dom Bool
+  ffnDone = ffnValidOut
+
+  -- Update nextLayerData to use sequential FFN output
   nextLayerData :: Signal dom LayerData
-  nextLayerData = liftA4 (layerDataAttnDone layerIndex)
+  nextLayerData = liftA6 (layerDataWithFFN layerIndex)
                          processingState
                          baseNextLayerData
                          xAfterAttn
                          attentionDone
+                         ffnOutput
+                         ffnValidOut
 
   layerDataAfterAttention :: Signal dom LayerData
   layerDataAfterAttention = liftA4 (layerDataAttnDone layerIndex)
@@ -162,6 +192,74 @@ transformerLayer layer layerIndex processingState layerData =
                                    layerData
                                    xAfterAttn
                                    attentionDone
+
+-- Helper function to update LayerData with FFN output
+layerDataWithFFN :: Index NumLayers
+  -> ProcessingState
+  -> LayerData
+  -> Vec ModelDimension FixedPoint
+  -> Bool
+  -> Vec ModelDimension FixedPoint
+  -> Bool
+  -> LayerData
+layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
+  let withAttn = layerDataAttnDone layerIndex ps baseData attnOut attnDone
+  in if processingLayer ps == layerIndex
+        && processingStage ps == Stage4_FeedForward
+        && ffnValid
+        then withAttn { feedForwardOutput = ffnOut }
+        else withAttn
+
+-- FFN Controller (similar to QKV controller)
+data FFNState = FFNIdle | FFNComputing | FFNDone
+  deriving (Show, Eq, Generic, NFDataX)
+
+ffnController ::
+  forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ inValid (Stage4 active for this layer)
+  -> Signal dom Bool  -- ^ outReady (consumer accepts result)
+  -> Signal dom (Vec ModelDimension FixedPoint)  -- ^ input vector
+  -> FeedForwardNetworkComponentQ
+  -> ( Signal dom (Vec ModelDimension FixedPoint)
+     , Signal dom Bool  -- ^ outValid
+     , Signal dom Bool  -- ^ inReady
+     )
+ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
+  where
+    state :: Signal dom FFNState
+    state = register FFNIdle nextState
+
+    inReady :: Signal dom Bool
+    inReady = state .==. pure FFNIdle
+
+    startTx :: Signal dom Bool
+    startTx = inValid .&&. inReady
+
+    outValid :: Signal dom Bool
+    outValid = state .==. pure FFNDone
+
+    consume :: Signal dom Bool
+    consume = outValid .&&. outReady
+
+    nextState :: Signal dom FFNState
+    nextState =
+      mux (state .==. pure FFNIdle)
+          (mux startTx (pure FFNComputing) (pure FFNIdle))
+          (mux (state .==. pure FFNComputing)
+              (mux ffnSeqValid (pure FFNDone) (pure FFNComputing))
+              (mux consume (pure FFNIdle) (pure FFNDone)))
+
+    -- Enable computation when starting OR already computing
+    computeEnable = startTx .||. (state .==. pure FFNComputing)
+    
+    -- Call sequential FFN
+    (result, ffnSeqValid, _ffnSeqReady) =
+      FeedForwardNetwork.feedForwardStageSeq
+        computeEnable
+        (pure True)  -- Always ready during computation (we control with FSM)
+        ffnQ
+        inputVec
 
 data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
