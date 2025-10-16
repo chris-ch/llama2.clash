@@ -46,7 +46,6 @@ runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSee
     transformerConfig = parseLLaMa2 modelBinary
     tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabularySize)
 
-  -- Handle prompt tokenization more carefully
   initialTokens <- case maybePrompt of
     Nothing -> do
       putStrLn "No prompt provided, starting with BOS token (1)"
@@ -130,8 +129,11 @@ optionsParser =
 
 printToken :: T.Tokenizer -> Token -> IO ()
 printToken tokenizer tokenId = do
-    BSC.putStr (T.decodePiece tokenizer (fromIntegral tokenId) (fromIntegral tokenId))
+    BSC.putStr $ decodeToken tokenizer tokenId
     hFlush stdout
+
+decodeToken :: T.Tokenizer -> Token -> BSC.ByteString
+decodeToken tokenizer tokenId = T.decodePiece tokenizer (fromIntegral tokenId)
 
 --------------------------------------------------------------------------------
 -- Token Generation with Clash Simulation
@@ -215,9 +217,10 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
             rdy    = readiesSampled !! cycleIdx
             attn   = attnDonesSampled !! cycleIdx
             ffn    = ffnDonesSampled !! cycleIdx
+            token  = coreOutputs !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %5d"
+            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %5d | %-8s"
               cycleIdx
               li
               (show ps)
@@ -225,6 +228,7 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
               (show attn)
               (show ffn)
               (fromIntegral tok :: Int)
+              (show $ decodeToken tokenizer (fst token))
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 

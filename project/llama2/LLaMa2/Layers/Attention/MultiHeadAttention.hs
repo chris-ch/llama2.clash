@@ -1,5 +1,5 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention (
-  projectQKVSeq
+  projectQKV
 ) where
 
 import Clash.Prelude
@@ -11,10 +11,10 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..) )
 import LLaMa2.Layers.Attention.MultiHeadAttention.Internal
-  ( computeHeadQSeq, computeHeadKVSeq )
+  ( computeHeadQ, computeHeadKV )
 import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 
-projectQKVSeq :: forall dom .
+projectQKV :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn (enable computation)
   -> Signal dom Bool              -- ^ readyIn (downstream ready - for protocol)
@@ -27,14 +27,14 @@ projectQKVSeq :: forall dom .
      , Signal dom Bool            -- ^ validOut (all heads done)
      , Signal dom Bool            -- ^ readyOut (can accept - always True in this design)
      )
-projectQKVSeq validIn readyIn mhaQ seqPosSig xSig =
+projectQKV validIn readyIn mhaQ seqPosSig xSig =
   (qkvOut, allValid, allReady)
   where
     -- Normalize input once
     xNorm = rmsNormFwFix <$> xSig <*> pure (rmsAttF mhaQ)
 
     -- Project all query heads (runs when validIn)
-    qResults = map (\headQ -> computeHeadQSeq validIn (pure True) headQ seqPosSig xNorm)
+    qResults = map (\headQ -> computeHeadQ validIn (pure True) headQ seqPosSig xNorm)
                    (headsQ mhaQ)
 
     -- KV heads (grouped query attention pattern)
@@ -43,7 +43,7 @@ projectQKVSeq validIn readyIn mhaQ seqPosSig xSig =
     kvHeadIndices = map (\i -> toEnum (fromEnum i * queryHeadsPerKV)) indicesI
 
     kvResults = map (\kvIdx -> let headQ = headsQ mhaQ !! kvIdx
-                                in computeHeadKVSeq validIn (pure True) headQ seqPosSig xNorm)
+                                in computeHeadKV validIn (pure True) headQ seqPosSig xNorm)
                     kvHeadIndices
 
     -- Unpack results

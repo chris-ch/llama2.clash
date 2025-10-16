@@ -38,13 +38,18 @@ transformerLogitsSeq validIn readyIn decoder tokenVecSig =
   (logitsOut, validOut, readyOut)
   where
     emb = TransformerLayer.modelEmbedding decoder
-    
+
     -- Pre-normalize (combinational)
     tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> pure (rmsFinalWeightF emb)
-    
+
     -- Sequential matrix multiply (tied embeddings as classifier)
-    (logitsOut, validOut, readyOut) = 
+    (logitsOut, validOut, readyOut) =
       matrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
+
+pickSample :: (KnownNat n, KnownNat (n + 1)) => FixedPoint -> Vec (n + 1) FixedPoint -> FixedPoint -> Token
+pickSample temperature logits rand = if temperature <= 0 then argMax logits
+        else let probabilities = softmax temperature logits
+             in sampleFromProbs rand probabilities
 
 -- Pure sampling function (combinational)
 tokenSamplerFromLogits :: forall dom
@@ -54,13 +59,7 @@ tokenSamplerFromLogits :: forall dom
   -> Signal dom Seed
   -> Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits
   -> Signal dom Token
-tokenSamplerFromLogits logitsValid temperature seed logits =
-  liftA3
-    (\temperature' logits' u ->
-        if temperature' <= 0 then argMax logits'
-        else let probabilities = softmax temperature' logits'
-             in sampleFromProbs u probabilities)
-    temperature logits (uniformRandom01Generator logitsValid seed)
+tokenSamplerFromLogits logitsValid temperature seed logits = pickSample <$> temperature <*> logits <*> uniformRandom01Generator logitsValid seed
 
 pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool           -- ^ readyPulse

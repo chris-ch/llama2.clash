@@ -1,6 +1,5 @@
 module LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal  (
-  feedForwardCoreSeq
-  , sigmoidLinearUnitF
+  feedForwardCore
 )where
 
 import Clash.Prelude
@@ -14,8 +13,8 @@ import qualified LLaMa2.Numeric.Fixed
 import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
-sigmoidLinearUnitF :: FixedPoint -> FixedPoint
-sigmoidLinearUnitF x = x / (1 + expF (negate x))
+sigmoidLinearUnit :: FixedPoint -> FixedPoint
+sigmoidLinearUnit x = x / (1 + expF (negate x))
   where
     -- reuse your expF definition
     expF = LLaMa2.Numeric.Fixed.expF
@@ -24,9 +23,8 @@ sigmoidLinearUnitF x = x / (1 + expF (negate x))
 data FFNState = FFNIdle | FFNGate | FFNUp | FFNDown | FFNDone
   deriving (Show, Eq, Generic, NFDataX)
 
--- Sequential version with handshaking
 -- Implements W1 (gate) -> W3 (up) -> W2 (down) pipeline with proper protocol
-feedForwardCoreSeq :: forall dom . HiddenClockResetEnable dom
+feedForwardCore :: forall dom . HiddenClockResetEnable dom
   => Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
   -> FeedForwardNetworkComponentQ
@@ -35,7 +33,7 @@ feedForwardCoreSeq :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool                             -- ^ validOut
      , Signal dom Bool                             -- ^ readyOut (to upstream)
      )
-feedForwardCoreSeq validIn readyIn ffn xHat =
+feedForwardCore validIn readyIn ffn xHat =
   (outputResult, validOut, readyOut)
   where
     -- State machine
@@ -91,7 +89,7 @@ feedForwardCoreSeq validIn readyIn ffn xHat =
     
     -- Apply SiLU activation to gate output and latch when valid
     gateSiLU :: Signal dom (Vec HiddenDimension FixedPoint)
-    gateSiLU = regEn (repeat 0) gateValidOut (map sigmoidLinearUnitF <$> gateRaw)
+    gateSiLU = regEn (repeat 0) gateValidOut (map sigmoidLinearUnit <$> gateRaw)
 
     -- Element-wise multiplication: gate ⊙ up, computed when up becomes valid
     gateUpLatched :: Signal dom (Vec HiddenDimension FixedPoint)

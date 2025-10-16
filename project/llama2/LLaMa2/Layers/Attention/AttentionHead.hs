@@ -2,38 +2,41 @@ module LLaMa2.Layers.Attention.AttentionHead
   ( attendHead ) where
 
 import Clash.Prelude
-import LLaMa2.Config (HeadDimension, SequenceLength)
+import LLaMa2.Config (HeadDimension)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.Fixed (expF)
 
-attendHead
-  :: Vec HeadDimension FixedPoint                      -- Q
-  -> Vec SequenceLength (Vec HeadDimension FixedPoint) -- K rows
-  -> Vec SequenceLength (Vec HeadDimension FixedPoint) -- V rows
-  -> Index SequenceLength                     -- pos (inclusive)
-  -> Vec HeadDimension FixedPoint
-attendHead q ks vs pos =
-  let
-    scale :: FixedPoint
-    scale = realToFrac (1.0 / sqrt ((natToNum @HeadDimension) :: Double))
+import qualified LLaMa2.Layers.Attention.OnlineSoftmax as OnlineSoftmax
+  ( softInit, softResult, softStep )
 
-    negBig :: FixedPoint
-    negBig = minBound
+dotF :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
+dotF a b = sum (zipWith (*) a b)
 
-    scores :: Vec SequenceLength FixedPoint
-    scores =
-      imap (\t krow ->
-              let s = sum (zipWith (*) q krow) * scale
-              in if fromEnum t <= fromEnum pos then s else negBig)
-           ks
+attendHead :: HiddenClockResetEnable dom
+  => Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom Bool
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool )
+attendHead clear stepEn qSig kSig vSig lastT =
+  (OnlineSoftmax.softResult <$> st, stepEn .&&. lastT)
+ where
+  scale :: FixedPoint
+  scale = realToFrac (1.0 / sqrt ((natToNum @HeadDimension) :: Double))
 
-    m   = maximum scores
-    exps = map (\s -> if s == negBig then 0 else expF (s - m)) scores
-    d   = fold (+) exps
-    probs = if d == 0 then repeat 0 else map (/ d) exps
+  stepInput =
+    mux stepEn
+      (Just <$> bundle ( (* scale) <$> (dotF <$> qSig <*> kSig), vSig))
+      (pure Nothing)
 
-    out  = foldl
-             (\acc (p, vrow) -> zipWith (+) acc (map (* p) vrow))
-             (repeat 0)
-             (zip probs vs)
-  in out
+  st = mealy
+        (\s (cl, inpM) ->
+           let s0 = if cl then OnlineSoftmax.softInit else s
+           in case inpM of
+                Nothing   -> (s0, s0)
+                Just pair -> let s1 = OnlineSoftmax.softStep s0 pair
+                             in  (s1, s1))
+        OnlineSoftmax.softInit
+        (bundle (clear, stepInput))

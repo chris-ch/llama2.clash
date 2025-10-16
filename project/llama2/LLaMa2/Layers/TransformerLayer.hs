@@ -28,12 +28,12 @@ import LLaMa2.Layers.Components.Quantized
   , EmbeddingComponentQ(..)
   )
 
-import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStageSeq)
+import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layers.Attention.AttendSequential (attendHeadSeq)
+import LLaMa2.Layers.Attention.AttentionHead (attendHead)
 import LLaMa2.Memory.RamOps (runTdpRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Layers.Attention.MultiHeadAttention (projectQKVSeq)
+import LLaMa2.Layers.Attention.MultiHeadAttention (projectQKV)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -72,11 +72,12 @@ transformerLayer layer layerIndex processingState layerData =
   ffn = feedforwardNetwork layer
 
   -- === Stage1: QKV Projection with Handshaking (sequential controller) ===
+  isFirstStage :: ProcessingState ->  Bool
+  isFirstStage ps= processingStage ps == Stage1_ProjectQKV
+                  && processingLayer ps == layerIndex
+
   isStage1ThisLayer :: Signal dom Bool
-  isStage1ThisLayer =
-    liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
-                  && processingLayer ps == layerIndex)
-           processingState (pure ())
+  isStage1ThisLayer = isFirstStage <$> processingState
 
   qkvOutReady :: Signal dom Bool
   qkvOutReady = not <$> isStage1ThisLayer
@@ -141,11 +142,12 @@ transformerLayer layer layerIndex processingState layerData =
     in validProjected .&&. (not <$> prevReady)
 
   -- === Stage4: Sequential FFN with handshaking ===
+  isStage4 :: ProcessingState -> Bool
+  isStage4 ps  = processingStage ps == Stage4_FeedForward
+                  && processingLayer ps == layerIndex
+  
   isStage4ThisLayer :: Signal dom Bool
-  isStage4ThisLayer =
-    liftA2 (\ps _ -> processingStage ps == Stage4_FeedForward
-                  && processingLayer ps == layerIndex)
-           processingState (pure ())
+  isStage4ThisLayer = isStage4 <$> processingState
 
   ffnInput :: Signal dom (Vec ModelDimension FixedPoint)
   ffnInput = attentionOutput <$> layerDataAfterAttention
@@ -243,7 +245,7 @@ ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
 
     -- Call sequential FFN
     (result, ffnSeqValid, _ffnSeqReady) =
-      FeedForwardNetwork.feedForwardStageSeq
+      FeedForwardNetwork.feedForwardStage
         computeEnable
         (pure True)  -- Always ready during computation (we control with FSM)
         ffnQ
@@ -296,10 +298,8 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, i
     -- This keeps the multipliers running until they all complete
     computeEnable = startTx .||. (state .==. pure QKVComputing)
 
-    -- KEY FIX: Downstream is always ready during our computation
-    -- We control the transaction with our FSM
     (result, matVecValid, _matVecReady) =
-      projectQKVSeq
+      projectQKV
         computeEnable              -- validIn: pulse to start, then hold
         (pure True)                -- readyIn: always ready (we control with FSM)
         mhaQ
@@ -422,7 +422,8 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     isStage2Write     = stageEquals Stage2_WriteKV
 
     attnPrev = register False isStage3Attention
-    clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attention attnPrev
+    risingEdge now prev = now && not prev
+    clearS3  = risingEdge <$> isStage3Attention <*> attnPrev
 
     seqPosSignal = sequencePosition <$> psSig
 
@@ -457,9 +458,9 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     (tAddrRow, stepEnRow, lastTRow) =
       attentionRowSequencer clearS3 isStage3Attention seqPosSignal
 
-    (out0_seqF, done0_seqF) = attendHeadSeq clearS3 stepEnRow query0 kRowA vRowA lastTRow
+    (out0_seqF, done0_seqF) = attendHead clearS3 stepEnRow query0 kRowA vRowA lastTRow
     (out1_seqF, done1_seqF) =
-      if hasQ1 then attendHeadSeq clearS3 stepEnRow query1 kRowA vRowA lastTRow
+      if hasQ1 then attendHead clearS3 stepEnRow query1 kRowA vRowA lastTRow
                else (pure (repeat 0), pure False)
 
     headOutAcc0  = replace qIdx0 out0_seqF headOutAcc

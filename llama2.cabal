@@ -99,7 +99,6 @@ library
     , LLaMa2.Embedding.PRNG
     , LLaMa2.Helpers.FixedPoint
     , LLaMa2.Helpers.MatVecI8E
-    , LLaMa2.Layers.Attention.AttendSequential
     , LLaMa2.Layers.Attention.AttentionHead
     , LLaMa2.Layers.Attention.MultiHeadAttention
     , LLaMa2.Layers.Attention.MultiHeadAttention.Internal

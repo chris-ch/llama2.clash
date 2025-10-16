@@ -1,5 +1,5 @@
 module LLaMa2.Layers.FeedForward.FeedForwardNetwork (
-   feedForwardStageSeq
+   feedForwardStage
 ) where
 
 import Clash.Prelude
@@ -9,9 +9,9 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Layers.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
-import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (feedForwardCoreSeq)
+import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (feedForwardCore)
 
-feedForwardStageSeq
+feedForwardStage
   :: HiddenClockResetEnable dom
   => Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
@@ -21,7 +21,7 @@ feedForwardStageSeq
      , Signal dom Bool                             -- ^ validOut
      , Signal dom Bool                             -- ^ readyOut (to upstream)
      )
-feedForwardStageSeq validIn readyIn ffn inputVector =
+feedForwardStage validIn readyIn ffn inputVector =
   (outputVector, validOut, readyOut)
   where
     -- Pre-normalize the input (combinational)
@@ -29,7 +29,7 @@ feedForwardStageSeq validIn readyIn ffn inputVector =
     
     -- Sequential FFN core with handshaking
     (ffnCore, coreValidOut, coreReadyOut) =
-      feedForwardCoreSeq validIn readyIn ffn xHat
+      feedForwardCore validIn readyIn ffn xHat
     
     -- Add residual connection when core output is valid
     -- Register the residual to align with FFN output timing

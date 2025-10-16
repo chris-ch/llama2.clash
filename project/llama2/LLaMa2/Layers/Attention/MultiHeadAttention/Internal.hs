@@ -1,8 +1,8 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
   , applyRotation
-  , computeHeadQSeq  -- NEW: sequential version
-  , computeHeadKVSeq -- NEW: sequential version
+  , computeHeadQ
+  , computeHeadKV
 ) where
 
 import Clash.Prelude
@@ -17,7 +17,7 @@ import LLaMa2.Layers.Components.Quantized
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
-computeHeadQSeq
+computeHeadQ
   :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn
@@ -29,7 +29,7 @@ computeHeadQSeq
      , Signal dom Bool            -- ^ validOut
      , Signal dom Bool            -- ^ readyOut (can accept input)
      )
-computeHeadQSeq validIn readyIn headComp stepCountSig xHatSig =
+computeHeadQ validIn readyIn headComp stepCountSig xHatSig =
   (qRoOut, validOut, readyOut)
   where
     -- Matrix multiply with handshaking
@@ -43,8 +43,7 @@ computeHeadQSeq validIn readyIn headComp stepCountSig xHatSig =
     validOut = qValidOut
     readyOut = qReadyOut
 
--- NEW: Sequential KV projection with handshaking
-computeHeadKVSeq
+computeHeadKV
   :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn
@@ -57,7 +56,7 @@ computeHeadKVSeq
      , Signal dom Bool            -- ^ validOut
      , Signal dom Bool            -- ^ readyOut (can accept input)
      )
-computeHeadKVSeq validIn readyIn headComp stepCountSig xHatSig =
+computeHeadKV validIn readyIn headComp stepCountSig xHatSig =
   (kRoOut, vOut, validOut, readyOut)
   where
     -- K matrix multiply

@@ -60,14 +60,15 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
   layerIx  = processingLayer <$> procState
   posIx    = sequencePosition <$> procState
 
-  -- NEW readyPulse: one-cycle pulse when the last layer's FFN asserts done
+  -- readyPulse: one-cycle pulse when the last layer's FFN asserts done
   isStage st = (== st) <$> stageSig
 
-  atFirstStage1 =
-    liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
+  isFirstStage :: ProcessingState -> Bool
+  isFirstStage ps = processingStage ps == Stage1_ProjectQKV
                   && processingLayer ps == 0
-                  && sequencePosition ps == 0)
-           procState (pure ())
+                  && sequencePosition ps == 0
+
+  atFirstStage1 = isFirstStage <$> procState
 
   -- Stage completion: unchanged, but now ffnDoneThisLayer is the real FFN validOut
   stageFinishedSig =
@@ -83,7 +84,7 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
     pure False
 
   -- readyPulse now fires at end of Classifier stage
-  readyPulseRaw = 
+  readyPulseRaw =
     let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
         rising now prev = now && not prev
     in rising <$> isClassifierDone <*> register False isClassifierDone
