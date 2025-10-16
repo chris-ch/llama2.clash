@@ -1,5 +1,5 @@
 module LLaMa2.Core.Transformer (
-    transformer
+    transformer, TransformerIntrospection(..)
 ) where
 
 import Clash.Prelude
@@ -32,6 +32,23 @@ import LLaMa2.Embedding.PRNG (transformerLogitsSeq)
 
 type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
 
+-- | Introspection signals — meant for runtime visibility / observability
+data TransformerIntrospection dom = TransformerIntrospection
+  { state         :: Signal dom ProcessingState
+  , layerIndex    :: Signal dom (Index NumLayers)
+  , ready         :: Signal dom Bool
+  , logitsValid   :: Signal dom Bool
+  , attnDone      :: Signal dom Bool
+  , qkvDone       :: Signal dom Bool
+  , ffnDone       :: Signal dom Bool
+  , writeDone     :: Signal dom Bool
+  , inputToken    :: Signal dom Token
+  , selectedToken :: Signal dom Token
+  , feedbackToken :: Signal dom Token
+  , embeddingNorm :: Signal dom FixedPoint
+  , outputNorm    :: Signal dom FixedPoint
+  } deriving (Generic, NFDataX)
+
 transformer :: forall dom
    . HiddenClockResetEnable dom
   => TransformerLayer.TransformerDecoderComponent
@@ -39,9 +56,12 @@ transformer :: forall dom
   -> Signal dom Bool            -- ^ inputTokenValid (True while external prompt is used)
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token , Signal dom Bool )
+  -> ( Signal dom Token
+      , Signal dom Bool
+      , TransformerIntrospection dom -- ^ introspection signals
+     )
 transformer decoder inputToken inputTokenValid temperature seed =
-  ( selectedToken, readyPulse)
+  ( selectedToken, readyPulse, introspection)
  where
   vocabulary :: MatI8E VocabularySize ModelDimension
   vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
@@ -123,6 +143,30 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   ffnDoneThisLayer :: Signal dom Bool
   ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> layerIndex
+
+  -- Lightweight vector diagnostics (sum of abs values)
+  embeddingNorm :: Signal dom FixedPoint
+  embeddingNorm = sum . map abs <$> tokenEmbedding
+
+  outputNorm :: Signal dom FixedPoint
+  outputNorm = sum . map abs <$> finalLayerOutput
+
+  introspection :: TransformerIntrospection dom
+  introspection = TransformerIntrospection
+    { state         = processingState
+    , layerIndex
+    , ready         = readyPulse
+    , logitsValid
+    , attnDone      = attnDoneThisLayer
+    , qkvDone       = qkvDoneThisLayer
+    , ffnDone       = ffnDoneThisLayer
+    , writeDone     = writeDoneThisLayer
+    , inputToken
+    , selectedToken
+    , feedbackToken
+    , embeddingNorm
+    , outputNorm
+    }
 
 pipelineProcessor :: forall dom
    . HiddenClockResetEnable dom

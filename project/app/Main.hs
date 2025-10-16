@@ -16,13 +16,14 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import LLaMa2.Core.Types ( Token, Temperature, Seed )
+import LLaMa2.Core.Types ( Token, Temperature, Seed, ProcessingState (..) )
 
 import LLaMa2.Config ( VocabularySize )
-import qualified LLaMa2.Top as Top ( topEntitySim )
+import qualified LLaMa2.Top as Top ( topEntitySim, TransformerIntrospection (..) )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent (..))
 import LLaMa2.Numeric.Types (FixedPoint)
+import Control.Monad (when)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -152,14 +153,10 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
   hFlush stdout
 
   let
-    -- split prompt into first token + rest (BOS fallback)
-    (firstToken, restPrompt) =
-      case promptTokens of
-        (t:ts) -> (t, ts)
-        []     -> (1, [])
+    (firstToken, restPrompt) = case promptTokens of
+      (t:ts) -> (t, ts)
+      []     -> (1, [])
 
-    -- state: (currentInputToken, remainingPrompt, stillUsingPrompt)
-    advanceState :: DecoderInputState -> (Bool, Token) -> DecoderInputState
     advanceState (current, remPrompt, usingPrompt) (isReady, sampled)
       | not isReady = (current, remPrompt, usingPrompt)
       | otherwise   = case remPrompt of
@@ -168,42 +165,84 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
 
     temperature' = realToFrac temperature :: FixedPoint
 
-    outputs :: [(Token, Bool)]
-    outputs =
-      CS.simulate (bundledOutputs decoder)
-                  (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
+    -- Scale simulation steps by 1000x
+    simSteps = (stepCount + length promptTokens) * 1000
 
-    (outputTokens, readyFlags) = unzip outputs
+    inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    -- build the evolution of the input-state using the future ready flags & outputs
+    (coreOutputsSignal, introspection) = bundledOutputs decoder inputSignals
+
+    -- Sample core outputs
+    coreOutputs :: [(Token, Bool)]
+    coreOutputs = C.sampleN simSteps coreOutputsSignal
+
+    -- Sample introspection fields separately
+    statesSampled         = C.sampleN simSteps (Top.state introspection)
+    layerIndicesSampled   = C.sampleN simSteps (Top.layerIndex introspection)
+    readiesSampled        = C.sampleN simSteps (Top.ready introspection)
+    logitsValidsSampled   = C.sampleN simSteps (Top.logitsValid introspection)
+    attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
+    qkvDonesSampled       = C.sampleN simSteps (Top.qkvDone introspection)
+    ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
+    writeDonesSampled     = C.sampleN simSteps (Top.writeDone introspection)
+    inputTokensSampled    = C.sampleN simSteps (Top.inputToken introspection)
+    selectedTokensSampled = C.sampleN simSteps (Top.selectedToken introspection)
+    feedbackTokensSampled = C.sampleN simSteps (Top.feedbackToken introspection)
+    embeddingNormsSampled = C.sampleN simSteps (Top.embeddingNorm introspection)
+    outputNormsSampled    = C.sampleN simSteps (Top.outputNorm introspection)
+
+    -- Extract top-level outputs
+    (outputTokens, readyFlags) = unzip coreOutputs
+
+    -- Derive evolving state
     states :: [DecoderInputState]
     states = scanl advanceState (firstToken, restPrompt, True)
                 (zip (drop 1 readyFlags) (drop 1 outputTokens))
 
-    -- inputs fed to the model (matches original structure)
     inputTokens     = firstToken : [ tok | (tok, _, _) <- states ]
     inputValidFlags = True       : [ usePrompt | (_, _, usePrompt) <- states ]
 
-    -- collect sampled tokens (only where isReady == True)
-    sampledTokens = [ tok | (tok, isReady) <- outputs, isReady ]
+    sampledTokens = [ tok | (tok, isReady) <- zip outputTokens readyFlags, isReady ]
 
-    promptLength    = length promptTokens
-    generatedTokens = take stepCount (drop promptLength sampledTokens)
-    emittedTokens   = promptTokens ++ generatedTokens
-    limitedEmitted  = take (promptLength + stepCount) emittedTokens
+  -- Print header
+  putStrLn "\nCycle | Layer | Stage | Ready | AttnDone | FFNDone | Token"
+  putStrLn "-----------------------------------------------------------"
 
-  mapM_ (printToken tokenizer) limitedEmitted
+  -- Loop through sampled outputs and display selected signals
+  let printCycle (cycleIdx, (tok, isReady)) = do
+        let li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
+            ps     = processingStage (statesSampled !! cycleIdx)
+            rdy    = readiesSampled !! cycleIdx
+            attn   = attnDonesSampled !! cycleIdx
+            ffn    = ffnDonesSampled !! cycleIdx
+        when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
+          putStrLn $
+            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %5d"
+              cycleIdx
+              li
+              (show ps)
+              (show rdy)
+              (show attn)
+              (show ffn)
+              (fromIntegral tok :: Int)
+
+  mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
+
+  mapM_ (printToken tokenizer) sampledTokens
   putStrLn ""
-  return stepCount
+  pure (length sampledTokens)
 
 bundledOutputs :: TransformerDecoderComponent
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> C.Signal C.System (Token, Bool)
+  -> (C.Signal C.System (Token, Bool), Top.TransformerIntrospection C.System)
 bundledOutputs decoder bundledInputs =
-  C.bundle $
-    C.exposeClockResetEnable (Top.topEntitySim decoder token isValid temperature seed)
-                             CS.systemClockGen
-                             CS.resetGen
-                             CS.enableGen
-  where
-    (token, isValid, temperature, seed) = C.unbundle bundledInputs
+  (C.bundle (outToken, readyPulse), introspection)
+ where
+  (token, isValid, temperature, seed) = C.unbundle bundledInputs
+
+  (outToken, readyPulse, introspection) =
+    C.exposeClockResetEnable
+      (Top.topEntitySim decoder token isValid temperature seed)
+      CS.systemClockGen
+      CS.resetGen
+      CS.enableGen

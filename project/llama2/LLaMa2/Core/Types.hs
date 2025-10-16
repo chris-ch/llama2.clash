@@ -3,7 +3,6 @@ module LLaMa2.Core.Types
     CycleStage (..),
     ProcessingState (..),
     LayerData (..),
-    TrueDualPortRunner,
     Token,
     Temperature,
     Seed,
@@ -27,18 +26,6 @@ import LLaMa2.Config
     VocabularySize,
   )
 import LLaMa2.Numeric.Types (FixedPoint)
-
--- Dual-port RAM runner type (true dual port)
-type TrueDualPortRunner dom n a =
-  ( Signal dom (Index n), -- Port A address
-    Signal dom (Maybe (Index n, a)) -- Port A write (optional)
-  ) ->
-  ( Signal dom (Index n), -- Port B address
-    Signal dom (Maybe (Index n, a)) -- Port B write (optional)
-  ) ->
-  ( Signal dom a, -- Port A read output
-    Signal dom a -- Port B read output
-  )
 
 -- ============================================================================
 -- Multi-Cycle State Machine
