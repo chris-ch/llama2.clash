@@ -19,7 +19,7 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   , transformerLayer
   )
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
-import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits, tokenSampler)
+import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
@@ -48,15 +48,21 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
-
-  pipelineController :: PipelineController.PipelineOutputs dom
+  
   pipelineController =
     PipelineController.runPipelineController
       attnDoneThisLayer
       writeDoneThisLayer
       qkvDoneThisLayer
       ffnDoneThisLayer
+      logitsValid
       inputTokenValid
+
+  -- Sequential classifier starts when last layer FFN completes
+  lastLayerFfnDone = 
+    ((processingStage <$> processingState) .==. pure Stage4_FeedForward) .&&.
+    ((processingLayer <$> processingState) .==. pure maxBound) .&&.
+    ffnDoneThisLayer
 
   layerIndex :: Signal dom (Index NumLayers)
   layerIndex = PipelineController.layerIndex pipelineController
@@ -71,22 +77,16 @@ transformer decoder inputToken inputTokenValid temperature seed =
   finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
   finalLayerOutput = feedForwardOutput <$> nextLayerData
 
-  -- Sequential classifier: start at readyPulse; sampler waits for logitsValid
-  (logits, logitsValid, logitsReady) =
-    transformerLogitsSeq readyPulse (pure True) decoder finalLayerOutput
+  (logits, logitsValid, _) =
+    transformerLogitsSeq lastLayerFfnDone (pure True) decoder finalLayerOutput
 
   -- keep 
   tokenSampleSeq :: Signal dom Token
   tokenSampleSeq = PRNG.tokenSamplerFromLogits logitsValid temperature seed logits
 
-  tokenSample :: Signal dom Token
-  tokenSample = PRNG.tokenSampler readyPulse temperature seed decoder nextLayerData
-
   -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
-  feedbackToken = regEn 0 readyPulse tokenSample
-  -- TODO Switch
-  --feedbackToken = regEn 0 logitsValid tokenSampleSeq
+  feedbackToken = regEn 0 logitsValid tokenSampleSeq
 
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken

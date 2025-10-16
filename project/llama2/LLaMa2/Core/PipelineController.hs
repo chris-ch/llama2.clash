@@ -21,16 +21,16 @@ nextProcessingState state = case processingStage state of
   Stage3_Attend     -> state { processingStage = Stage4_FeedForward }
   Stage4_FeedForward ->
     if processingLayer state == maxBound
-      then state { processingStage  = Stage5_Bookkeeping }
+      then state { processingStage  = Stage5_Classifier }
       else state { processingStage  = Stage1_ProjectQKV
                  , processingLayer  = succ (processingLayer state)
                  }
-  Stage5_Bookkeeping ->
+  Stage5_Classifier -> state { processingStage = Stage6_Bookkeeping }
+  Stage6_Bookkeeping ->
     state { processingStage  = Stage1_ProjectQKV
           , processingLayer  = 0
-          , sequencePosition =
-              if sequencePosition state == maxBound
-                then 0 else succ (sequencePosition state)
+          , sequencePosition = if sequencePosition state == maxBound
+                                then 0 else succ (sequencePosition state)
           }
 
 data PipelineOutputs dom = PipelineOutputs
@@ -48,9 +48,10 @@ runPipelineController
   -> Signal dom Bool     -- ^ writeDoneThisLayer (Stage2)
   -> Signal dom Bool     -- ^ qkvValidThisLayer (Stage1 completion)
   -> Signal dom Bool     -- ^ ffnDoneThisLayer (Stage4 completion)
+  -> Signal dom Bool     -- ^ classifierDone
   -> Signal dom Bool     -- ^ inputTokenValid
   -> PipelineOutputs dom
-runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffnDoneThisLayer inputTokenValid = outs
+runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffnDoneThisLayer classifierDone inputTokenValid = outs
  where
   advance s done = if done then nextProcessingState s else s
   procState = register initialProcessingState (advance <$> procState <*> stageFinishedSig)
@@ -61,11 +62,6 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
 
   -- NEW readyPulse: one-cycle pulse when the last layer's FFN asserts done
   isStage st = (== st) <$> stageSig
-  lastLayer  = layerIx .==. pure maxBound
-  lastLayerFfnDone = isStage Stage4_FeedForward .&&. lastLayer .&&. ffnDoneThisLayer
-  readyPulseRaw =
-    let rising now prev = now && not prev
-    in  rising <$> lastLayerFfnDone <*> register False lastLayerFfnDone
 
   atFirstStage1 =
     liftA2 (\ps _ -> processingStage ps == Stage1_ProjectQKV
@@ -79,11 +75,18 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
          (mux atFirstStage1
               (inputTokenValid .&&. qkvValidThisLayer)
               qkvValidThisLayer) $
-    mux (isStage Stage2_WriteKV)     writeDoneThisLayer      $
-    mux (isStage Stage3_Attend)      attnDoneThisLayer       $
-    mux (isStage Stage4_FeedForward) ffnDoneThisLayer        $
-    mux (isStage Stage5_Bookkeeping) (pure True)             $
+    mux (isStage Stage2_WriteKV)    writeDoneThisLayer $
+    mux (isStage Stage3_Attend)     attnDoneThisLayer $
+    mux (isStage Stage4_FeedForward) ffnDoneThisLayer $
+    mux (isStage Stage5_Classifier)  classifierDone $
+    mux (isStage Stage6_Bookkeeping) (pure True) $
     pure False
+
+  -- readyPulse now fires at end of Classifier stage
+  readyPulseRaw = 
+    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
+        rising now prev = now && not prev
+    in rising <$> isClassifierDone <*> register False isClassifierDone
 
   outs = PipelineOutputs
     { processingState = procState

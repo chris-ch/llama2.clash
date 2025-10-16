@@ -142,27 +142,6 @@ matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
     -- Ready to accept new input when idle
     readyOut = state .==. pure MIdle
 
-matrixMultiplier :: forall dom rows cols .
-     ( HiddenClockResetEnable dom
-     , KnownNat cols, KnownNat rows
-     )
-  => Signal dom Bool        -- validIn
-  -> Signal dom Bool        -- readyIn (downstream)
-  -> MatI8E rows cols
-  -> Signal dom (Vec cols FixedPoint)
-  -> ( Signal dom (Vec rows FixedPoint)
-     , Signal dom Bool      -- validOut
-     , Signal dom Bool      -- readyOut
-     )
-matrixMultiplier = Simulation.MatVecSim.matrixMultiplierStub
-
--- | Sequential matrix-vector multiplication processor
--- Handshaking via ready/valid signals
---
---          | ----validIn---> |            | ----validOut---> |
--- Upstream |                 | Multiplier |                  | Downstream
---          | <---readyOut--- |            | <---readyIn----- |
---
 matrixMultiplier' :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
@@ -175,7 +154,28 @@ matrixMultiplier' :: forall dom rows cols .
      , Signal dom Bool      -- validOut
      , Signal dom Bool      -- readyOut
      )
-matrixMultiplier' validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
+matrixMultiplier' = Simulation.MatVecSim.matrixMultiplierStub
+
+-- | Sequential matrix-vector multiplication processor
+-- Handshaking via ready/valid signals
+--
+--          | ----validIn---> |            | ----validOut---> |
+-- Upstream |                 | Multiplier |                  | Downstream
+--          | <---readyOut--- |            | <---readyIn----- |
+--
+matrixMultiplier :: forall dom rows cols .
+     ( HiddenClockResetEnable dom
+     , KnownNat cols, KnownNat rows
+     )
+  => Signal dom Bool        -- validIn
+  -> Signal dom Bool        -- readyIn (downstream)
+  -> MatI8E rows cols
+  -> Signal dom (Vec cols FixedPoint)
+  -> ( Signal dom (Vec rows FixedPoint)
+     , Signal dom Bool      -- validOut
+     , Signal dom Bool      -- readyOut
+     )
+matrixMultiplier validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
   where
     -- Row counter
     rowIndex = register (0 :: Index rows) nextRowIndex
