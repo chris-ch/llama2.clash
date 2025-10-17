@@ -1,33 +1,19 @@
 module LLaMa2.Helpers.MatVecI8E
   (
-  matrixMultiplier
+    matrixMultiplier
   , singleRowProcessor
   , cyclicalCounter
   , accumulator
   , MultiplierState(..)
   , matrixMultiplierStateMachine
-  , 
+  , parallel32RowMatrixMultiplier
+  , cyclicalCounter32
   ) where
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import qualified Simulation.MatVecSim
-
-cyclicalCounter32 :: forall dom size . (HiddenClockResetEnable dom, KnownNat size)
-  => Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom (Index size)
-cyclicalCounter32 reset enable = index
-  where
-    maxBoundVal = pure (maxBound :: Index size)
-    nextIndex = mux enable
-                    (mux (index + 32 .>. maxBoundVal)
-                         maxBoundVal
-                         (index + 32))
-                    index
-    next = mux reset (pure 0) nextIndex
-    index = register 0 next
 
 -- | A stateful column counter for tracking the current column index in a sequential
 -- matrix-vector multiplication process. The counter cyclicylly increments when enabled
@@ -273,14 +259,6 @@ singleLaneProcessor mantissa columnComponent = inputValue
     mantissaFP = fromIntegral <$> mantissa :: Signal dom FixedPoint
     inputValue = mantissaFP * columnComponent
 
--- | Helper: safely compute index with offset, clamping to valid range
-addOffset :: forall size . KnownNat size => Index size -> Int -> Index size
-addOffset idx offset =
-  let idxInt = fromEnum idx
-      newIdx = idxInt + offset
-      maxIdx = fromEnum (maxBound :: Index size)
-  in if newIdx > maxIdx then maxBound else toEnum newIdx
-
 -- | Parallel row processor with hardcoded 32 lanes
 -- Processes 32 columns per cycle
 parallel32RowProcessor :: forall dom size.
@@ -524,3 +502,76 @@ parallel32RowProcessor reset enable row columnVec = (output, rowDone)
     -- Done when index + 31 >= maxBound
     lastColumnFlag = ((\idx -> fromEnum idx + 31 >= fromEnum (maxBound :: Index size)) <$> columnIndex) .&&. enable
     rowDone = register False lastColumnFlag
+
+cyclicalCounter32 :: forall dom size . (HiddenClockResetEnable dom, KnownNat size)
+  => Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Index size)
+cyclicalCounter32 reset enable = index
+  where
+    maxBoundVal = pure (fromEnum (maxBound :: Index size)) :: Signal dom Int
+    indexInt = fromIntegral <$> index :: Signal dom Int
+    nextIndexInt = mux enable
+                       (mux (indexInt + 32 .>. maxBoundVal)
+                            maxBoundVal
+                            (indexInt + 32))
+                       indexInt
+    nextIndex = toEnum <$> mux reset (pure 0) nextIndexInt :: Signal dom (Index size)
+    index = register 0 nextIndex
+
+-- | Parallel 32-lane matrix-vector multiplication processor
+-- Uses parallel32RowProcessor to compute 32 columns per cycle
+-- 
+-- Handshaking via ready/valid signals
+--
+--          | ----validIn---> |            | ----validOut---> |
+-- Upstream |                 | Multiplier |                  | Downstream
+--          | <---readyOut--- |            | <---readyIn----- |
+--
+parallel32RowMatrixMultiplier :: forall dom rows cols .
+     ( HiddenClockResetEnable dom
+     , KnownNat cols, KnownNat rows
+     )
+  => Signal dom Bool        -- validIn
+  -> Signal dom Bool        -- readyIn (downstream)
+  -> MatI8E rows cols
+  -> Signal dom (Vec cols FixedPoint)
+  -> ( Signal dom (Vec rows FixedPoint)
+     , Signal dom Bool      -- validOut
+     , Signal dom Bool      -- readyOut
+     )
+parallel32RowMatrixMultiplier validIn readyInDownstream rowVectors inputVector = 
+  (outputVector, validOut, readyOut)
+  where
+    -- Row counter
+    rowIndex = register (0 :: Index rows) nextRowIndex
+    currentRow = (!!) rowVectors <$> rowIndex
+
+    -- Parallel 32-lane row processor
+    (rowResult, rowDone) = parallel32RowProcessor rowReset rowEnable currentRow inputVector
+
+    -- State machine controls the protocol
+    (state, rowReset, rowEnable, validOut, readyOut) =
+      matrixMultiplierStateMachine validIn readyInDownstream rowDone rowIndex
+
+    -- Increment row index when row completes, reset after last row
+    nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
+                       (rowIndex + 1)
+                       (mux ((state .==. pure MDone) .&&. readyInDownstream)
+                            (pure 0)
+                            rowIndex)
+
+    -- Accumulate results into output vector
+    outputVector = register (repeat 0) nextOutput
+    nextOutput = mux rowDone
+                     (replace <$> rowIndex <*> rowResult <*> outputVector)
+                     outputVector
+            
+-- | Helper: safely compute index with offset, clamping to valid range
+-- Fixed to avoid out-of-bounds errors by checking before calling toEnum
+addOffset :: forall size . KnownNat size => Index size -> Int -> Index size
+addOffset idx offset =
+  let idxInt = fromEnum idx
+      newIdx = idxInt + offset
+      maxIdx = fromEnum (maxBound :: Index size)
+  in toEnum (min newIdx maxIdx)  -- Clamp BEFORE calling toEnum

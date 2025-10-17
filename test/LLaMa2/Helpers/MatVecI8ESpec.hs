@@ -3,7 +3,7 @@ module LLaMa2.Helpers.MatVecI8ESpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Helpers.MatVecI8E (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier)
+import LLaMa2.Helpers.MatVecI8E (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier, cyclicalCounter32)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
@@ -779,3 +779,95 @@ spec = do
           then readyOuts P.!! (completionCycle + 1) `shouldBe` True
           else True `shouldBe` False -- can't test if at end of sampled cycles
 
+  describe "cyclicalCounter32" $ do
+    context "increments by 32, clamps at maxBound, and resets correctly (size = 64)" $ do
+      let maxCycles = 10
+          resetStream = [True, False, False, False, True, False, False, True, False, False]
+          enableStream = [False, True, True, True, False, True, True, False, True, True]
+          expected = [0, 0, 32, 63, 63, 0, 32, 63, 0, 32] :: [Int]
+          reset = fromList resetStream :: Signal System Bool
+          enable = fromList enableStream :: Signal System Bool
+          counter =
+            exposeClockResetEnable
+              cyclicalCounter32
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              reset
+              enable
+          outputs = P.take maxCycles $ sample counter :: [Index 64]
+          outputInts = P.map fromEnum outputs
+          maxBoundVal = fromEnum (maxBound :: Index 64)
+      it "output stream matches expected sequence" $ do
+        outputInts `shouldBe` expected
+      it "never exceeds maxBound (63)" $ do
+        all (<= maxBoundVal) outputInts `shouldBe` True
+
+    context "handles reset overriding enable (size = 64)" $ do
+      let maxCycles = 10
+          resetStream = [True, False, False, True, False, False, True, False, False, False]
+          enableStream = [True, True, True, True, True, True, True, True, True, True]
+          expected = [0, 0, 32, 63, 0, 32, 63, 0, 32, 63] :: [Int]
+          reset = fromList resetStream :: Signal System Bool
+          enable = fromList enableStream :: Signal System Bool
+          counter =
+            exposeClockResetEnable
+              cyclicalCounter32
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              reset
+              enable
+          outputs = P.take maxCycles $ sample counter :: [Index 64]
+          outputInts = P.map fromEnum outputs
+          maxBoundVal = fromEnum (maxBound :: Index 64)
+      it "output stream matches expected sequence" $ do
+        outputInts `shouldBe` expected
+      it "never exceeds maxBound (63)" $ do
+        all (<= maxBoundVal) outputInts `shouldBe` True
+
+    context "holds value when enable is low (size = 64)" $ do
+      let maxCycles = 10
+          resetStream = [True, False, False, False, False, True, False, False, False, False]
+          enableStream = [False, True, False, True, False, False, True, False, True, False]
+          expected = [0, 0, 32, 32, 63, 63, 0, 32, 32, 63] :: [Int]
+          reset = fromList resetStream :: Signal System Bool
+          enable = fromList enableStream :: Signal System Bool
+          counter =
+            exposeClockResetEnable
+              cyclicalCounter32
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              reset
+              enable
+          outputs = P.take maxCycles $ sample counter :: [Index 64]
+          outputInts = P.map fromEnum outputs
+          maxBoundVal = fromEnum (maxBound :: Index 64)
+      it "output stream matches expected sequence" $ do
+        outputInts `shouldBe` expected
+      it "never exceeds maxBound (63)" $ do
+        all (<= maxBoundVal) outputInts `shouldBe` True
+
+    context "increments correctly for larger size (size = 128)" $ do
+      let maxCycles = 10
+          resetStream = [True, False, False, False, False, True, False, False, False, False]
+          enableStream = [False, True, True, True, True, False, True, True, True, True]
+          expected = [0, 0, 32, 64, 96, 127, 0, 32, 64, 96] :: [Int]
+          reset = fromList resetStream :: Signal System Bool
+          enable = fromList enableStream :: Signal System Bool
+          counter =
+            exposeClockResetEnable
+              cyclicalCounter32
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              reset
+              enable
+          outputs = P.take maxCycles $ sample counter :: [Index 128]
+          outputInts = P.map fromEnum outputs
+          maxBoundVal = fromEnum (maxBound :: Index 128)
+      it "output stream matches expected sequence" $ do
+        outputInts `shouldBe` expected
+      it "never exceeds maxBound (127)" $ do
+        all (<= maxBoundVal) outputInts `shouldBe` True
