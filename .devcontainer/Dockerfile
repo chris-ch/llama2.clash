@@ -86,4 +86,6 @@ RUN \
     ghcup set ghc ${VERSION_GHC} && \
     ghcup install hls
 
+RUN cabal install clash-ghc
+
 RUN /bin/echo -e "\nexport PATH=$PATH:/home/${USER_NAME}/.ghcup/bin:/home/${USER_NAME}/.local/bin/\n" >> /home/${USER_NAME}/.bashrc

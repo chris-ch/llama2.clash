@@ -14,7 +14,7 @@ import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Fixed (expF)
 import LLaMa2.Layers.Components.Quantized (EmbeddingComponentQ(..))
-import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
+import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
 
 -- xorshift32 unchanged
 xorshift32 :: Unsigned 32 -> Unsigned 32
@@ -44,7 +44,7 @@ transformerLogitsSeq validIn readyIn decoder tokenVecSig =
 
     -- Sequential matrix multiply (tied embeddings as classifier)
     (logitsOut, validOut, readyOut) =
-      matrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
+      parallel32RowMatrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
 
 pickSample :: (KnownNat n, KnownNat (n + 1)) => FixedPoint -> Vec (n + 1) FixedPoint -> FixedPoint -> Token
 pickSample temperature logits rand = if temperature <= 0 then argMax logits
