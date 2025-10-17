@@ -11,7 +11,7 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Numeric.Fixed
 import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
-import LLaMa2.Helpers.MatVecI8E (matrixMultiplier, parallel32RowMatrixMultiplier)
+import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
 
 sigmoidLinearUnit :: FixedPoint -> FixedPoint
 sigmoidLinearUnit x = x / (1 + expF (negate x))
