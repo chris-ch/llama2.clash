@@ -7,7 +7,6 @@ import LLaMa2.Config (ModelDimension, HeadDimension)
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Helpers (liftA4)
 
 -- FSM states
 data FSMState = IDLE | REQUESTING | PROJECTING | DONE
@@ -40,7 +39,10 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     multiplierResultHandshake = woValidOut .&&. woReadyIn   -- We accept result
     
     -- State transitions
-    nextState = liftA4 transition state upstreamHandshake multiplierRequestHandshake multiplierResultHandshake
+    nextState = transition <$> state 
+                <*> upstreamHandshake 
+                <*> multiplierRequestHandshake 
+                <*> multiplierResultHandshake
     
     transition :: FSMState -> Bool -> Bool -> Bool -> FSMState
     transition IDLE upHS _ _ 
@@ -59,7 +61,7 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     
     -- Ready to accept new input only when IDLE
     readyOut :: Signal dom Bool
-    readyOut = liftA2 (==) state (pure IDLE)
+    readyOut = (==) <$> state <*> pure IDLE
     
     -- Latch input vector when we accept it
     latchedVector :: Signal dom (Vec HeadDimension FixedPoint)
@@ -67,11 +69,11 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     
     -- Assert woValidIn when in REQUESTING state
     woValidIn :: Signal dom Bool
-    woValidIn = liftA2 (==) state (pure REQUESTING)
+    woValidIn = (==) <$> state <*> pure REQUESTING
     
     -- Ready to accept multiplier result when in PROJECTING state
     woReadyIn :: Signal dom Bool
-    woReadyIn = liftA2 (==) state (pure PROJECTING)
+    woReadyIn = (==) <$> state <*> pure PROJECTING
     
     -- Call the matrix multiplier
     (woResult, woValidOut, woReadyOut) = matrixMultiplier woValidIn woReadyIn woMatrix latchedVector
@@ -81,4 +83,4 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     
     -- Valid output when in DONE state
     validOut :: Signal dom Bool
-    validOut = liftA2 (==) state (pure DONE)
+    validOut = (==) <$> state <*> pure DONE

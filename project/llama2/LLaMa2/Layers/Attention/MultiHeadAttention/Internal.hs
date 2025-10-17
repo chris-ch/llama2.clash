@@ -1,8 +1,8 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
+  , applyRotation
   , computeHeadQ
   , computeHeadKV
-  , applyRotation
 ) where
 
 import Clash.Prelude
@@ -10,39 +10,73 @@ import LLaMa2.Config
     ( ModelDimension,
       HeadDimension,
       RotaryPositionalEmbeddingDimension,
-      SequenceLength,
-      ModelDimension,
-      HeadDimension,
-      RotaryPositionalEmbeddingDimension,
       SequenceLength  )
-import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
+import LLaMa2.Numeric.Types ( FixedPoint )
 import LLaMa2.Layers.Components.Quantized
-    ( SingleHeadComponentQ, SingleHeadComponentQ(..) )
-import Simulation.MatVecSim (matrixVectorMult)
+    ( SingleHeadComponentQ(..) )
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
 computeHeadQ
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> Vec HeadDimension FixedPoint
-computeHeadQ headComp stepCount xHat =
-  let q   = matrixVectorMult (wqHeadQ headComp) xHat
-      qRo = applyRotation (rotaryQ headComp) stepCount q
-  in qRo
+  :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool              -- ^ validIn
+  -> Signal dom Bool              -- ^ readyIn (downstream ready)
+  -> SingleHeadComponentQ
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool            -- ^ validOut
+     , Signal dom Bool            -- ^ readyOut (can accept input)
+     )
+computeHeadQ validIn readyIn headComp stepCountSig xHatSig =
+  (qRoOut, validOut, readyOut)
+  where
+    -- Matrix multiply with handshaking
+    (qOut, qValidOut, qReadyOut) =
+      matrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
+
+    -- Apply rotary encoding (combinational, but gated by valid)
+    qRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> qOut
+
+    -- Pass through handshaking signals
+    validOut = qValidOut
+    readyOut = qReadyOut
 
 computeHeadKV
-  :: SingleHeadComponentQ
-  -> Index SequenceLength
-  -> Vec ModelDimension FixedPoint
-  -> (Vec HeadDimension FixedPoint, Vec HeadDimension FixedPoint)
-computeHeadKV headComp stepCount xHat =
-  let k   = matrixVectorMult (wkHeadQ headComp) xHat
-      v   = matrixVectorMult (wvHeadQ headComp) xHat
-      kRo = applyRotation (rotaryQ headComp) stepCount k
-  in (kRo, v)
+  :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool              -- ^ validIn
+  -> Signal dom Bool              -- ^ readyIn (downstream ready)
+  -> SingleHeadComponentQ
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool            -- ^ validOut
+     , Signal dom Bool            -- ^ readyOut (can accept input)
+     )
+computeHeadKV validIn readyIn headComp stepCountSig xHatSig =
+  (kRoOut, vOut, validOut, readyOut)
+  where
+    -- K matrix multiply
+    (kOut, kValidOut, kReadyOut) =
+      matrixMultiplier validIn (pure True) (wkHeadQ headComp) xHatSig
 
--- helper: safely destructure a Vec 2
+    -- V matrix multiply (runs in parallel with K)
+    (vOut, vValidOut, vReadyOut) =
+      matrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
+
+    -- Apply rotary to K
+    kRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> kOut
+
+    -- Both K and V must be valid (should happen simultaneously since same input)
+    validOut = kValidOut .&&. vValidOut
+
+    -- Can accept input only when both multipliers are ready
+    readyOut = kReadyOut .&&. vReadyOut
+
+-- Helper: safely destructure a Vec 2
 vec2ToPair :: NFDataX a => Vec 2 a -> (a, a)
 vec2ToPair (x :> y :> Nil) = (x, y)
 vec2ToPair _   = deepErrorX "Impossible: Vec 2 had wrong shape"

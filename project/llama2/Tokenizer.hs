@@ -71,12 +71,12 @@ encodeTokens tok text =
   in merged
 
 -- Decode piece exactly like C decode(): BOS rule + <0xXX> byte tokens
-decodePiece :: Tokenizer -> Int -> Int -> BSL.ByteString
-decodePiece tok prev tokenId
+decodePiece :: Tokenizer -> Int -> BSL.ByteString
+decodePiece tok tokenId
   | tokenId < 0 || tokenId >= V.length (vocabVector tok) = BSL.empty
   | otherwise =
       let piece0 = vocabVector tok V.! tokenId
-          piece1 = if prev == 1 then dropLeadingSpace piece0 else piece0
+          piece1 = if tokenId == 1 then dropLeadingSpace piece0 else piece0
       in case parseBytePiece piece1 of
            Just b  -> BSL.pack [b]
            Nothing -> piece1

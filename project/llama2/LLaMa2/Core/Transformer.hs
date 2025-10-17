@@ -1,10 +1,9 @@
 module LLaMa2.Core.Transformer (
-    transformer
+    transformer, TransformerIntrospection(..)
 ) where
 
 import Clash.Prelude
 import LLaMa2.Core.Transformer.Internal
-import LLaMa2.Helpers (liftA4)
 import LLaMa2.Core.Types
   ( LayerData(..)
   , ProcessingState (..)
@@ -20,7 +19,7 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   , transformerLayer
   )
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
-import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
+import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
@@ -29,8 +28,26 @@ import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Embedding.PRNG (transformerLogitsSeq)
 
-type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool))
+type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
+
+-- | Introspection signals — meant for runtime visibility / observability
+data TransformerIntrospection dom = TransformerIntrospection
+  { state         :: Signal dom ProcessingState
+  , layerIndex    :: Signal dom (Index NumLayers)
+  , ready         :: Signal dom Bool
+  , logitsValid   :: Signal dom Bool
+  , attnDone      :: Signal dom Bool
+  , qkvDone       :: Signal dom Bool
+  , ffnDone       :: Signal dom Bool
+  , writeDone     :: Signal dom Bool
+  , inputToken    :: Signal dom Token
+  , selectedToken :: Signal dom Token
+  , feedbackToken :: Signal dom Token
+  , embeddingNorm :: Signal dom FixedPoint
+  , outputNorm    :: Signal dom FixedPoint
+  } deriving (Generic, NFDataX)
 
 transformer :: forall dom
    . HiddenClockResetEnable dom
@@ -39,23 +56,33 @@ transformer :: forall dom
   -> Signal dom Bool            -- ^ inputTokenValid (True while external prompt is used)
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token , Signal dom Bool )
+  -> ( Signal dom Token
+      , Signal dom Bool
+      , TransformerIntrospection dom -- ^ introspection signals
+     )
 transformer decoder inputToken inputTokenValid temperature seed =
-  ( selectedToken, readyPulse)
+  ( selectedToken, readyPulse, introspection)
  where
   vocabulary :: MatI8E VocabularySize ModelDimension
   vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
-
-  pipelineController :: PipelineController.PipelineOutputs dom
+  
   pipelineController =
-    PipelineController.runPipelineController 
-      attnDoneThisLayer 
-      writeDoneThisLayer 
-      qkvDoneThisLayer    -- Changed from s1DoneThisLayer
+    PipelineController.runPipelineController
+      attnDoneThisLayer
+      writeDoneThisLayer
+      qkvDoneThisLayer
+      ffnDoneThisLayer
+      logitsValid
       inputTokenValid
+
+  -- Sequential classifier starts when last layer FFN completes
+  lastLayerFfnDone = 
+    ((processingStage <$> processingState) .==. pure Stage4_FeedForward) .&&.
+    ((processingLayer <$> processingState) .==. pure maxBound) .&&.
+    ffnDoneThisLayer
 
   layerIndex :: Signal dom (Index NumLayers)
   layerIndex = PipelineController.layerIndex pipelineController
@@ -66,11 +93,20 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
-  tokenSample :: Signal dom Token
-  tokenSample = PRNG.tokenSampler readyPulse temperature seed decoder nextLayerData
+  -- Extract final layer output (updated by ffnValidOut at Stage4)
+  finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
+  finalLayerOutput = feedForwardOutput <$> nextLayerData
 
+  (logits, logitsValid, _) =
+    transformerLogitsSeq lastLayerFfnDone (pure True) decoder finalLayerOutput
+
+  -- keep 
+  tokenSampleSeq :: Signal dom Token
+  tokenSampleSeq = PRNG.tokenSamplerFromLogits logitsValid temperature seed logits
+
+  -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
-  feedbackToken = regEn 0 readyPulse tokenSample
+  feedbackToken = regEn 0 logitsValid tokenSampleSeq
 
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken
@@ -89,12 +125,12 @@ transformer decoder inputToken inputTokenValid temperature seed =
     | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
-  selectedInput = liftA3 layerInputSelector processingState layerDataRegister tokenEmbedding
+  selectedInput = layerInputSelector <$> processingState <*> layerDataRegister <*> tokenEmbedding
 
   (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
 
-  -- Unpack the three completion signals
-  (writeDone, attnDone, qkvDone) = unzip3 doneFlags
+  -- Unpack the completion signals
+  (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
 
   writeDoneThisLayer :: Signal dom Bool
   writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex
@@ -102,9 +138,35 @@ transformer decoder inputToken inputTokenValid temperature seed =
   attnDoneThisLayer :: Signal dom Bool
   attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> layerIndex
 
-  -- NEW: Select QKV done signal for current layer
   qkvDoneThisLayer :: Signal dom Bool
   qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> layerIndex
+
+  ffnDoneThisLayer :: Signal dom Bool
+  ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> layerIndex
+
+  -- Lightweight vector diagnostics (sum of abs values)
+  embeddingNorm :: Signal dom FixedPoint
+  embeddingNorm = sum . map abs <$> tokenEmbedding
+
+  outputNorm :: Signal dom FixedPoint
+  outputNorm = sum . map abs <$> finalLayerOutput
+
+  introspection :: TransformerIntrospection dom
+  introspection = TransformerIntrospection
+    { state         = processingState
+    , layerIndex
+    , ready         = readyPulse
+    , logitsValid
+    , attnDone      = attnDoneThisLayer
+    , qkvDone       = qkvDoneThisLayer
+    , ffnDone       = ffnDoneThisLayer
+    , writeDone     = writeDoneThisLayer
+    , inputToken
+    , selectedToken
+    , feedbackToken
+    , embeddingNorm
+    , outputNorm
+    }
 
 pipelineProcessor :: forall dom
    . HiddenClockResetEnable dom
@@ -126,19 +188,20 @@ layerProcessor :: forall dom
   => Signal dom ProcessingState
   -> Signal dom LayerData
   -> (Index NumLayers, TransformerLayerComponent)
-  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool, Signal dom Bool))
+  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
 layerProcessor processingState currentLayerData (layerIndex, layerComp) =
   let
-    -- transformerLayer now returns 5 outputs (including qkvDone)
-    (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention) =
+    (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention, qkvReady, ffnDone) =
       TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
 
-    selectedLayerData =
-      liftA4 (layerDataSelector layerIndex) processingState currentLayerData layerData layerDataAfterAttention
-
+    selectedLayerData = layerDataSelector layerIndex <$>
+              processingState
+              <*> currentLayerData
+              <*> layerData
+              <*> layerDataAfterAttention
   in
     -- Return all three completion signals
-    (selectedLayerData, (writeDone, attnDone, qkvDone))
+    (selectedLayerData, (writeDone, attnDone, qkvDone, qkvReady, ffnDone))
 
 layerDataSelector :: Index NumLayers
                   -> ProcessingState
