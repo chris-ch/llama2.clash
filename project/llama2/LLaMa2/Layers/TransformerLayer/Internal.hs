@@ -12,75 +12,80 @@ import LLaMa2.Numeric.ParamPack (MatI8E)
 data FSMState = IDLE | REQUESTING | PROJECTING | DONE
   deriving (Eq, Show, Generic, NFDataX)
 
-{- Ready/Valid Handshaking Protocol:
-   
-   REQUESTING: We have data and are asserting woValidIn, waiting for woReadyOut
-   PROJECTING: Multiplier accepted our data (handshake occurred), waiting for result
--}
+{-|
+  Ready/Valid Handshaking Protocol with internal backpressure control:
 
+  • IDLE: Waiting for new input (validIn && readyOut)
+  • REQUESTING: Sending request to multiplier until it accepts (woReadyOut)
+  • PROJECTING: Multiplier is computing. We assert woReadyIn based on downstream readiness.
+  • DONE: Output is valid, waiting to be consumed.
+-}
 singleHeadController :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool                              -- validIn (head done signal)
   -> Signal dom (Vec HeadDimension FixedPoint)    -- head vector
-  -> MatI8E ModelDimension HeadDimension         -- WO matrix
+  -> MatI8E ModelDimension HeadDimension          -- WO matrix
   -> ( Signal dom (Vec ModelDimension FixedPoint) -- projected output
-     , Signal dom Bool                             -- validOut
-     , Signal dom Bool                             -- readyOut (can accept new head)
+     , Signal dom Bool                            -- validOut
+     , Signal dom Bool                            -- readyOut (can accept new head)
      )
 singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
   where
-    -- State machine
+    -- === FSM State ===
     state :: Signal dom FSMState
     state = register IDLE nextState
-    
-    -- Handshake conditions
-    upstreamHandshake = validIn .&&. readyOut          -- We accept input
-    multiplierRequestHandshake = woValidIn .&&. woReadyOut  -- Multiplier accepts request
-    multiplierResultHandshake = woValidOut .&&. woReadyIn   -- We accept result
-    
-    -- State transitions
+
+    -- === Handshakes ===
+    upstreamHandshake         = validIn .&&. readyOut
+    multiplierRequestHandshake = woValidIn .&&. woReadyOut
+    multiplierResultHandshake  = woValidOut .&&. internalReady  -- now uses internal backpressure
+
+    -- === State Transition Logic ===
     nextState = transition <$> state 
                 <*> upstreamHandshake 
                 <*> multiplierRequestHandshake 
                 <*> multiplierResultHandshake
-    
+
     transition :: FSMState -> Bool -> Bool -> Bool -> FSMState
     transition IDLE upHS _ _ 
-      | upHS      = REQUESTING     -- Got new input, need to send to multiplier
+      | upHS      = REQUESTING
       | otherwise = IDLE
-    
+
     transition REQUESTING _ reqHS _
-      | reqHS     = PROJECTING     -- Multiplier accepted, now waiting for result
-      | otherwise = REQUESTING     -- Keep requesting until multiplier ready
-    
+      | reqHS     = PROJECTING
+      | otherwise = REQUESTING
+
     transition PROJECTING _ _ resHS
-      | resHS     = DONE           -- Got result
-      | otherwise = PROJECTING     -- Still computing
-    
-    transition DONE _ _ _ = IDLE   -- Output consumed, back to idle
-    
-    -- Ready to accept new input only when IDLE
+      | resHS     = DONE
+      | otherwise = PROJECTING
+
+    transition DONE _ _ _ = IDLE
+
+    -- === Ready signals ===
     readyOut :: Signal dom Bool
     readyOut = (==) <$> state <*> pure IDLE
-    
-    -- Latch input vector when we accept it
+
+    -- === Input latch ===
     latchedVector :: Signal dom (Vec HeadDimension FixedPoint)
     latchedVector = regEn (repeat 0) upstreamHandshake headVector
-    
-    -- Assert woValidIn when in REQUESTING state
+
+    -- === Multiplier interface ===
     woValidIn :: Signal dom Bool
     woValidIn = (==) <$> state <*> pure REQUESTING
-    
-    -- Ready to accept multiplier result when in PROJECTING state
-    woReadyIn :: Signal dom Bool
-    woReadyIn = (==) <$> state <*> pure PROJECTING
-    
-    -- Call the matrix multiplier
-    (woResult, woValidOut, woReadyOut) = matrixMultiplier woValidIn woReadyIn woMatrix latchedVector
-    
-    -- Latch result when we accept it
+
+    -- Internal backpressure: allow multiplier progress if computing OR consumer ready
+    internalReady :: Signal dom Bool
+    internalReady = mux (state .==. pure PROJECTING)
+                        (pure True)   -- while computing, proceed freely
+                        readyOut      -- when done, only accept if consumer ready
+
+    -- Connect to matrix multiplier
+    (woResult, woValidOut, woReadyOut) =
+      matrixMultiplier woValidIn internalReady woMatrix latchedVector
+
+    -- === Output latch and valid signal ===
+    projOut :: Signal dom (Vec ModelDimension FixedPoint)
     projOut = regEn (repeat 0) multiplierResultHandshake woResult
-    
-    -- Valid output when in DONE state
+
     validOut :: Signal dom Bool
     validOut = (==) <$> state <*> pure DONE
