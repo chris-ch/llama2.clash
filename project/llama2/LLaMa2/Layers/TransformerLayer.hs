@@ -101,7 +101,7 @@ transformerLayer layer layerIndex processingState layerData =
         initHeadDone    = repeat (pure False)
         initWriteDone   = repeat (pure False)
     in  foldl
-          (fillOneBank layerIndex processingState layerData)
+          (fillOneBank layerIndex processingState layerData qkvDone)
           (initHeadOutputs, initHeadDone, initWriteDone)
           indicesI
 
@@ -415,6 +415,7 @@ fillOneBank ::
   => Index NumLayers
   -> Signal dom ProcessingState
   -> Signal dom LayerData
+  -> Signal dom Bool  -- FIX: Add qkvValid parameter
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
@@ -422,7 +423,7 @@ fillOneBank ::
   -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
      , Vec NumQueryHeads (Signal dom Bool)
      , Vec NumKeyValueHeads (Signal dom Bool) )
-fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
+fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   let
     stageEquals st =
       liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
@@ -447,7 +448,8 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    (wrPulse, wrDonePulse) = Cache.writeOnce isStage2Write
+    -- FIX: Gate write pulse with qkvValid to ensure data is ready
+    (wrPulse, wrDonePulse) = Cache.writeOnce (isStage2Write .&&. qkvValid)
 
     wrKVRowK = mux wrPulse (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
     wrKVRowV = mux wrPulse (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
