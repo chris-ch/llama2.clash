@@ -23,9 +23,24 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer (Transformer
                  , PortName "seed"
                  ]
     , t_output = PortProduct ""
-                   [ PortName "out_token"
-                   , PortName "ready_pulse"
-                   ]
+        [ PortName "out_token"
+        , PortName "ready_pulse"
+        , PortProduct "introspect"
+            [ PortName "state"           -- ProcessingState (sum type encoded)
+            , PortName "layerIndex"
+            , PortName "ready"
+            , PortName "logitsValid"
+            , PortName "attnDone"
+            , PortName "qkvDone"
+            , PortName "ffnDone"
+            , PortName "writeDone"
+            , PortName "inputToken"
+            , PortName "selectedToken"
+            , PortName "feedbackToken"
+            , PortName "embeddingNorm"
+            , PortName "outputNorm"
+            ]
+        ]
     }) #-}
 topEntity
   :: Clock System
