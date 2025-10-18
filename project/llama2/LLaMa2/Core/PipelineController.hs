@@ -56,14 +56,33 @@ runPipelineController
   attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer 
   ffnDoneThisLayer classifierDone inputTokenValid downstreamReady = outs
  where
-  advance s done = if done then nextProcessingState s else s
-  procState = register initialProcessingState (advance <$> procState <*> stageFinishedSig)
+  -- FIX: Add stage-to-stage readiness tracking
+  stage2Ready = pure True  -- Stage2 (write) is always ready
+  stage3Ready = pure True  -- Stage3 (attend) is always ready
+  stage4Ready = pure True  -- Stage4 (FFN) has internal FSM
+  
+  -- Stage1 can advance when Stage2 is ready to accept
+  stage1CanAdvance = stage2Ready
+  
+  -- Stage2 can advance when Stage3 is ready
+  stage2CanAdvance = stage3Ready
+  
+  -- Stage3 can advance when Stage4 is ready  
+  stage3CanAdvance = stage4Ready
+  
+  -- Stage4 can advance when next layer/classifier is ready
+  stage4CanAdvance = mux ((processingLayer <$> procState) .==. pure maxBound)
+                         (pure True)  -- Last layer -> classifier always ready for now
+                         (pure True)  -- Next layer Stage1 always ready
+  
+  advance s done canAdvance = if done && canAdvance then nextProcessingState s else s
+  procState = register initialProcessingState 
+    (advance <$> procState <*> stageFinishedSig <*> stageCanAdvance)
 
   stageSig = processingStage <$> procState
   layerIx  = processingLayer <$> procState
   posIx    = sequencePosition <$> procState
 
-  -- readyPulse: one-cycle pulse when the last layer's FFN asserts done
   isStage st = (== st) <$> stageSig
 
   isFirstStage :: ProcessingState -> Bool
@@ -73,21 +92,32 @@ runPipelineController
 
   atFirstStage1 = isFirstStage <$> procState
 
-  -- Stage completion depends on both internal completion AND downstream readiness
+  -- Stage completion includes downstream readiness checks
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
         (mux atFirstStage1
              (inputTokenValid .&&. qkvValidThisLayer)
-             qkvValidThisLayer) $
-    mux (isStage Stage2_WriteKV)    writeDoneThisLayer $
-    mux (isStage Stage3_Attend)     attnDoneThisLayer $
-    mux (isStage Stage4_FeedForward) ffnDoneThisLayer $
+             (qkvValidThisLayer .&&. stage1CanAdvance)) $
+    mux (isStage Stage2_WriteKV)    
+        (writeDoneThisLayer .&&. stage2CanAdvance) $
+    mux (isStage Stage3_Attend)     
+        (attnDoneThisLayer .&&. stage3CanAdvance) $
+    mux (isStage Stage4_FeedForward) 
+        (ffnDoneThisLayer .&&. stage4CanAdvance) $
     mux (isStage Stage5_Classifier)  
-        (classifierDone .&&. downstreamReady) $  -- FIX: Check downstream
+        (classifierDone .&&. downstreamReady) $
     mux (isStage Stage6_Bookkeeping) (pure True) $
     pure False
 
-  -- FIX: Ready pulse only when downstream accepts
+  -- Determine if current stage can advance based on downstream
+  stageCanAdvance =
+    mux (isStage Stage1_ProjectQKV) stage1CanAdvance $
+    mux (isStage Stage2_WriteKV)    stage2CanAdvance $
+    mux (isStage Stage3_Attend)     stage3CanAdvance $
+    mux (isStage Stage4_FeedForward) stage4CanAdvance $
+    mux (isStage Stage5_Classifier)  downstreamReady $
+    pure True
+
   readyPulseRaw =
     let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone .&&. downstreamReady
         rising now prev = now && not prev
