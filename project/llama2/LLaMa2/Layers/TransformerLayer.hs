@@ -45,6 +45,7 @@ data TransformerDecoderComponent = TransformerDecoderComponent
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
+-- BASELINE: Original working code
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
@@ -56,7 +57,7 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool           -- qkvDone
      , Signal dom LayerData      -- layerDataAfterAttention
      , Signal dom Bool           -- qkvInReady
-     , Signal dom Bool           -- ffnDone  (CHANGED: now equals ffnValidOut)
+     , Signal dom Bool           -- ffnDone
      )
 transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData
@@ -65,13 +66,13 @@ transformerLayer layer layerIndex processingState layerData =
   , qkvDone
   , layerDataAfterAttention
   , qkvInReady
-  , ffnValidOut  -- CHANGED: was 'pure True'
+  , ffnValidOut
   )
  where
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
-  -- === Stage1: QKV Projection with Handshaking (sequential controller) ===
+  -- === Stage1: QKV Projection (ORIGINAL) ===
   isFirstStage :: ProcessingState ->  Bool
   isFirstStage ps= processingStage ps == Stage1_ProjectQKV
                   && processingLayer ps == layerIndex
@@ -92,7 +93,7 @@ transformerLayer layer layerIndex processingState layerData =
   qkvDone :: Signal dom Bool
   qkvDone = qkvValidOut
 
-  -- === Stage2/3: KV Cache and Attention (unchanged) ===
+  -- === Stage2/3: KV Cache and Attention (ORIGINAL) ===
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     let initHeadOutputs = repeat (pure (repeat 0))
         initHeadDone    = repeat (pure False)
@@ -111,7 +112,7 @@ transformerLayer layer layerIndex processingState layerData =
   writeDone :: Signal dom Bool
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
-  -- === Per-head WO projection (existing handshake) ===
+  -- === Per-head WO projection (ORIGINAL) ===
   ( perHeadProjected
     , perHeadValidOuts
     , perHeadReadyOuts
@@ -141,7 +142,7 @@ transformerLayer layer layerIndex processingState layerData =
     let prevReady = register False validProjected
     in validProjected .&&. (not <$> prevReady)
 
-  -- === Stage4: Sequential FFN with handshaking ===
+  -- === Stage4: Sequential FFN (ORIGINAL) ===
   isStage4 :: ProcessingState -> Bool
   isStage4 ps  = processingStage ps == Stage4_FeedForward
                   && processingLayer ps == layerIndex
@@ -157,7 +158,7 @@ transformerLayer layer layerIndex processingState layerData =
 
   ( ffnOutput
     , ffnValidOut
-    , _ffnInReady
+    , ffnInReady
     ) = ffnController
           isStage4ThisLayer
           ffnOutReady
@@ -183,7 +184,7 @@ transformerLayer layer layerIndex processingState layerData =
                                    <*> xAfterAttn
                                    <*> attentionDone
 
--- Helper function to update LayerData with FFN output
+-- Original controllers from the working version
 layerDataWithFFN :: Index NumLayers
   -> ProcessingState
   -> LayerData
@@ -200,20 +201,19 @@ layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
         then withAttn { feedForwardOutput = ffnOut }
         else withAttn
 
--- FFN Controller (similar to QKV controller)
 data FFNState = FFNIdle | FFNComputing | FFNDone
   deriving (Show, Eq, Generic, NFDataX)
 
 ffnController ::
   forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool  -- ^ inValid (Stage4 active for this layer)
-  -> Signal dom Bool  -- ^ outReady (consumer accepts result)
-  -> Signal dom (Vec ModelDimension FixedPoint)  -- ^ input vector
+  => Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec ModelDimension FixedPoint)
   -> FeedForwardNetworkComponentQ
   -> ( Signal dom (Vec ModelDimension FixedPoint)
-     , Signal dom Bool  -- ^ outValid
-     , Signal dom Bool  -- ^ inReady
+     , Signal dom Bool
+     , Signal dom Bool
      )
 ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
   where
@@ -240,14 +240,18 @@ ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
               (mux ffnSeqValid (pure FFNDone) (pure FFNComputing))
               (mux consume (pure FFNIdle) (pure FFNDone)))
 
-    -- Enable computation when starting OR already computing
     computeEnable = startTx .||. (state .==. pure FFNComputing)
 
-    -- Call sequential FFN
+    -- STEP 2: Pass through ready signal to internal multipliers
+    -- FFN can proceed when either computing or consumer is ready
+    internalReady = mux (state .==. pure FFNComputing)
+                        (pure True)           -- During computation, internal stages always proceed
+                        outReady              -- When done, wait for consumer
+
     (result, ffnSeqValid, _ffnSeqReady) =
       FeedForwardNetwork.feedForwardStage
         computeEnable
-        (pure True)  -- Always ready during computation (we control with FSM)
+        internalReady     -- CHANGED: was (pure True)
         ffnQ
         inputVec
 
@@ -257,16 +261,16 @@ data QKVState = QKVIdle | QKVComputing | QKVDone
 qkvProjectionController ::
   forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool  -- ^ inValid   (Stage1 active for this layer)
-  -> Signal dom Bool  -- ^ outReady  (consumer accepts result)
+  => Signal dom Bool
+  -> Signal dom Bool
   -> Signal dom LayerData
   -> MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Signal dom Bool  -- ^ outValid
-     , Signal dom Bool  -- ^ inReady
+     , Signal dom Bool
+     , Signal dom Bool
      )
 qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, inReady)
   where
@@ -290,54 +294,52 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, i
       mux (state .==. pure QKVIdle)
           (mux startTx (pure QKVComputing) (pure QKVIdle))
           (mux (state .==. pure QKVComputing)
-              -- KEY FIX: Wait for matVecValid (all heads done)
               (mux matVecValid (pure QKVDone) (pure QKVComputing))
               (mux consume (pure QKVIdle) (pure QKVDone)))
 
-    -- Enable computation when starting OR already computing
-    -- This keeps the multipliers running until they all complete
     computeEnable = startTx .||. (state .==. pure QKVComputing)
+
+    -- STEP 2: Pass through ready signal to internal multipliers
+    -- QKV can proceed when either computing or consumer is ready
+    internalReady = mux (state .==. pure QKVComputing)
+                        (pure True)           -- During computation, internal stages always proceed
+                        outReady              -- When done, wait for consumer
 
     (result, matVecValid, _matVecReady) =
       projectQKV
-        computeEnable              -- validIn: pulse to start, then hold
-        (pure True)                -- readyIn: always ready (we control with FSM)
+        computeEnable
+        internalReady     -- CHANGED: was (pure True)
         mhaQ
         (sequencePosition <$> psSig)
         (inputVector <$> idSig)
 
--- Per-head WO projection with proper handshaking
 perHeadWOController ::
   forall dom .
   HiddenClockResetEnable dom
-  => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))  -- head outputs
-  -> Vec NumQueryHeads (Signal dom Bool)                            -- head done flags
-  -> Vec NumQueryHeads (MatI8E ModelDimension HeadDimension)      -- WO matrices
+  => Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+  -> Vec NumQueryHeads (Signal dom Bool)
+  -> Vec NumQueryHeads (MatI8E ModelDimension HeadDimension)
   -> ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom Bool)  -- validOuts
-     , Vec NumQueryHeads (Signal dom Bool)  -- readyOuts
+     , Vec NumQueryHeads (Signal dom Bool)
+     , Vec NumQueryHeads (Signal dom Bool)
      )
 perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
-  (perHeadProjected
-  , perHeadValidOuts
-  , perHeadReadyOuts
-  )
+  (perHeadProjected, perHeadValidOuts, perHeadReadyOuts)
   where
-
     headValidIn = zipWith (.&&.) perHeadDoneFlags perHeadReadyOuts
 
-    -- For each head: create a controller that starts WO projection when head completes
     perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
 
-    -- Unpack results
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
 
+-- Helper functions
 kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
-kvWriteDoneCond layerIndex state banksDone = processingStage state == Stage2_WriteKV
-      && processingLayer state == layerIndex
-      && banksDone
+kvWriteDoneCond layerIndex state banksDone = 
+  processingStage state == Stage2_WriteKV
+  && processingLayer state == layerIndex
+  && banksDone
 
 inputsAggregator :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 inputsAggregator layerData = zipWith (+) (inputVector layerData)
@@ -349,11 +351,11 @@ layerDataAttnDone :: Index NumLayers
   -> Bool
   -> LayerData
 layerDataAttnDone layerIndex stage cur attOut attnDone =
-        if processingLayer stage == layerIndex
-          && processingStage stage == Stage3_Attend
-          && attnDone
-          then cur { attentionOutput = attOut }
-          else cur
+  if processingLayer stage == layerIndex
+    && processingStage stage == Stage3_Attend
+    && attnDone
+    then cur { attentionOutput = attOut }
+    else cur
 
 updateLayerDataForStage ::
   Index NumLayers
@@ -370,7 +372,6 @@ updateLayerDataForStage layerIndex ps idata (qs, ks, vs)
         idata { queryVectors = qs, keyVectors = ks, valueVectors = vs }
       _ -> idata
 
--- Query heads per KV head
 queryHeadsPerKeyValueHead :: Int
 queryHeadsPerKeyValueHead = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
 
@@ -384,11 +385,14 @@ queryHeadIndex0 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex0 kvIx = toEnum (min maxQueryHeadIndex (baseQueryIndex kvIx))
 
 hasSecondQueryHead :: Index NumKeyValueHeads -> Bool
-hasSecondQueryHead kvIx = queryHeadsPerKeyValueHead >= 2 && (baseQueryIndex kvIx + 1 <= maxQueryHeadIndex)
+hasSecondQueryHead kvIx = 
+  queryHeadsPerKeyValueHead >= 2 && (baseQueryIndex kvIx + 1 <= maxQueryHeadIndex)
 
 queryHeadIndex1 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex1 kvIx =
-  if hasSecondQueryHead kvIx then toEnum (baseQueryIndex kvIx + 1) else queryHeadIndex0 kvIx
+  if hasSecondQueryHead kvIx 
+    then toEnum (baseQueryIndex kvIx + 1) 
+    else queryHeadIndex0 kvIx
 
 getQueryVector :: Signal dom LayerData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getQueryVector idSig qIx = (\i -> queryVectors i !! qIx) <$> idSig
@@ -437,17 +441,16 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
     keyVec   = getKeyVector   idSig kvIx
     valueVec = getValueVector idSig kvIx
 
-    -- Single write pulse per Stage2 entry
     (wrPulse, wrDonePulse) = Cache.writeOnce isStage2Write
 
     wrKVRowK = mux wrPulse (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
     wrKVRowV = mux wrPulse (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
 
     (kRowA, _kRowB) =
-          runTdpRam tAddrRow
-                    (pure Nothing)
-                    seqPosSignal
-                    wrKVRowK
+      runTdpRam tAddrRow
+                (pure Nothing)
+                seqPosSignal
+                wrKVRowK
 
     (vRowA, _vRowB) =
       runTdpRam tAddrRow
@@ -476,16 +479,14 @@ fillOneBank layerIndex psSig idSig (headOutAcc, headDoneAcc, writeDoneAcc) kvIx 
 attentionRowSequencer ::
   forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool                  -- ^ clearS3 (stage 3 entry pulse)
-  -> Signal dom Bool                  -- ^ isStage3Attention
-  -> Signal dom (Index SequenceLength) -- ^ seqPosSignal
-  -> ( Signal dom (Index SequenceLength)  -- tAddrRow
-     , Signal dom Bool                   -- stepEnRow
-     , Signal dom Bool )                 -- lastTRow
+  => Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Index SequenceLength)
+  -> ( Signal dom (Index SequenceLength)
+     , Signal dom Bool
+     , Signal dom Bool )
 attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
   let
-    -- === Step 1: manage row counter ===
-    -- Reset to 0 on Stage3 entry
     rowCounter :: Signal dom (Index SequenceLength)
     rowCounter = mealy rowCounterT 0 (bundle (clearS3, isStage3Attention, seqPosSignal))
 
@@ -499,14 +500,12 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
         tNext  = if not step || isLast then tStart else succ tStart
       in (tNext, tStart)
 
-    -- === Step 2: detect step enable ===
     stepNow :: Signal dom Bool
     stepNow = const <$> isStage3Attention <*> rowCounter
 
     stepEnRow :: Signal dom Bool
     stepEnRow = register False stepNow
 
-    -- === Step 3: detect last row ===
     lastNow :: Signal dom Bool
     lastNow = (==) <$> rowCounter <*> seqPosSignal
 
