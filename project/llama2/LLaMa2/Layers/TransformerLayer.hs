@@ -79,8 +79,11 @@ transformerLayer layer layerIndex processingState layerData =
   isStage1ThisLayer :: Signal dom Bool
   isStage1ThisLayer = isFirstStage <$> processingState
 
+  -- Ready signals should indicate downstream capacity, not stage negation
+  -- QKV can output when Stage2 (write) is ready to accept
   qkvOutReady :: Signal dom Bool
-  qkvOutReady = not <$> isStage1ThisLayer
+  qkvOutReady = (\ps -> processingStage ps == Stage2_WriteKV 
+                     && processingLayer ps == layerIndex) <$> processingState
 
   ( qkvProjected, qkvValidOut, qkvInReady) = qkvProjectionController
           isStage1ThisLayer
@@ -152,8 +155,16 @@ transformerLayer layer layerIndex processingState layerData =
   ffnInput :: Signal dom (Vec ModelDimension FixedPoint)
   ffnInput = attentionOutput <$> layerDataAfterAttention
 
-  ffnOutReady :: Signal dom Bool
-  ffnOutReady = not <$> isStage4ThisLayer
+  -- FFN can output when next layer or classifier is ready
+  ffnOutReady :: Signal dom Bool  
+  ffnOutReady = (\ps -> 
+    case () of
+      _ | processingStage ps == Stage1_ProjectQKV && 
+          processingLayer ps == layerIndex + 1 -> True  -- Next layer ready
+        | processingStage ps == Stage5_Classifier &&
+          processingLayer ps == maxBound -> True         -- Classifier ready
+        | otherwise -> False
+    ) <$> processingState
 
   ( ffnOutput
     , ffnValidOut
@@ -293,16 +304,17 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, i
 
     computeEnable = startTx .||. (state .==. pure QKVComputing)
 
-    -- STEP 2: Pass through ready signal to internal multipliers
-    -- QKV can proceed when either computing or consumer is ready
+    -- Internal ready should propagate actual downstream state
+    -- When done (QKVDone), wait for outReady before accepting new input
+    -- When computing, allow pipeline to proceed
     internalReady = mux (state .==. pure QKVComputing)
-                        (pure True)           -- During computation, internal stages always proceed
-                        outReady              -- When done, wait for consumer
-
+                        (pure True)     -- Free-run during computation
+                        outReady        -- Respect backpressure when done
+    
     (result, matVecValid, _matVecReady) =
       projectQKV
         computeEnable
-        internalReady     -- CHANGED: was (pure True)
+        internalReady   -- propagate backpressure
         mhaQ
         (sequencePosition <$> psSig)
         (inputVector <$> idSig)
