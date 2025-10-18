@@ -45,7 +45,6 @@ data TransformerDecoderComponent = TransformerDecoderComponent
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
--- BASELINE: Original working code
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
@@ -72,7 +71,7 @@ transformerLayer layer layerIndex processingState layerData =
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
-  -- === Stage1: QKV Projection (ORIGINAL) ===
+  -- === Stage1: QKV Projection ===
   isFirstStage :: ProcessingState ->  Bool
   isFirstStage ps= processingStage ps == Stage1_ProjectQKV
                   && processingLayer ps == layerIndex
@@ -93,7 +92,7 @@ transformerLayer layer layerIndex processingState layerData =
   qkvDone :: Signal dom Bool
   qkvDone = qkvValidOut
 
-  -- === Stage2/3: KV Cache and Attention (ORIGINAL) ===
+  -- === Stage2/3: KV Cache and Attention ===
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     let initHeadOutputs = repeat (pure (repeat 0))
         initHeadDone    = repeat (pure False)
@@ -112,7 +111,7 @@ transformerLayer layer layerIndex processingState layerData =
   writeDone :: Signal dom Bool
   writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
-  -- === Per-head WO projection (ORIGINAL) ===
+  -- === Per-head WO projection ===
   ( perHeadProjected
     , perHeadValidOuts
     , perHeadReadyOuts
@@ -142,7 +141,7 @@ transformerLayer layer layerIndex processingState layerData =
     let prevReady = register False validProjected
     in validProjected .&&. (not <$> prevReady)
 
-  -- === Stage4: Sequential FFN (ORIGINAL) ===
+  -- === Stage4: Sequential FFN ===
   isStage4 :: ProcessingState -> Bool
   isStage4 ps  = processingStage ps == Stage4_FeedForward
                   && processingLayer ps == layerIndex
@@ -184,7 +183,6 @@ transformerLayer layer layerIndex processingState layerData =
                                    <*> xAfterAttn
                                    <*> attentionDone
 
--- Original controllers from the working version
 layerDataWithFFN :: Index NumLayers
   -> ProcessingState
   -> LayerData
