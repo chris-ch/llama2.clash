@@ -207,32 +207,25 @@ data FFNState = FFNIdle | FFNComputing | FFNDone
 ffnController ::
   forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom (Vec ModelDimension FixedPoint)
-  -> FeedForwardNetworkComponentQ
-  -> ( Signal dom (Vec ModelDimension FixedPoint)
-     , Signal dom Bool
-     , Signal dom Bool
+  => Signal dom Bool                              -- inValid (FFN input valid)
+  -> Signal dom Bool                              -- outReady (downstream ready)
+  -> Signal dom (Vec ModelDimension FixedPoint)   -- input vector
+  -> FeedForwardNetworkComponentQ                 -- FFN quantized params
+  -> ( Signal dom (Vec ModelDimension FixedPoint) -- result
+     , Signal dom Bool                            -- validOut
+     , Signal dom Bool                            -- inReady
      )
 ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
   where
+    -- === FSM ===
     state :: Signal dom FFNState
     state = register FFNIdle nextState
 
-    inReady :: Signal dom Bool
-    inReady = state .==. pure FFNIdle
-
-    startTx :: Signal dom Bool
-    startTx = inValid .&&. inReady
-
-    outValid :: Signal dom Bool
+    inReady  = state .==. pure FFNIdle
+    startTx  = inValid .&&. inReady
     outValid = state .==. pure FFNDone
+    consume  = outValid .&&. outReady
 
-    consume :: Signal dom Bool
-    consume = outValid .&&. outReady
-
-    nextState :: Signal dom FFNState
     nextState =
       mux (state .==. pure FFNIdle)
           (mux startTx (pure FFNComputing) (pure FFNIdle))
@@ -240,18 +233,21 @@ ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
               (mux ffnSeqValid (pure FFNDone) (pure FFNComputing))
               (mux consume (pure FFNIdle) (pure FFNDone)))
 
+    -- === Compute enable + internal ready ===
+    computeEnable :: Signal dom Bool
     computeEnable = startTx .||. (state .==. pure FFNComputing)
 
-    -- STEP 2: Pass through ready signal to internal multipliers
-    -- FFN can proceed when either computing or consumer is ready
+    -- Allow FFN internal pipeline to run only when computing or consumer ready
+    internalReady :: Signal dom Bool
     internalReady = mux (state .==. pure FFNComputing)
-                        (pure True)           -- During computation, internal stages always proceed
-                        outReady              -- When done, wait for consumer
+                        (pure True)     -- during compute, internal pipeline free-runs
+                        outReady        -- when done, wait until consumer ready
 
+    -- === Call FFN core ===
     (result, ffnSeqValid, _ffnSeqReady) =
       FeedForwardNetwork.feedForwardStage
         computeEnable
-        internalReady     -- CHANGED: was (pure True)
+        internalReady   -- backpressure-aware signal
         ffnQ
         inputVec
 
