@@ -42,16 +42,19 @@ data PipelineOutputs dom = PipelineOutputs
   , stageFinished     :: Signal dom Bool
   }
 
-runPipelineController
-  :: HiddenClockResetEnable dom
-  => Signal dom Bool     -- ^ attnDoneThisLayer (Stage3)
-  -> Signal dom Bool     -- ^ writeDoneThisLayer (Stage2)
-  -> Signal dom Bool     -- ^ qkvValidThisLayer (Stage1 completion)
-  -> Signal dom Bool     -- ^ ffnDoneThisLayer (Stage4 completion)
-  -> Signal dom Bool     -- ^ classifierDone
-  -> Signal dom Bool     -- ^ inputTokenValid
+runPipelineController ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ attnDoneThisLayer
+  -> Signal dom Bool  -- ^ writeDoneThisLayer  
+  -> Signal dom Bool  -- ^ qkvValidThisLayer
+  -> Signal dom Bool  -- ^ ffnDoneThisLayer
+  -> Signal dom Bool  -- ^ classifierDone
+  -> Signal dom Bool  -- ^ inputTokenValid
+  -> Signal dom Bool  -- ^ downstreamReady (external consumer ready)
   -> PipelineOutputs dom
-runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffnDoneThisLayer classifierDone inputTokenValid = outs
+runPipelineController 
+  attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer 
+  ffnDoneThisLayer classifierDone inputTokenValid downstreamReady = outs
  where
   advance s done = if done then nextProcessingState s else s
   procState = register initialProcessingState (advance <$> procState <*> stageFinishedSig)
@@ -70,30 +73,31 @@ runPipelineController attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer ffn
 
   atFirstStage1 = isFirstStage <$> procState
 
-  -- Stage completion: unchanged, but now ffnDoneThisLayer is the real FFN validOut
+  -- Stage completion depends on both internal completion AND downstream readiness
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
-         (mux atFirstStage1
-              (inputTokenValid .&&. qkvValidThisLayer)
-              qkvValidThisLayer) $
+        (mux atFirstStage1
+             (inputTokenValid .&&. qkvValidThisLayer)
+             qkvValidThisLayer) $
     mux (isStage Stage2_WriteKV)    writeDoneThisLayer $
     mux (isStage Stage3_Attend)     attnDoneThisLayer $
     mux (isStage Stage4_FeedForward) ffnDoneThisLayer $
-    mux (isStage Stage5_Classifier)  classifierDone $
+    mux (isStage Stage5_Classifier)  
+        (classifierDone .&&. downstreamReady) $  -- FIX: Check downstream
     mux (isStage Stage6_Bookkeeping) (pure True) $
     pure False
 
-  -- readyPulse now fires at end of Classifier stage
+  -- FIX: Ready pulse only when downstream accepts
   readyPulseRaw =
-    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
+    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone .&&. downstreamReady
         rising now prev = now && not prev
     in rising <$> isClassifierDone <*> register False isClassifierDone
 
   outs = PipelineOutputs
-    { processingState = procState
-    , stageSignal     = stageSig
-    , layerIndex      = layerIx
-    , seqPos          = posIx
-    , readyPulse      = readyPulseRaw
-    , stageFinished   = stageFinishedSig
-    }
+      { processingState = procState
+      , stageSignal     = stageSig
+      , layerIndex      = layerIx
+      , seqPos          = posIx
+      , readyPulse      = readyPulseRaw
+      , stageFinished   = stageFinishedSig
+      }

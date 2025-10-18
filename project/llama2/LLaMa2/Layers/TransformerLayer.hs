@@ -333,7 +333,7 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
   (perHeadProjected, perHeadValidOuts, perHeadReadyOuts)
   where
     headValidIn = zipWith (.&&.) perHeadDoneFlags perHeadReadyOuts
-
+    
     perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
 
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults

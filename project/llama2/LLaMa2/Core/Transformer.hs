@@ -69,6 +69,9 @@ transformer decoder inputToken inputTokenValid temperature seed =
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
   
+  downstreamReady :: Signal dom Bool
+  downstreamReady = pure True  -- always ready
+  
   pipelineController =
     PipelineController.runPipelineController
       attnDoneThisLayer
@@ -77,6 +80,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
       ffnDoneThisLayer
       logitsValid
       inputTokenValid
+      downstreamReady
 
   -- Sequential classifier starts when last layer FFN completes
   lastLayerFfnDone = 
