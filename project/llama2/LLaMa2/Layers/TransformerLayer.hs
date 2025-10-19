@@ -138,6 +138,19 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
+  -- NEW: Detect when layer becomes active (rising edge)
+  layerActivePrev = register False layerActive
+  layerStartPulse = layerActive .&&. (not <$> layerActivePrev)
+
+  -- === AUTONOMOUS WIRING PLAN ===
+  -- When complete, stages will be wired as:
+  -- layerActive --> QKV.validIn
+  -- QKV.validOut --> Write.validIn  
+  -- Write.validOut --> Attn.validIn
+  -- Attn.validOut --> FFN.validIn
+  -- FFN.validOut --> layerComplete
+  -- All readyOut signals from downstream stages propagate backward
+
   -- === Stage1: QKV Projection ===
   isStage1ThisLayer = (\ps -> processingStage ps == Stage1_ProjectQKV
                                && processingLayer ps == layerIndex) <$> processingState
@@ -159,6 +172,13 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   initHeadOutputs = repeat (pure (repeat 0))
   initHeadDone    = repeat (pure False)
   initWriteDone   = repeat (pure False)
+
+  -- NEW: Write stage FSM controller (runs alongside old logic)
+  (writeValidOutNew, writeReadyInNew, writeEnableNew) =
+    kvWriteControllerFSM 
+      qkvValidOut           -- validIn: start when QKV completes
+      (pure True)           -- readyOut: always ready for now (will wire to attn)
+      allBanksDone          -- writeComplete: all banks finished writing
 
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     foldl
@@ -242,6 +262,36 @@ data FFNState = FFNIdle | FFNComputing | FFNDone
 
 data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
+
+-- NEW: FSM for KV Write stage
+data WriteState = WriteIdle | WriteWriting | WriteDone
+  deriving (Show, Eq, Generic, NFDataX)
+
+kvWriteControllerFSM ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->  -- validIn (QKV done)
+  Signal dom Bool ->  -- readyOut (Attn ready)
+  Signal dom Bool ->  -- writeComplete (all banks written)
+  ( Signal dom Bool   -- validOut (write done, ready for attn)
+  , Signal dom Bool   -- readyIn (can accept QKV)
+  , Signal dom Bool   -- enableWrite (trigger write)
+  )
+kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
+ where
+  state = register WriteIdle nextState
+  
+  readyIn = state .==. pure WriteIdle
+  startWrite = validIn .&&. readyIn
+  validOut = state .==. pure WriteDone
+  consume = validOut .&&. readyOut
+  
+  nextState = mux (state .==. pure WriteIdle)
+                  (mux startWrite (pure WriteWriting) (pure WriteIdle))
+                  (mux (state .==. pure WriteWriting)
+                      (mux writeComplete (pure WriteDone) (pure WriteWriting))
+                      (mux consume (pure WriteIdle) (pure WriteDone)))
+  
+  enableWrite = startWrite .||. (state .==. pure WriteWriting)
 
 perHeadWOController ::
   forall dom .
