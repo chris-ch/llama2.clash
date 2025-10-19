@@ -252,23 +252,10 @@ layerProcessor psSig validIn readyOut ldIn (layerIndex, layerComp) =
     validOut = ffnDone
     readyIn  = readyOut
 
-    -- Choose correct LayerData for the pipeline
-    selectedLd = layerDataSelector layerIndex <$> psSig <*> ldIn <*> ldNext <*> ldAfterAttn
+    -- MIGRATED: Use newLayerIdx, removed stage check from selector
+    -- Note: We're in a fold, need to get currentLayer from psSig for now
+    selectedLd = mux ((processingLayer <$> psSig) .==. pure layerIndex)
+                     ldNext
+                     ldIn
   in
     (selectedLd, (writeDone, attnDone, qkvDone, qkvInReady, ffnDone), validOut, readyIn)
-
-layerDataSelector :: Index NumLayers
-                  -> ProcessingState
-                  -> LayerData
-                  -> LayerData
-                  -> LayerData
-                  -> LayerData
-layerDataSelector layerIndex state currentData newData stage3Data =
-  let
-    curLayer = processingLayer state
-    curStage = processingStage state
-  in
-    case () of
-      _ | curLayer /= layerIndex       -> currentData
-        | curStage == Stage3_Attend    -> stage3Data
-        | otherwise                    -> newData
