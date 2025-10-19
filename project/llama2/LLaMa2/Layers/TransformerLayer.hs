@@ -114,7 +114,8 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, i
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
-  -> Signal dom ProcessingState
+  -> Signal dom ProcessingState            -- OLD: still passed in
+  -> Signal dom Bool                       -- NEW: layerActive (is this layer currently processing?)
   -> Signal dom LayerData
   -> ( Signal dom LayerData
      , Signal dom Bool           -- writeDone
@@ -124,7 +125,7 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
      , Signal dom Bool           -- qkvInReady
      , Signal dom Bool           -- ffnDone
      )
-transformerLayer layer layerIndex processingState layerData =
+transformerLayer layer layerIndex processingState layerActive layerData =
   ( nextLayerData
   , writeDone
   , attentionDone

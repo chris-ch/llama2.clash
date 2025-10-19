@@ -237,7 +237,10 @@ layerProcessor :: HiddenClockResetEnable dom
      )
 layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerComp) =
   let
-    -- Call transformerLayer with the REAL signature (7 outputs)
+    -- Compute layerActive signal: true when this is the current layer
+    layerActive = currentLayerSig .==. pure layerIndex
+    
+    -- Call transformerLayer with NEW layerActive parameter
     ( ldNext
       , writeDone
       , attnDone
@@ -245,7 +248,7 @@ layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerCom
       , ldAfterAttn
       , qkvInReady
       , ffnDone
-      ) = TransformerLayer.transformerLayer layerComp layerIndex psSig ldIn
+      ) = TransformerLayer.transformerLayer layerComp layerIndex psSig layerActive ldIn
 
     -- Ready/Valid handshake
     validOut = ffnDone
