@@ -111,38 +111,6 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, i
                (sequencePosition <$> psSig)
                (inputVector <$> idSig)
 
--- Writes a single KV pair once per token
-kvWriteController ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->                      -- stage active
-  Signal dom Bool ->                      -- qkvValid
-  Signal dom (Index SequenceLength) ->    -- sequence position
-  Signal dom (Vec HeadDimension FixedPoint) ->  -- key vec
-  Signal dom (Vec HeadDimension FixedPoint) ->  -- value vec
-  ( Signal dom Bool                       -- writePulse
-  , Signal dom Bool )                     -- writeDone
-kvWriteController isStage2 qkvValid seqPos kVec vVec = (wrPulse, wrDone)
- where
-  wrPulse = isStage2 .&&. qkvValid
-  wrDone  = register False wrPulse  -- one-cycle write-done strobe
-
--- Performs sequential attention for one KV bank
-attendController ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->                      -- clear pulse (new token)
-  Signal dom Bool ->                      -- stage active
-  Signal dom (Vec HeadDimension FixedPoint) -> -- query vec
-  Signal dom (Vec HeadDimension FixedPoint) -> -- key row
-  Signal dom (Vec HeadDimension FixedPoint) -> -- value row
-  Signal dom (Index SequenceLength) ->    -- current pos
-  ( Signal dom (Vec HeadDimension FixedPoint)  -- per-head output
-  , Signal dom Bool )                     -- done flag
-attendController clearS3 isStage3 qVec kRow vRow seqPos =
-  attendHead clearS3 stepEn qVec kRow vRow lastRow
- where
-  (tAddrRow, stepEn, lastRow) =
-    attentionRowSequencer clearS3 isStage3 seqPos
-
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
@@ -169,19 +137,14 @@ transformerLayer layer layerIndex processingState layerData =
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
-  -- === Stage 1: QKV Projection ===
-  isStage1ThisLayer :: Signal dom Bool
+  -- === Stage1: QKV Projection ===
   isStage1ThisLayer = (\ps -> processingStage ps == Stage1_ProjectQKV
-                           && processingLayer ps == layerIndex)
-                      <$> processingState
+                               && processingLayer ps == layerIndex) <$> processingState
 
-  -- QKV outputs only when next stage ready
-  qkvOutReady :: Signal dom Bool
   qkvOutReady = (\ps -> processingStage ps == Stage2_WriteKV
-                     && processingLayer ps == layerIndex)
-                <$> processingState
+                         && processingLayer ps == layerIndex) <$> processingState
 
-  ( qkvProjected, qkvValidOut, qkvInReady ) =
+  (qkvProjected, qkvValidOut, qkvInReady) =
     qkvProjectionController
       isStage1ThisLayer
       qkvOutReady
@@ -191,85 +154,73 @@ transformerLayer layer layerIndex processingState layerData =
 
   qkvDone = qkvValidOut
 
-  -- === Stage 2/3: KV Cache Write & Attention ===
-  ( perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags ) =
+  -- === Stage2/3: KV Cache and Attention ===
+  initHeadOutputs = repeat (pure (repeat 0))
+  initHeadDone    = repeat (pure False)
+  initWriteDone   = repeat (pure False)
+
+  (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     foldl
-      ( fillOneBank layerIndex processingState layerData qkvDone )
-      ( repeat (pure (repeat 0))
-      , repeat (pure False)
-      , repeat (pure False)
-      )
+      (fillOneBank layerIndex processingState layerData qkvDone)
+      (initHeadOutputs, initHeadDone, initWriteDone)
       indicesI
 
-  baseNextLayerData =
-    updateLayerDataForStage layerIndex
-      <$> processingState <*> layerData <*> qkvProjected
+  baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qkvProjected
 
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-  writeDone    = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
+  writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
 
-  -- === Stage 3b: WO Projection ===
-  ( perHeadProjected
-    , perHeadValidOuts
-    , perHeadReadyOuts
-    ) =
-      perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
+  -- === Per-head WO projection ===
+  (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
+    perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
 
+  gatedHeads :: Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint))
   gatedHeads =
-    zipWith3
-      (\proj vld rdy -> mux rdy proj (pure (repeat 0)))
-      perHeadProjected perHeadValidOuts perHeadReadyOuts
+    zipWith3 (\proj _valid ready -> mux ready proj (pure (repeat 0)))
+             perHeadProjected
+             perHeadValidOuts
+             perHeadReadyOuts
 
   woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
   validProjected = and <$> sequenceA perHeadReadyOuts
-
   xAfterAttn = inputsAggregator <$> layerData <*> woHeads
+  attentionDone = let prevReady = register False validProjected
+                  in validProjected .&&. (not <$> prevReady)
 
-  attentionDone =
-    let prevReady = register False validProjected
-    in validProjected .&&. (not <$> prevReady)
+  layerDataAfterAttention = layerDataAttnDone <$> pure layerIndex
+                                               <*> processingState
+                                               <*> layerData
+                                               <*> xAfterAttn
+                                               <*> attentionDone
 
-  -- === Stage 4: Feed-Forward ===
-  isStage4ThisLayer :: Signal dom Bool
+  -- === Stage4: FFN ===
   isStage4ThisLayer = (\ps -> processingStage ps == Stage4_FeedForward
-                           && processingLayer ps == layerIndex)
-                      <$> processingState
+                                && processingLayer ps == layerIndex) <$> processingState
 
   ffnInput = attentionOutput <$> layerDataAfterAttention
 
-  ffnOutReady =
-    (\ps -> case () of
-       _ | processingStage ps == Stage1_ProjectQKV
-         && processingLayer ps == layerIndex + 1 -> True
-         | processingStage ps == Stage5_Classifier
-         && processingLayer ps == maxBound -> True
-         | otherwise -> False)
-    <$> processingState
+  ffnOutReady = (\ps -> case () of
+                           _ | processingStage ps == Stage1_ProjectQKV
+                             && processingLayer ps == layerIndex + 1 -> True
+                             | processingStage ps == Stage5_Classifier
+                             && processingLayer ps == maxBound -> True
+                             | otherwise -> False) <$> processingState
 
-  ( ffnOutput, ffnValidOut, _ffnInReady ) =
+  (ffnOutput, ffnValidOut, ffnInReady) =
     ffnController
       isStage4ThisLayer
       ffnOutReady
       ffnInput
       ffn
 
-  numLayer = pure layerIndex
+  nextLayerData = layerDataWithFFN <$> pure layerIndex
+                                   <*> processingState
+                                   <*> baseNextLayerData
+                                   <*> xAfterAttn
+                                   <*> attentionDone
+                                   <*> ffnOutput
+                                   <*> ffnValidOut
 
-  nextLayerData =
-    layerDataWithFFN <$> numLayer
-      <*> processingState
-      <*> baseNextLayerData
-      <*> xAfterAttn
-      <*> attentionDone
-      <*> ffnOutput
-      <*> ffnValidOut
-
-  layerDataAfterAttention =
-    layerDataAttnDone <$> numLayer
-      <*> processingState
-      <*> layerData
-      <*> xAfterAttn
-      <*> attentionDone
 
 layerDataWithFFN :: Index NumLayers
   -> ProcessingState
