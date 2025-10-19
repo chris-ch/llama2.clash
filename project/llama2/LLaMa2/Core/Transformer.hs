@@ -100,11 +100,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState = PipelineController.processingState pipelineController
 
   -- NEW CONTROLLER (running in parallel)
-  -- Fixed: currentLayerDone now matches when old controller advances layer
-  -- Old controller advances layer when finishing Stage4_FeedForward
-  currentLayerDone = 
-    ((processingStage <$> processingState) .==. pure Stage4_FeedForward) .&&. 
-    ffnDoneThisLayer
+  -- MIGRATED: Removed stage check - ffnDoneThisLayer already implies Stage4 completion
+  currentLayerDone = ffnDoneThisLayer
   
   (newLayerIdx, newSeqPosIdx, newReadyPulse) =
     PipelineController.runMinimalController currentLayerDone inputTokenValid
