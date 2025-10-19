@@ -137,14 +137,15 @@ transformer decoder inputToken inputTokenValid temperature seed =
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
 
-  layerInputSelector :: ProcessingState -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
-  layerInputSelector ps currentLayerData tokenEmbed
+  -- MIGRATED: Now uses newLayerIdx from new controller for layer check
+  layerInputSelector :: ProcessingState -> Index NumLayers -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
+  layerInputSelector ps newIdx currentLayerData tokenEmbed
     | processingStage ps /= Stage1_ProjectQKV = currentLayerData
-    | processingLayer ps == 0                 = currentLayerData { inputVector = tokenEmbed }
+    | newIdx == 0                             = currentLayerData { inputVector = tokenEmbed }
     | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
-  selectedInput = layerInputSelector <$> processingState <*> layerDataRegister <*> tokenEmbedding
+  selectedInput = layerInputSelector <$> processingState <*> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
 
   (nextLayerData, _finalValidOut, doneFlags) =
     pipelineProcessor (pure True) (pure True) processingState selectedInput transformerLayers
@@ -152,17 +153,18 @@ transformer decoder inputToken inputTokenValid temperature seed =
   -- Unpack the completion signals
   (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
 
+  -- MIGRATED: All uses now reference newLayerIdx from new controller
   writeDoneThisLayer :: Signal dom Bool
-  writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> layerIndex
+  writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> newLayerIdx
 
   attnDoneThisLayer :: Signal dom Bool
-  attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> layerIndex
+  attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> newLayerIdx
 
   qkvDoneThisLayer :: Signal dom Bool
-  qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> layerIndex
+  qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> newLayerIdx
 
   ffnDoneThisLayer :: Signal dom Bool
-  ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> layerIndex
+  ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> newLayerIdx
 
   -- Lightweight vector diagnostics (sum of abs values)
   embeddingNorm :: Signal dom FixedPoint
@@ -174,7 +176,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   introspection :: TransformerIntrospection dom
   introspection = TransformerIntrospection
     { state         = processingState
-    , layerIndex
+    , layerIndex    = newLayerIdx  -- MIGRATED: now uses new controller
     , ready         = readyPulse
     , logitsValid
     , attnDone      = attnDoneThisLayer
