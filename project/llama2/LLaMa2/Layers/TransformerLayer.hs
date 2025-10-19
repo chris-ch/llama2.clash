@@ -48,26 +48,100 @@ data TransformerDecoderComponent = TransformerDecoderComponent
 data LayerFlowState = LIdle | LQKV | LWrite | LAttn | LFFN | LDone
   deriving (Show, Eq, Generic, NFDataX)
 
-layerFlowFsm ::
+-- Shared 3-state valid/ready controller
+data GenericState = Idle | Compute | Done
+  deriving (Show, Eq, Generic, NFDataX)
+
+fsmController ::
   HiddenClockResetEnable dom =>
-  Signal dom Bool ->  -- validIn
-  Signal dom Bool ->  -- readyOut
-  ( Signal dom LayerFlowState
-  , Signal dom Bool        -- validOut
-  , Signal dom Bool        -- readyIn
+  Signal dom Bool ->  -- inValid
+  Signal dom Bool ->  -- outReady
+  Signal dom Bool ->  -- computeDone
+  ( Signal dom Bool   -- enable
+  , Signal dom Bool   -- validOut
+  , Signal dom Bool   -- inReady
   )
-layerFlowFsm validIn readyOut =
-  mealyB go LIdle (validIn, readyOut)
+fsmController inValid outReady computeDone = (enable, validOut, inReady)
  where
-  go s (vIn, rOut) =
-    case s of
-      LIdle | vIn     -> (LQKV,  (LQKV,  False, True))
-      LQKV             -> (LWrite,(LWrite,False, True))
-      LWrite           -> (LAttn, (LAttn, False, True))
-      LAttn            -> (LFFN,  (LFFN,  False, True))
-      LFFN             -> (LDone, (LDone, True,  rOut))
-      LDone | rOut    -> (LIdle,  (LIdle, False, True))
-            | otherwise -> (LDone, (LDone, True,  False))
+  state    = register Idle next
+  inReady  = state .==. pure Idle
+  startTx  = inValid .&&. inReady
+  validOut = state .==. pure Done
+  consume  = validOut .&&. outReady
+
+  next = mux (state .==. pure Idle)
+              (mux startTx (pure Compute) (pure Idle))
+              (mux (state .==. pure Compute)
+                  (mux computeDone (pure Done) (pure Compute))
+                  (mux consume (pure Idle) (pure Done)))
+
+  enable = startTx .||. (state .==. pure Compute)
+
+ffnController ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool -> Signal dom Bool ->
+  Signal dom (Vec ModelDimension FixedPoint) ->
+  FeedForwardNetworkComponentQ ->
+  ( Signal dom (Vec ModelDimension FixedPoint)
+  , Signal dom Bool
+  , Signal dom Bool )
+ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
+ where
+  (enable, validOut, inReady) = fsmController inValid outReady ffnSeqValid
+  (result, ffnSeqValid, _ready) =
+    FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
+
+
+qkvProjectionController ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool -> Signal dom Bool ->
+  Signal dom LayerData ->
+  MultiHeadAttentionComponentQ ->
+  Signal dom ProcessingState ->
+  ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
+                , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+                , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+  , Signal dom Bool
+  , Signal dom Bool )
+qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, inReady)
+ where
+  (enable, validOut, inReady) = fsmController inValid outReady matVecValid
+  (result, matVecValid, _ready) =
+    projectQKV enable (pure True) mhaQ
+               (sequencePosition <$> psSig)
+               (inputVector <$> idSig)
+
+-- Writes a single KV pair once per token
+kvWriteController ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->                      -- stage active
+  Signal dom Bool ->                      -- qkvValid
+  Signal dom (Index SequenceLength) ->    -- sequence position
+  Signal dom (Vec HeadDimension FixedPoint) ->  -- key vec
+  Signal dom (Vec HeadDimension FixedPoint) ->  -- value vec
+  ( Signal dom Bool                       -- writePulse
+  , Signal dom Bool )                     -- writeDone
+kvWriteController isStage2 qkvValid seqPos kVec vVec = (wrPulse, wrDone)
+ where
+  wrPulse = isStage2 .&&. qkvValid
+  wrDone  = register False wrPulse  -- one-cycle write-done strobe
+
+-- Performs sequential attention for one KV bank
+attendController ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->                      -- clear pulse (new token)
+  Signal dom Bool ->                      -- stage active
+  Signal dom (Vec HeadDimension FixedPoint) -> -- query vec
+  Signal dom (Vec HeadDimension FixedPoint) -> -- key row
+  Signal dom (Vec HeadDimension FixedPoint) -> -- value row
+  Signal dom (Index SequenceLength) ->    -- current pos
+  ( Signal dom (Vec HeadDimension FixedPoint)  -- per-head output
+  , Signal dom Bool )                     -- done flag
+attendController clearS3 isStage3 qVec kRow vRow seqPos =
+  attendHead clearS3 stepEn qVec kRow vRow lastRow
+ where
+  (tAddrRow, stepEn, lastRow) =
+    attentionRowSequencer clearS3 isStage3 seqPos
 
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
@@ -216,111 +290,8 @@ layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
 data FFNState = FFNIdle | FFNComputing | FFNDone
   deriving (Show, Eq, Generic, NFDataX)
 
-ffnController ::
-  forall dom .
-  HiddenClockResetEnable dom
-  => Signal dom Bool                              -- inValid (FFN input valid)
-  -> Signal dom Bool                              -- outReady (downstream ready)
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- input vector
-  -> FeedForwardNetworkComponentQ                 -- FFN quantized params
-  -> ( Signal dom (Vec ModelDimension FixedPoint) -- result
-     , Signal dom Bool                            -- validOut
-     , Signal dom Bool                            -- inReady
-     )
-ffnController inValid outReady inputVec ffnQ = (result, outValid, inReady)
-  where
-    -- === FSM ===
-    state :: Signal dom FFNState
-    state = register FFNIdle nextState
-
-    inReady  = state .==. pure FFNIdle
-    startTx  = inValid .&&. inReady
-    outValid = state .==. pure FFNDone
-    consume  = outValid .&&. outReady
-
-    nextState =
-      mux (state .==. pure FFNIdle)
-          (mux startTx (pure FFNComputing) (pure FFNIdle))
-          (mux (state .==. pure FFNComputing)
-              (mux ffnSeqValid (pure FFNDone) (pure FFNComputing))
-              (mux consume (pure FFNIdle) (pure FFNDone)))
-
-    -- === Compute enable + internal ready ===
-    computeEnable :: Signal dom Bool
-    computeEnable = startTx .||. (state .==. pure FFNComputing)
-
-    -- Allow FFN internal pipeline to run only when computing or consumer ready
-    internalReady :: Signal dom Bool
-    internalReady = mux (state .==. pure FFNComputing)
-                        (pure True)     -- during compute, internal pipeline free-runs
-                        outReady        -- when done, wait until consumer ready
-
-    -- === Call FFN core ===
-    (result, ffnSeqValid, _ffnSeqReady) =
-      FeedForwardNetwork.feedForwardStage
-        computeEnable
-        internalReady   -- backpressure-aware signal
-        ffnQ
-        inputVec
-
 data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
-
-qkvProjectionController ::
-  forall dom .
-  HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom LayerData
-  -> MultiHeadAttentionComponentQ
-  -> Signal dom ProcessingState
-  -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
-                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Signal dom Bool
-     , Signal dom Bool
-     )
-qkvProjectionController inValid outReady idSig mhaQ psSig = (result, outValid, inReady)
-  where
-    state :: Signal dom QKVState
-    state = register QKVIdle nextState
-
-    inReady :: Signal dom Bool
-    inReady = state .==. pure QKVIdle
-
-    startTx :: Signal dom Bool
-    startTx = inValid .&&. inReady
-
-    outValid :: Signal dom Bool
-    outValid = state .==. pure QKVDone
-
-    consume :: Signal dom Bool
-    consume = outValid .&&. outReady
-
-    nextState :: Signal dom QKVState
-    nextState =
-      mux (state .==. pure QKVIdle)
-          (mux startTx (pure QKVComputing) (pure QKVIdle))
-          (mux (state .==. pure QKVComputing)
-              (mux matVecValid (pure QKVDone) (pure QKVComputing))
-              (mux consume (pure QKVIdle) (pure QKVDone)))
-
-    computeEnable = startTx .||. (state .==. pure QKVComputing)
-
-    -- Internal ready should propagate actual downstream state
-    -- When done (QKVDone), wait for outReady before accepting new input
-    -- When computing, allow pipeline to proceed
-    internalReady = mux (state .==. pure QKVComputing)
-                        (pure True)     -- Free-run during computation
-                        outReady        -- Respect backpressure when done
-    
-    (result, matVecValid, _matVecReady) =
-      projectQKV
-        computeEnable
-        internalReady   -- propagate backpressure
-        mhaQ
-        (sequencePosition <$> psSig)
-        (inputVector <$> idSig)
 
 perHeadWOController ::
   forall dom .
@@ -413,79 +384,64 @@ getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
 fillOneBank ::
-  forall dom .
-  HiddenClockResetEnable dom
-  => Index NumLayers
-  -> Signal dom ProcessingState
-  -> Signal dom LayerData
-  -> Signal dom Bool  -- FIX: Add qkvValid parameter
-  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom Bool)
-     , Vec NumKeyValueHeads (Signal dom Bool) )
-  -> Index NumKeyValueHeads
-  -> ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom Bool)
-     , Vec NumKeyValueHeads (Signal dom Bool) )
+  forall dom.
+  HiddenClockResetEnable dom =>
+  Index NumLayers ->
+  Signal dom ProcessingState ->
+  Signal dom LayerData ->
+  Signal dom Bool -> -- qkvValid
+  ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+  , Vec NumQueryHeads (Signal dom Bool)
+  , Vec NumKeyValueHeads (Signal dom Bool) ) ->
+  Index NumKeyValueHeads ->
+  ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+  , Vec NumQueryHeads (Signal dom Bool)
+  , Vec NumKeyValueHeads (Signal dom Bool) )
 fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
-  let
-    stageEquals st =
-      liftA2 (\ps _ -> processingStage ps == st && processingLayer ps == layerIndex)
-             psSig (pure ())
+  (headOutAcc2, headDoneAcc2, writeDoneAcc1)
+ where
+  -- Stage signals
+  isStage2Write = liftA2 (\ps _ -> processingStage ps == Stage2_WriteKV &&
+                                   processingLayer ps == layerIndex) psSig (pure ())
+  isStage3Attn  = liftA2 (\ps _ -> processingStage ps == Stage3_Attend &&
+                                   processingLayer ps == layerIndex) psSig (pure ())
 
-    isStage3Attention = stageEquals Stage3_Attend
-    isStage2Write     = stageEquals Stage2_WriteKV
+  seqPos = sequencePosition <$> psSig
 
-    attnPrev = register False isStage3Attention
-    risingEdge now prev = now && not prev
-    clearS3  = risingEdge <$> isStage3Attention <*> attnPrev
+  -- Query indices
+  qIdx0 = queryHeadIndex0 kvIx
+  hasQ1 = hasSecondQueryHead kvIx
+  qIdx1 = queryHeadIndex1 kvIx
 
-    seqPosSignal = sequencePosition <$> psSig
+  query0 = getQueryVector idSig qIdx0
+  query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
+  keyVec = getKeyVector idSig kvIx
+  valVec = getValueVector idSig kvIx
 
-    qIdx0 = queryHeadIndex0 kvIx
-    hasQ1 = hasSecondQueryHead kvIx
-    qIdx1 = queryHeadIndex1 kvIx
+  -- KV Write controller
+  (wrPulse, wrDone) = Cache.writeOnce (isStage2Write .&&. qkvValid)
+  wrKVRowK = mux wrPulse (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
+  wrKVRowV = mux wrPulse (Just <$> bundle (seqPos, valVec)) (pure Nothing)
 
-    query0 = getQueryVector idSig qIdx0
-    query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
+  (kRow, _kRowB) = runTdpRam tAddrRow (pure Nothing) seqPos wrKVRowK
+  (vRow, _vRowB) = runTdpRam tAddrRow (pure Nothing) seqPos wrKVRowV
+  writeDoneAcc1 = replace kvIx wrDone writeDoneAcc
 
-    keyVec   = getKeyVector   idSig kvIx
-    valueVec = getValueVector idSig kvIx
+  -- Attention row sequencer
+  attnPrev = register False isStage3Attn
+  clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attn attnPrev
+  (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3Attn seqPos
 
-    -- FIX: Gate write pulse with qkvValid to ensure data is ready
-    (wrPulse, wrDonePulse) = Cache.writeOnce (isStage2Write .&&. qkvValid)
+  -- Per-head attention
+  (out0, done0) = attendHead clearS3 stepEnRow query0 kRow vRow lastTRow
+  (out1, done1) = if hasQ1 then attendHead clearS3 stepEnRow query1 kRow vRow lastTRow
+                           else (pure (repeat 0), pure False)
 
-    wrKVRowK = mux wrPulse (Just <$> bundle (seqPosSignal, keyVec))   (pure Nothing)
-    wrKVRowV = mux wrPulse (Just <$> bundle (seqPosSignal, valueVec)) (pure Nothing)
+  headOutAcc1  = replace qIdx0 out0 headOutAcc
+  headOutAcc2  = if hasQ1 then replace qIdx1 out1 headOutAcc1 else headOutAcc1
 
-    (kRowA, _kRowB) =
-      runTdpRam tAddrRow
-                (pure Nothing)
-                seqPosSignal
-                wrKVRowK
-
-    (vRowA, _vRowB) =
-      runTdpRam tAddrRow
-                (pure Nothing)
-                seqPosSignal
-                wrKVRowV
-
-    (tAddrRow, stepEnRow, lastTRow) =
-      attentionRowSequencer clearS3 isStage3Attention seqPosSignal
-
-    (out0_seqF, done0_seqF) = attendHead clearS3 stepEnRow query0 kRowA vRowA lastTRow
-    (out1_seqF, done1_seqF) =
-      if hasQ1 then attendHead clearS3 stepEnRow query1 kRowA vRowA lastTRow
-               else (pure (repeat 0), pure False)
-
-    headOutAcc0  = replace qIdx0 out0_seqF headOutAcc
-    headOutAcc1  = if hasQ1 then replace qIdx1 out1_seqF headOutAcc0 else headOutAcc0
-
-    headDoneAcc0 = replace qIdx0 done0_seqF headDoneAcc
-    headDoneAcc1 = if hasQ1 then replace qIdx1 done1_seqF headDoneAcc0 else headDoneAcc0
-
-    writeDoneAcc1 = replace kvIx wrDonePulse writeDoneAcc
-
-  in (headOutAcc1, headDoneAcc1, writeDoneAcc1)
+  headDoneAcc1 = replace qIdx0 done0 headDoneAcc
+  headDoneAcc2 = if hasQ1 then replace qIdx1 done1 headDoneAcc1 else headDoneAcc1
 
 attentionRowSequencer ::
   forall dom .
