@@ -88,9 +88,9 @@ transformer decoder inputToken inputTokenValid temperature seed =
       downstreamReady
 
   -- Sequential classifier starts when last layer FFN completes
+  -- MIGRATED: Removed stage checks - ffnDoneThisLayer already implies Stage4
   lastLayerFfnDone = 
-    ((processingStage <$> processingState) .==. pure Stage4_FeedForward) .&&.
-    ((processingLayer <$> processingState) .==. pure maxBound) .&&.
+    (newLayerIdx .==. pure maxBound) .&&. 
     ffnDoneThisLayer
 
   readyPulse :: Signal dom Bool
