@@ -187,8 +187,7 @@ transformerLayer layer layerIndex processingState layerData =
   attentionDone = let prevReady = register False validProjected
                   in validProjected .&&. (not <$> prevReady)
 
-  layerDataAfterAttention = layerDataAttnDone <$> pure layerIndex
-                                               <*> processingState
+  layerDataAfterAttention = (layerDataAttnDone layerIndex <$> processingState)
                                                <*> layerData
                                                <*> xAfterAttn
                                                <*> attentionDone
@@ -213,8 +212,7 @@ transformerLayer layer layerIndex processingState layerData =
       ffnInput
       ffn
 
-  nextLayerData = layerDataWithFFN <$> pure layerIndex
-                                   <*> processingState
+  nextLayerData = (layerDataWithFFN layerIndex <$> processingState)
                                    <*> baseNextLayerData
                                    <*> xAfterAttn
                                    <*> attentionDone
@@ -258,7 +256,7 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
   (perHeadProjected, perHeadValidOuts, perHeadReadyOuts)
   where
     headValidIn = zipWith (.&&.) perHeadDoneFlags perHeadReadyOuts
-    
+
     perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
 
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
@@ -267,7 +265,7 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
 
 -- Helper functions
 kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
-kvWriteDoneCond layerIndex state banksDone = 
+kvWriteDoneCond layerIndex state banksDone =
   processingStage state == Stage2_WriteKV
   && processingLayer state == layerIndex
   && banksDone
@@ -316,13 +314,13 @@ queryHeadIndex0 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex0 kvIx = toEnum (min maxQueryHeadIndex (baseQueryIndex kvIx))
 
 hasSecondQueryHead :: Index NumKeyValueHeads -> Bool
-hasSecondQueryHead kvIx = 
+hasSecondQueryHead kvIx =
   queryHeadsPerKeyValueHead >= 2 && (baseQueryIndex kvIx + 1 <= maxQueryHeadIndex)
 
 queryHeadIndex1 :: Index NumKeyValueHeads -> Index NumQueryHeads
 queryHeadIndex1 kvIx =
-  if hasSecondQueryHead kvIx 
-    then toEnum (baseQueryIndex kvIx + 1) 
+  if hasSecondQueryHead kvIx
+    then toEnum (baseQueryIndex kvIx + 1)
     else queryHeadIndex0 kvIx
 
 getQueryVector :: Signal dom LayerData -> Index NumQueryHeads -> Signal dom (Vec HeadDimension FixedPoint)
@@ -431,45 +429,3 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
     lastTRow = register False lastNow
 
   in (rowCounter, stepEnRow, lastTRow)
-
-transformerDecoder ::
-  forall dom.
-  HiddenClockResetEnable dom =>
-  TransformerDecoderComponent
-  -> Signal dom ProcessingState
-  -> Signal dom LayerData
-  -> ( Signal dom LayerData
-     , Vec NumLayers (Signal dom Bool) -- writeDone per layer
-     , Vec NumLayers (Signal dom Bool) -- attentionDone per layer
-     , Vec NumLayers (Signal dom Bool) -- qkvDone per layer
-     , Vec NumLayers (Signal dom Bool) -- ffnDone per layer
-     )
-transformerDecoder decoder psSig layerDataIn =
-  foldl runLayer (layerDataIn, repeat (pure False), repeat (pure False), repeat (pure False), repeat (pure False)) indicesI
-  where
-    layers = modelLayers decoder
-
-    runLayer
-      :: ( Signal dom LayerData
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         )
-      -> Index NumLayers
-      -> ( Signal dom LayerData
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         , Vec NumLayers (Signal dom Bool)
-         )
-    runLayer (prevData, wrDoneAcc, attnDoneAcc, qkvDoneAcc, ffnDoneAcc) layerIx =
-      let layerComp = layers !! layerIx
-          (nextData, wrDone, attnDone, qkvDone, _, _, ffnDone) =
-            transformerLayer layerComp layerIx psSig prevData
-      in ( nextData
-         , replace layerIx wrDone wrDoneAcc
-         , replace layerIx attnDone attnDoneAcc
-         , replace layerIx qkvDone qkvDoneAcc
-         , replace layerIx ffnDone ffnDoneAcc
-         )

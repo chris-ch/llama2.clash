@@ -12,7 +12,7 @@ import LLaMa2.Core.Types
   , Token
   )
 import LLaMa2.Config
-  (  NumLayers, VocabularySize, ModelDimension
+  (  NumLayers, VocabularySize, ModelDimension, SequenceLength
   )
 import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   ( TransformerDecoderComponent(..)
@@ -23,6 +23,8 @@ import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
+  , runMinimalController  -- NEW
+  , ControllerState(..)   -- NEW
   )
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
@@ -45,6 +47,10 @@ data TransformerIntrospection dom = TransformerIntrospection
   , feedbackToken :: Signal dom Token
   , embeddingNorm :: Signal dom FixedPoint
   , outputNorm    :: Signal dom FixedPoint
+  -- NEW: signals from new controller
+  , newLayerIndex :: Signal dom (Index NumLayers)
+  , newSeqPos     :: Signal dom (Index SequenceLength)
+  , newReady      :: Signal dom Bool
   } deriving (Generic, NFDataX)
 
 transformer :: forall dom
@@ -70,6 +76,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   downstreamReady :: Signal dom Bool
   downstreamReady = pure True  -- always ready
   
+  -- OLD CONTROLLER (still driving everything)
   pipelineController =
     PipelineController.runPipelineController
       attnDoneThisLayer
@@ -94,6 +101,13 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
+
+  -- NEW CONTROLLER (running in parallel, not used yet)
+  -- It needs a "layer done" signal - for now just use ffnDoneThisLayer as proxy
+  currentLayerDone = ffnDoneThisLayer  -- simplified
+  
+  (newLayerIdx, newSeqPosIdx, newReadyPulse) =
+    PipelineController.runMinimalController currentLayerDone inputTokenValid
 
   -- Extract final layer output (updated by ffnValidOut at Stage4)
   finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
@@ -169,6 +183,10 @@ transformer decoder inputToken inputTokenValid temperature seed =
     , feedbackToken
     , embeddingNorm
     , outputNorm
+    -- NEW: expose new controller signals
+    , newLayerIndex = newLayerIdx
+    , newSeqPos     = newSeqPosIdx
+    , newReady      = newReadyPulse
     }
 
 -- | Process all layers sequentially in the pipeline
@@ -221,7 +239,7 @@ layerProcessor :: HiddenClockResetEnable dom
      )
 layerProcessor psSig validIn readyOut ldIn (layerIndex, layerComp) =
   let
-    -- Call the updated transformerLayer
+    -- Call transformerLayer with the REAL signature (7 outputs)
     ( ldNext
       , writeDone
       , attnDone

@@ -1,11 +1,18 @@
 module LLaMa2.Core.PipelineController
   ( PipelineOutputs(..)
   , runPipelineController
+  -- NEW: Minimal controller
+  , ControllerState(..)
+  , runMinimalController
   ) where
 
 import Clash.Prelude
 import LLaMa2.Core.Types (ProcessingState(..), CycleStage(..))
 import LLaMa2.Config (NumLayers, SequenceLength)
+
+-- ============================================================================
+-- OLD CONTROLLER (still in use)
+-- ============================================================================
 
 initialProcessingState :: ProcessingState
 initialProcessingState = ProcessingState
@@ -56,24 +63,15 @@ runPipelineController
   attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer 
   ffnDoneThisLayer classifierDone inputTokenValid downstreamReady = outs
  where
-  -- FIX: Add stage-to-stage readiness tracking
-  stage2Ready = pure True  -- Stage2 (write) is always ready
-  stage3Ready = pure True  -- Stage3 (attend) is always ready
-  stage4Ready = pure True  -- Stage4 (FFN) has internal FSM
-  
-  -- Stage1 can advance when Stage2 is ready to accept
+  stage2Ready = pure True
+  stage3Ready = pure True
+  stage4Ready = pure True
   stage1CanAdvance = stage2Ready
-  
-  -- Stage2 can advance when Stage3 is ready
   stage2CanAdvance = stage3Ready
-  
-  -- Stage3 can advance when Stage4 is ready  
   stage3CanAdvance = stage4Ready
-  
-  -- Stage4 can advance when next layer/classifier is ready
   stage4CanAdvance = mux ((processingLayer <$> procState) .==. pure maxBound)
-                         (pure True)  -- Last layer -> classifier always ready for now
-                         (pure True)  -- Next layer Stage1 always ready
+                         (pure True)
+                         (pure True)
   
   advance s done canAdvance = if done && canAdvance then nextProcessingState s else s
   procState = register initialProcessingState 
@@ -92,7 +90,6 @@ runPipelineController
 
   atFirstStage1 = isFirstStage <$> procState
 
-  -- Stage completion includes downstream readiness checks
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
         (mux atFirstStage1
@@ -109,7 +106,6 @@ runPipelineController
     mux (isStage Stage6_Bookkeeping) (pure True) $
     pure False
 
-  -- Determine if current stage can advance based on downstream
   stageCanAdvance =
     mux (isStage Stage1_ProjectQKV) stage1CanAdvance $
     mux (isStage Stage2_WriteKV)    stage2CanAdvance $
@@ -131,3 +127,49 @@ runPipelineController
       , readyPulse      = readyPulseRaw
       , stageFinished   = stageFinishedSig
       }
+
+-- ============================================================================
+-- NEW MINIMAL CONTROLLER (being added)
+-- ============================================================================
+
+data ControllerState = ControllerState
+  { currentLayer :: Index NumLayers
+  , ctrlSeqPos   :: Index SequenceLength
+  } deriving (Generic, NFDataX, Show, Eq)
+
+initialControllerState :: ControllerState
+initialControllerState = ControllerState
+  { currentLayer = 0
+  , ctrlSeqPos   = 0
+  }
+
+-- Minimal controller: only tracks layer and sequence position
+runMinimalController ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ currentLayerDone
+  -> Signal dom Bool  -- ^ inputTokenValid
+  -> ( Signal dom (Index NumLayers)
+     , Signal dom (Index SequenceLength)
+     , Signal dom Bool  -- ^ readyForNewToken
+     )
+runMinimalController layerDone tokenValid = (layerIdx, posIdx, tokenReady)
+ where
+  state = register initialControllerState nextState
+  
+  isLastLayer = (currentLayer <$> state) .==. pure maxBound
+  
+  nextState = advance <$> state <*> layerDone <*> isLastLayer
+  
+  advance :: ControllerState -> Bool -> Bool -> ControllerState
+  advance s done lastLayer
+    | not done = s
+    | not lastLayer = s { currentLayer = succ (currentLayer s) }
+    | otherwise = ControllerState
+        { currentLayer = 0
+        , ctrlSeqPos = if ctrlSeqPos s == maxBound then 0 else succ (ctrlSeqPos s)
+        }
+  
+  layerIdx = currentLayer <$> state
+  posIdx = ctrlSeqPos <$> state
+  tokenReady = liftA2 (\done lastL -> done && lastL) layerDone isLastLayer
+  
