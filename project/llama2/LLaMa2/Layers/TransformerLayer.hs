@@ -177,8 +177,18 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   (writeValidOutNew, writeReadyInNew, writeEnableNew) =
     kvWriteControllerFSM 
       qkvValidOut           -- validIn: start when QKV completes
-      (pure True)           -- readyOut: always ready for now (will wire to attn)
+      attnReadyInNew        -- readyOut: wire to attention stage
       allBanksDone          -- writeComplete: all banks finished writing
+
+  -- NEW: Attention stage FSM controller (runs alongside old logic)
+  -- Attention is complete when all heads finish WO projection
+  allHeadsProjected = and <$> sequenceA perHeadValidOuts
+  
+  (attnValidOutNew, attnReadyInNew, attnEnableNew) =
+    attnControllerFSM
+      writeValidOutNew      -- validIn: start when write completes
+      ffnInReadyNew         -- readyOut: wire to FFN stage
+      validProjected        -- attnComplete: all heads WO done
 
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     foldl
@@ -232,6 +242,9 @@ transformerLayer layer layerIndex processingState layerActive layerData =
       ffnOutReady
       ffnInput
       ffn
+  
+  -- NEW: Wire FFN ready signal back to attention stage
+  ffnInReadyNew = ffnInReady
 
   nextLayerData = (layerDataWithFFN layerIndex <$> processingState)
                                    <*> baseNextLayerData
@@ -267,6 +280,10 @@ data QKVState = QKVIdle | QKVComputing | QKVDone
 data WriteState = WriteIdle | WriteWriting | WriteDone
   deriving (Show, Eq, Generic, NFDataX)
 
+-- NEW: FSM for Attention stage
+data AttnState = AttnIdle | AttnComputing | AttnDone
+  deriving (Show, Eq, Generic, NFDataX)
+
 kvWriteControllerFSM ::
   HiddenClockResetEnable dom =>
   Signal dom Bool ->  -- validIn (QKV done)
@@ -292,6 +309,32 @@ kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enable
                       (mux consume (pure WriteIdle) (pure WriteDone)))
   
   enableWrite = startWrite .||. (state .==. pure WriteWriting)
+
+attnControllerFSM ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->  -- validIn (Write done)
+  Signal dom Bool ->  -- readyOut (FFN ready)
+  Signal dom Bool ->  -- attnComplete (all heads done)
+  ( Signal dom Bool   -- validOut (attn done, ready for FFN)
+  , Signal dom Bool   -- readyIn (can accept Write)
+  , Signal dom Bool   -- enableAttn (trigger attention)
+  )
+attnControllerFSM validIn readyOut attnComplete = (validOut, readyIn, enableAttn)
+ where
+  state = register AttnIdle nextState
+  
+  readyIn = state .==. pure AttnIdle
+  startAttn = validIn .&&. readyIn
+  validOut = state .==. pure AttnDone
+  consume = validOut .&&. readyOut
+  
+  nextState = mux (state .==. pure AttnIdle)
+                  (mux startAttn (pure AttnComputing) (pure AttnIdle))
+                  (mux (state .==. pure AttnComputing)
+                      (mux attnComplete (pure AttnDone) (pure AttnComputing))
+                      (mux consume (pure AttnIdle) (pure AttnDone)))
+  
+  enableAttn = startAttn .||. (state .==. pure AttnComputing)
 
 perHeadWOController ::
   forall dom .
