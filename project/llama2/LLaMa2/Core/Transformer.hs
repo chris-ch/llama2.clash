@@ -93,11 +93,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
     ((processingLayer <$> processingState) .==. pure maxBound) .&&.
     ffnDoneThisLayer
 
-  layerIndex :: Signal dom (Index NumLayers)
-  layerIndex = PipelineController.layerIndex pipelineController
-
   readyPulse :: Signal dom Bool
-  readyPulse = PipelineController.readyPulse pipelineController
+  readyPulse = newReadyPulse
 
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
