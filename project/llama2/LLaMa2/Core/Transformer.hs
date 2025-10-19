@@ -134,15 +134,15 @@ transformer decoder inputToken inputTokenValid temperature seed =
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
 
-  -- MIGRATED: Now uses newLayerIdx from new controller for layer check
-  layerInputSelector :: ProcessingState -> Index NumLayers -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
-  layerInputSelector ps newIdx currentLayerData tokenEmbed
-    | processingStage ps /= Stage1_ProjectQKV = currentLayerData
-    | newIdx == 0                             = currentLayerData { inputVector = tokenEmbed }
-    | otherwise                               = currentLayerData { inputVector = feedForwardOutput currentLayerData }
+  -- MIGRATED: Removed stage check - always prepare correct input based on layer
+  -- The layer itself will use inputVector when it needs it (at Stage1)
+  layerInputSelector :: Index NumLayers -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
+  layerInputSelector newIdx currentLayerData tokenEmbed
+    | newIdx == 0   = currentLayerData { inputVector = tokenEmbed }
+    | otherwise     = currentLayerData { inputVector = feedForwardOutput currentLayerData }
 
   selectedInput :: Signal dom LayerData
-  selectedInput = layerInputSelector <$> processingState <*> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
+  selectedInput = layerInputSelector <$> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
 
   (nextLayerData, _finalValidOut, doneFlags) =
     pipelineProcessor (pure True) (pure True) processingState selectedInput transformerLayers
