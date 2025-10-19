@@ -131,7 +131,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
   selectedInput :: Signal dom LayerData
   selectedInput = layerInputSelector <$> processingState <*> layerDataRegister <*> tokenEmbedding
 
-  (nextLayerData, doneFlags) = pipelineProcessor processingState selectedInput transformerLayers
+  (nextLayerData, _finalValidOut, doneFlags) =
+    pipelineProcessor (pure True) (pure True) processingState selectedInput transformerLayers
 
   -- Unpack the completion signals
   (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
@@ -174,38 +175,62 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
 pipelineProcessor :: forall dom
    . HiddenClockResetEnable dom
-  => Signal dom ProcessingState
+  => Signal dom Bool              -- ^ validIn (data available)
+  -> Signal dom Bool              -- ^ readyOut (downstream ready)
+  -> Signal dom ProcessingState
   -> Signal dom LayerData
   -> Vec NumLayers TransformerLayerComponent
-  -> LayerProcessorData dom
-pipelineProcessor processingState initLayerData transformerLayers =
+  -> ( Signal dom LayerData
+     , Signal dom Bool            -- ^ validOut (final output valid)
+     , Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
+     )
+pipelineProcessor validIn readyOut processingState initLayerData transformerLayers =
   let
     indexedLayers = imap (,) transformerLayers
 
-    (finalLayerData, doneFlags) = mapAccumL (layerProcessor processingState) initLayerData indexedLayers
+    stepLayer (ld, vIn) (ix, comp) =
+      let
+        (ldNext, doneFlags, vOut, rOut) =
+          layerProcessor processingState vIn readyOut ld (ix, comp)
+      in
+        ((ldNext, vOut), (doneFlags, vOut, rOut))
 
+    (finalState, layerResults) = mapAccumL stepLayer (initLayerData, validIn) indexedLayers
+    doneFlagsVec = map (\(df, _, _) -> df) layerResults
+    validOuts    = map (\(_, vOut, _) -> vOut) layerResults
+    readyOuts    = map (\(_, _, rOut) -> rOut) layerResults
+
+    finalValidOut = last validOuts
   in
-    (finalLayerData, doneFlags)
+    (fst finalState, finalValidOut, doneFlagsVec)
 
-layerProcessor :: forall dom
-   . HiddenClockResetEnable dom
+layerProcessor ::
+  HiddenClockResetEnable dom
   => Signal dom ProcessingState
+  -> Signal dom Bool              -- ^ validIn
+  -> Signal dom Bool              -- ^ readyOut (from next layer)
   -> Signal dom LayerData
   -> (Index NumLayers, TransformerLayerComponent)
-  -> (Signal dom LayerData, (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
-layerProcessor processingState currentLayerData (layerIndex, layerComp) =
+  -> ( Signal dom LayerData
+     , (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
+     , Signal dom Bool            -- ^ validOut
+     , Signal dom Bool            -- ^ readyIn (to upstream)
+     )
+layerProcessor processingState validIn readyOut currentLayerData (layerIndex, layerComp) =
   let
     (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention, qkvReady, ffnDone) =
       TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
 
+    -- Ready/Valid handshake
+    validOut = ffnDone
+    readyIn  = readyOut
     selectedLayerData = layerDataSelector layerIndex <$>
               processingState
               <*> currentLayerData
               <*> layerData
               <*> layerDataAfterAttention
   in
-    -- Return all three completion signals
-    (selectedLayerData, (writeDone, attnDone, qkvDone, qkvReady, ffnDone))
+    (selectedLayerData, (writeDone, attnDone, qkvDone, qkvReady, ffnDone), validOut, readyIn)
 
 layerDataSelector :: Index NumLayers
                   -> ProcessingState
