@@ -431,3 +431,45 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
     lastTRow = register False lastNow
 
   in (rowCounter, stepEnRow, lastTRow)
+
+transformerDecoder ::
+  forall dom.
+  HiddenClockResetEnable dom =>
+  TransformerDecoderComponent
+  -> Signal dom ProcessingState
+  -> Signal dom LayerData
+  -> ( Signal dom LayerData
+     , Vec NumLayers (Signal dom Bool) -- writeDone per layer
+     , Vec NumLayers (Signal dom Bool) -- attentionDone per layer
+     , Vec NumLayers (Signal dom Bool) -- qkvDone per layer
+     , Vec NumLayers (Signal dom Bool) -- ffnDone per layer
+     )
+transformerDecoder decoder psSig layerDataIn =
+  foldl runLayer (layerDataIn, repeat (pure False), repeat (pure False), repeat (pure False), repeat (pure False)) indicesI
+  where
+    layers = modelLayers decoder
+
+    runLayer
+      :: ( Signal dom LayerData
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         )
+      -> Index NumLayers
+      -> ( Signal dom LayerData
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         , Vec NumLayers (Signal dom Bool)
+         )
+    runLayer (prevData, wrDoneAcc, attnDoneAcc, qkvDoneAcc, ffnDoneAcc) layerIx =
+      let layerComp = layers !! layerIx
+          (nextData, wrDone, attnDone, qkvDone, _, _, ffnDone) =
+            transformerLayer layerComp layerIx psSig prevData
+      in ( nextData
+         , replace layerIx wrDone wrDoneAcc
+         , replace layerIx attnDone attnDoneAcc
+         , replace layerIx qkvDone qkvDoneAcc
+         , replace layerIx ffnDone ffnDoneAcc
+         )

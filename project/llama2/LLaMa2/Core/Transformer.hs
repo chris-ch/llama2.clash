@@ -30,8 +30,6 @@ import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Embedding.PRNG (transformerLogitsSeq)
 
-type LayerProcessorData dom = (Signal dom LayerData, Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool))
-
 -- | Introspection signals — meant for runtime visibility / observability
 data TransformerIntrospection dom = TransformerIntrospection
   { state         :: Signal dom ProcessingState
@@ -173,64 +171,74 @@ transformer decoder inputToken inputTokenValid temperature seed =
     , outputNorm
     }
 
-pipelineProcessor :: forall dom
+-- | Process all layers sequentially in the pipeline
+pipelineProcessor
+  :: forall dom
    . HiddenClockResetEnable dom
-  => Signal dom Bool              -- ^ validIn (data available)
-  -> Signal dom Bool              -- ^ readyOut (downstream ready)
+  => Signal dom Bool                        -- ^ validIn (input token ready)
+  -> Signal dom Bool                        -- ^ readyOut (next stage ready)
   -> Signal dom ProcessingState
-  -> Signal dom LayerData
+  -> Signal dom LayerData                   -- ^ current layer input
   -> Vec NumLayers TransformerLayerComponent
   -> ( Signal dom LayerData
-     , Signal dom Bool            -- ^ validOut (final output valid)
-     , Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
+     , Signal dom Bool                        -- ^ validOut of last layer
+     , Vec NumLayers (Signal dom Bool         -- writeDone
+                     , Signal dom Bool        -- attnDone
+                     , Signal dom Bool        -- qkvDone
+                     , Signal dom Bool        -- qkvInReady
+                     , Signal dom Bool)       -- ffnDone
      )
-pipelineProcessor validIn readyOut processingState initLayerData transformerLayers =
+pipelineProcessor validIn readyOut psSig initLayerData layers =
   let
-    indexedLayers = imap (,) transformerLayers
+    indexedLayers = imap (,) layers
 
     stepLayer (ld, vIn) (ix, comp) =
       let
         (ldNext, doneFlags, vOut, rOut) =
-          layerProcessor processingState vIn readyOut ld (ix, comp)
-      in
-        ((ldNext, vOut), (doneFlags, vOut, rOut))
+          layerProcessor psSig vIn readyOut ld (ix, comp)
+      in ((ldNext, vOut), (doneFlags, vOut, rOut))
 
     (finalState, layerResults) = mapAccumL stepLayer (initLayerData, validIn) indexedLayers
+
     doneFlagsVec = map (\(df, _, _) -> df) layerResults
     validOuts    = map (\(_, vOut, _) -> vOut) layerResults
-    readyOuts    = map (\(_, _, rOut) -> rOut) layerResults
 
     finalValidOut = last validOuts
   in
     (fst finalState, finalValidOut, doneFlagsVec)
 
-layerProcessor ::
-  HiddenClockResetEnable dom
+-- | Process a single transformer layer
+layerProcessor :: HiddenClockResetEnable dom
   => Signal dom ProcessingState
-  -> Signal dom Bool              -- ^ validIn
-  -> Signal dom Bool              -- ^ readyOut (from next layer)
-  -> Signal dom LayerData
+  -> Signal dom Bool                     -- ^ validIn
+  -> Signal dom Bool                     -- ^ readyOut from next layer
+  -> Signal dom LayerData                -- ^ input data
   -> (Index NumLayers, TransformerLayerComponent)
   -> ( Signal dom LayerData
      , (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
-     , Signal dom Bool            -- ^ validOut
-     , Signal dom Bool            -- ^ readyIn (to upstream)
+     , Signal dom Bool                     -- ^ validOut (FFN done)
+     , Signal dom Bool                     -- ^ readyIn
      )
-layerProcessor processingState validIn readyOut currentLayerData (layerIndex, layerComp) =
+layerProcessor psSig validIn readyOut ldIn (layerIndex, layerComp) =
   let
-    (layerData, writeDone, attnDone, qkvDone, layerDataAfterAttention, qkvReady, ffnDone) =
-      TransformerLayer.transformerLayer layerComp layerIndex processingState currentLayerData
+    -- Call the updated transformerLayer
+    ( ldNext
+      , writeDone
+      , attnDone
+      , qkvDone
+      , ldAfterAttn
+      , qkvInReady
+      , ffnDone
+      ) = TransformerLayer.transformerLayer layerComp layerIndex psSig ldIn
 
     -- Ready/Valid handshake
     validOut = ffnDone
     readyIn  = readyOut
-    selectedLayerData = layerDataSelector layerIndex <$>
-              processingState
-              <*> currentLayerData
-              <*> layerData
-              <*> layerDataAfterAttention
+
+    -- Choose correct LayerData for the pipeline
+    selectedLd = layerDataSelector layerIndex <$> psSig <*> ldIn <*> ldNext <*> ldAfterAttn
   in
-    (selectedLayerData, (writeDone, attnDone, qkvDone, qkvReady, ffnDone), validOut, readyIn)
+    (selectedLd, (writeDone, attnDone, qkvDone, qkvInReady, ffnDone), validOut, readyIn)
 
 layerDataSelector :: Index NumLayers
                   -> ProcessingState
