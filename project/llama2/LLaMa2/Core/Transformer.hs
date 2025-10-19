@@ -102,9 +102,12 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
-  -- NEW CONTROLLER (running in parallel, not used yet)
-  -- It needs a "layer done" signal - for now just use ffnDoneThisLayer as proxy
-  currentLayerDone = ffnDoneThisLayer  -- simplified
+  -- NEW CONTROLLER (running in parallel)
+  -- Fixed: currentLayerDone now matches when old controller advances layer
+  -- Old controller advances layer when finishing Stage4_FeedForward
+  currentLayerDone = 
+    ((processingStage <$> processingState) .==. pure Stage4_FeedForward) .&&. 
+    ffnDoneThisLayer
   
   (newLayerIdx, newSeqPosIdx, newReadyPulse) =
     PipelineController.runMinimalController currentLayerDone inputTokenValid
