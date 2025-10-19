@@ -141,8 +141,9 @@ transformer decoder inputToken inputTokenValid temperature seed =
   selectedInput :: Signal dom LayerData
   selectedInput = layerInputSelector <$> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
 
+  -- MIGRATED: Pass newLayerIdx to pipelineProcessor
   (nextLayerData, _finalValidOut, doneFlags) =
-    pipelineProcessor (pure True) (pure True) processingState selectedInput transformerLayers
+    pipelineProcessor (pure True) (pure True) processingState newLayerIdx selectedInput transformerLayers
 
   -- Unpack the completion signals
   (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
@@ -192,27 +193,24 @@ transformer decoder inputToken inputTokenValid temperature seed =
 pipelineProcessor
   :: forall dom
    . HiddenClockResetEnable dom
-  => Signal dom Bool                        -- ^ validIn (input token ready)
-  -> Signal dom Bool                        -- ^ readyOut (next stage ready)
+  => Signal dom Bool                        -- ^ validIn
+  -> Signal dom Bool                        -- ^ readyOut
   -> Signal dom ProcessingState
+  -> Signal dom (Index NumLayers)           -- ^ currentLayer
   -> Signal dom LayerData                   -- ^ current layer input
   -> Vec NumLayers TransformerLayerComponent
   -> ( Signal dom LayerData
-     , Signal dom Bool                        -- ^ validOut of last layer
-     , Vec NumLayers (Signal dom Bool         -- writeDone
-                     , Signal dom Bool        -- attnDone
-                     , Signal dom Bool        -- qkvDone
-                     , Signal dom Bool        -- qkvInReady
-                     , Signal dom Bool)       -- ffnDone
+     , Signal dom Bool
+     , Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
      )
-pipelineProcessor validIn readyOut psSig initLayerData layers =
+pipelineProcessor validIn readyOut psSig currentLayerSig initLayerData layers =
   let
     indexedLayers = imap (,) layers
 
     stepLayer (ld, vIn) (ix, comp) =
       let
         (ldNext, doneFlags, vOut, rOut) =
-          layerProcessor psSig vIn readyOut ld (ix, comp)
+          layerProcessor psSig currentLayerSig vIn readyOut ld (ix, comp)
       in ((ldNext, vOut), (doneFlags, vOut, rOut))
 
     (finalState, layerResults) = mapAccumL stepLayer (initLayerData, validIn) indexedLayers
@@ -227,16 +225,17 @@ pipelineProcessor validIn readyOut psSig initLayerData layers =
 -- | Process a single transformer layer
 layerProcessor :: HiddenClockResetEnable dom
   => Signal dom ProcessingState
-  -> Signal dom Bool                     -- ^ validIn
-  -> Signal dom Bool                     -- ^ readyOut from next layer
-  -> Signal dom LayerData                -- ^ input data
+  -> Signal dom (Index NumLayers)            -- ^ NEW: currentLayer from new controller
+  -> Signal dom Bool                         -- ^ validIn
+  -> Signal dom Bool                         -- ^ readyOut from next layer
+  -> Signal dom LayerData                    -- ^ input data
   -> (Index NumLayers, TransformerLayerComponent)
   -> ( Signal dom LayerData
      , (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
      , Signal dom Bool                     -- ^ validOut (FFN done)
      , Signal dom Bool                     -- ^ readyIn
      )
-layerProcessor psSig validIn readyOut ldIn (layerIndex, layerComp) =
+layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerComp) =
   let
     -- Call transformerLayer with the REAL signature (7 outputs)
     ( ldNext
@@ -252,9 +251,8 @@ layerProcessor psSig validIn readyOut ldIn (layerIndex, layerComp) =
     validOut = ffnDone
     readyIn  = readyOut
 
-    -- MIGRATED: Use newLayerIdx, removed stage check from selector
-    -- Note: We're in a fold, need to get currentLayer from psSig for now
-    selectedLd = mux ((processingLayer <$> psSig) .==. pure layerIndex)
+    -- MIGRATED: Use currentLayerSig from new controller instead of processingLayer
+    selectedLd = mux (currentLayerSig .==. pure layerIndex)
                      ldNext
                      ldIn
   in
