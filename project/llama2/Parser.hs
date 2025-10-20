@@ -31,9 +31,7 @@ import LLaMa2.Types.ModelConfig
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import qualified LLaMa2.Layer.Components.Quantized as Quantized
-    ( quantizeEmbedding, quantizeFFN, quantizeMHA )
-import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ)
+import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding)
 
 
 -- ============================================================================
@@ -132,7 +130,7 @@ parseLLaMa2ConfigFile = do
       { vocabulary     = CArray2D tokenEmbeddingTable'
       , rmsFinalWeight = rmsFinalWeight'
       }
-    embeddingQ = Quantized.quantizeEmbedding embeddingFloat
+    embeddingQ = quantizeEmbedding embeddingFloat
 
     layer :: C.Index NumLayers -> TransformerLayerComponent
     layer lIdx =
@@ -178,7 +176,7 @@ parseLLaMa2ConfigFile = do
           }
 
         mhaQ :: MultiHeadAttentionComponentQ
-        mhaQ = Quantized.quantizeMHA mhaFloat
+        mhaQ = quantizeMHA mhaFloat
 
         ffnFloat :: FeedForwardNetworkComponent
         ffnFloat = FeedForwardNetworkComponent
@@ -188,7 +186,7 @@ parseLLaMa2ConfigFile = do
           , fRMSFfn = rmsFfnWeight' C.!! lIdx
           }
         ffnQ :: FeedForwardNetworkComponentQ
-        ffnQ = Quantized.quantizeFFN ffnFloat
+        ffnQ = quantizeFFN ffnFloat
 
       in TransformerLayerComponent
            { multiHeadAttention = mhaQ

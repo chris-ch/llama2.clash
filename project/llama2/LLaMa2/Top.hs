@@ -7,8 +7,8 @@ import Clash.Prelude
 import LLaMa2.Types.LayerData ( Temperature, Seed, Token )
 
 import qualified LLaMa2.Decoder.Decoder as Decoder ( decoder, DecoderIntrospection(..) )
-import LLaMa2.Params.Decoder (decoderConst)
 import LLaMa2.Types.Parameters (DecoderParameters)
+import LLaMa2.ParamsPlaceholder (decoderConst)
 
 -- Monomorphic, fully applied top. Domain: System
 {-# ANN topEntity

@@ -1,4 +1,6 @@
-module LLaMa2.Params.Decoder (decoderConst) where
+module LLaMa2.ParamsPlaceholder (
+    decoderConst
+) where
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig 
@@ -14,10 +16,7 @@ import LLaMa2.Types.LayerData
   , EmbeddingComponent(..), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..)
   )
 
-import LLaMa2.Layer.Components.Quantized
-  ( quantizeMHA, quantizeFFN, quantizeEmbedding
-  )
-import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..))
+import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), quantizeEmbedding, quantizeFFN, quantizeMHA)
 
 -- Helpers: zero-filled Float matrices/vectors to make the design elaborate now.
 zeroMatF :: forall rows cols. (KnownNat rows, KnownNat cols) => CArray2D rows cols
