@@ -97,8 +97,9 @@ library
     , LLaMa2.Embedding.OutputProjection
     , LLaMa2.Layer.Attention
     , LLaMa2.Layer.Attention.AttentionHead
-    , LLaMa2.Layer.Attention.QKVProjection
+    , LLaMa2.Layer.Attention.KVCache
     , LLaMa2.Layer.Attention.MultiHeadAttention
+    , LLaMa2.Layer.Attention.QKVProjection
     , LLaMa2.Layer.Attention.RotaryEncoding
     , LLaMa2.Layer.Components.Quantized
     , LLaMa2.Layer.FeedForward.FeedForwardNetwork

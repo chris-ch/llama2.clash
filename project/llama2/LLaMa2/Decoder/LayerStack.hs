@@ -8,9 +8,9 @@ import Clash.Prelude
 
 import LLaMa2.Types.LayerData (LayerData(..), ProcessingState)
 import LLaMa2.Types.ModelConfig  (NumLayers, ModelDimension)
-import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types
+import LLaMa2.Types.Parameters (TransformerLayerComponent)
 
 -- | Type alias for layer completion flags
 -- (writeDone, attnDone, qkvDone, qkvReady, ffnDone)

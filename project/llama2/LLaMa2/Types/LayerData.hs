@@ -9,13 +9,15 @@ module LLaMa2.Types.LayerData
     SingleHeadComponent (..),
     RotaryEncodingComponent (..),
     EmbeddingComponent (..),
+    FeedForwardNetworkComponent(..),
+    MultiHeadAttentionComponent(..),
     CArray2D (..),
   )
 where
 
 import Clash.Prelude
 import GHC.Stack (HasCallStack)
-import LLaMa2.Types.ModelConfig 
+import LLaMa2.Types.ModelConfig
   ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,
@@ -23,7 +25,7 @@ import LLaMa2.Types.ModelConfig
     NumQueryHeads,
     RotaryPositionalEmbeddingDimension,
     SequenceLength,
-    VocabularySize,
+    VocabularySize, HiddenDimension,
   )
 import LLaMa2.Numeric.Types (FixedPoint)
 
@@ -104,3 +106,16 @@ data SingleHeadComponent = SingleHeadComponent
     rotary :: RotaryEncodingComponent
   }
   deriving (Show)
+
+data MultiHeadAttentionComponent = MultiHeadAttentionComponent
+  { heads  :: Vec NumQueryHeads SingleHeadComponent
+  , mWo    :: Vec NumQueryHeads (CArray2D ModelDimension HeadDimension)
+  , rmsAtt :: Vec ModelDimension Float
+  } deriving (Show)
+
+data FeedForwardNetworkComponent = FeedForwardNetworkComponent
+  { fW1 :: CArray2D HiddenDimension ModelDimension
+  , fW2 :: CArray2D ModelDimension HiddenDimension
+  , fW3 :: CArray2D HiddenDimension ModelDimension
+  , fRMSFfn :: Vec ModelDimension Float
+  } deriving (Show)

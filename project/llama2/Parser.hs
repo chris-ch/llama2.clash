@@ -17,7 +17,7 @@ import LLaMa2.Types.LayerData
                           wvHead),
       RotaryEncodingComponent(RotaryEncodingComponent, freqSin, freqCos),
       EmbeddingComponent(EmbeddingComponent, rmsFinalWeight, vocabulary),
-      CArray2D(CArray2D) )
+      CArray2D(CArray2D), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..) )
 
 import LLaMa2.Types.ModelConfig 
     (
@@ -31,10 +31,9 @@ import LLaMa2.Types.ModelConfig
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent (..))
 import qualified LLaMa2.Layer.Components.Quantized as Quantized
-    ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding )
-import LLaMa2.Types.Parameters (DecoderParameters (..))
+    ( quantizeEmbedding, quantizeFFN, quantizeMHA )
+import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ)
 
 
 -- ============================================================================
@@ -171,24 +170,24 @@ parseLLaMa2ConfigFile = do
         mWoVec :: C.Vec NumQueryHeads (CArray2D ModelDimension HeadDimension)
         mWoVec = C.map headBlock (C.indicesI @NumQueryHeads)
 
-        mhaFloat :: Quantized.MultiHeadAttentionComponent
-        mhaFloat = Quantized.MultiHeadAttentionComponent
+        mhaFloat :: MultiHeadAttentionComponent
+        mhaFloat = MultiHeadAttentionComponent
           { heads  = C.map sha (C.indicesI :: C.Vec NumQueryHeads (C.Index NumQueryHeads))
           , mWo    = mWoVec
           , rmsAtt = rmsAttWeight' C.!! lIdx
           }
 
-        mhaQ :: Quantized.MultiHeadAttentionComponentQ
+        mhaQ :: MultiHeadAttentionComponentQ
         mhaQ = Quantized.quantizeMHA mhaFloat
 
-        ffnFloat :: Quantized.FeedForwardNetworkComponent
-        ffnFloat = Quantized.FeedForwardNetworkComponent
+        ffnFloat :: FeedForwardNetworkComponent
+        ffnFloat = FeedForwardNetworkComponent
           { fW1     = CArray2D $ w1' C.!! lIdx
           , fW2     = CArray2D $ w2' C.!! lIdx
           , fW3     = CArray2D $ w3' C.!! lIdx
           , fRMSFfn = rmsFfnWeight' C.!! lIdx
           }
-        ffnQ :: Quantized.FeedForwardNetworkComponentQ
+        ffnQ :: FeedForwardNetworkComponentQ
         ffnQ = Quantized.quantizeFFN ffnFloat
 
       in TransformerLayerComponent

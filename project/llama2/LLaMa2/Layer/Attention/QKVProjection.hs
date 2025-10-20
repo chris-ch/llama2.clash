@@ -14,14 +14,12 @@ import LLaMa2.Types.ModelConfig
       SequenceLength )
 
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
-import LLaMa2.Layer.Components.Quantized
-    ( MultiHeadAttentionComponentQ(..),
-      SingleHeadComponentQ(..) )
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Operations (matrixMultiplier)
 import LLaMa2.Types.LayerData (ProcessingState (..), LayerData (..))
 import LLaMa2.Layer.Attention (fsmController)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
+import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..), SingleHeadComponentQ (..))
 
 qkvProjector :: forall dom .
   HiddenClockResetEnable dom

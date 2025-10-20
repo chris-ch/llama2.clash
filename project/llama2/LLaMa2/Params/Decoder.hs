@@ -11,17 +11,13 @@ import LLaMa2.Types.LayerData
   ( CArray2D(..)
   , SingleHeadComponent(..)
   , RotaryEncodingComponent(..)
-  , EmbeddingComponent(..)
+  , EmbeddingComponent(..), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..)
   )
-import LLaMa2.Layer.TransformerLayer
-  ( TransformerLayerComponent(..)
-  )
+
 import LLaMa2.Layer.Components.Quantized
-  ( MultiHeadAttentionComponent(..)
-  , FeedForwardNetworkComponent(..)
-  , quantizeMHA, quantizeFFN, quantizeEmbedding
+  ( quantizeMHA, quantizeFFN, quantizeEmbedding
   )
-import LLaMa2.Types.Parameters (DecoderParameters (..))
+import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..))
 
 -- Helpers: zero-filled Float matrices/vectors to make the design elaborate now.
 zeroMatF :: forall rows cols. (KnownNat rows, KnownNat cols) => CArray2D rows cols
