@@ -7,7 +7,6 @@ import LLaMa2.Core.Transformer.Internal
 import LLaMa2.Core.Types
   ( LayerData(..)
   , ProcessingState (..)
-  , CycleStage (..)
   , Temperature, Seed
   , Token
   )
@@ -23,8 +22,7 @@ import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( runPipelineController
   , PipelineOutputs (..)
-  , runMinimalController  -- NEW
-  , ControllerState(..)   -- NEW
+  , runMinimalController
   )
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
@@ -73,10 +71,8 @@ transformer decoder inputToken inputTokenValid temperature seed =
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers decoder
   
-  downstreamReady :: Signal dom Bool
-  downstreamReady = pure True  -- always ready
-  
-  -- OLD CONTROLLER (still driving everything)
+  -- STAGE CONTROLLER - Provides stage sequencing for layer internals
+  -- Note: Top-level layer tracking uses minimalController (newLayerIdx)
   pipelineController =
     PipelineController.runPipelineController
       attnDoneThisLayer
@@ -85,10 +81,9 @@ transformer decoder inputToken inputTokenValid temperature seed =
       ffnDoneThisLayer
       logitsValid
       inputTokenValid
-      downstreamReady
 
   -- Sequential classifier starts when last layer FFN completes
-  -- MIGRATED: Removed stage checks - ffnDoneThisLayer already implies Stage4
+  -- ffnDoneThisLayer already implies Stage4
   lastLayerFfnDone = 
     (newLayerIdx .==. pure maxBound) .&&. 
     ffnDoneThisLayer
@@ -99,18 +94,14 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
-  -- NEW CONTROLLER (running in parallel)
-  -- MIGRATED: Removed stage check - ffnDoneThisLayer already implies Stage4 completion
-  currentLayerDone = ffnDoneThisLayer
-  
   (newLayerIdx, newSeqPosIdx, newReadyPulse) =
-    PipelineController.runMinimalController currentLayerDone inputTokenValid
+    PipelineController.runMinimalController ffnDoneThisLayer inputTokenValid
 
   -- Extract final layer output (updated by ffnValidOut at Stage4)
   finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
   finalLayerOutput = feedForwardOutput <$> nextLayerData
 
-  (logits, logitsValid, _) =
+  (logits, logitsValid, logitsReadyOut) =
     transformerLogitsSeq lastLayerFfnDone (pure True) decoder finalLayerOutput
 
   -- keep 

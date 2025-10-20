@@ -110,32 +110,6 @@ kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enable
   
   enableWrite = startWrite .||. (state .==. pure WriteWriting)
 
-attnControllerFSM ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->  -- validIn (Write done)
-  Signal dom Bool ->  -- readyOut (FFN ready)
-  Signal dom Bool ->  -- attnComplete (all heads done)
-  ( Signal dom Bool   -- validOut (attn done, ready for FFN)
-  , Signal dom Bool   -- readyIn (can accept Write)
-  , Signal dom Bool   -- enableAttn (trigger attention)
-  )
-attnControllerFSM validIn readyOut attnComplete = (validOut, readyIn, enableAttn)
- where
-  state = register AttnIdle nextState
-  
-  readyIn = state .==. pure AttnIdle
-  startAttn = validIn .&&. readyIn
-  validOut = state .==. pure AttnDone
-  consume = validOut .&&. readyOut
-  
-  nextState = mux (state .==. pure AttnIdle)
-                  (mux startAttn (pure AttnComputing) (pure AttnIdle))
-                  (mux (state .==. pure AttnComputing)
-                      (mux attnComplete (pure AttnDone) (pure AttnComputing))
-                      (mux consume (pure AttnIdle) (pure AttnDone)))
-  
-  enableAttn = startAttn .||. (state .==. pure AttnComputing)
-
 ffnController ::
   HiddenClockResetEnable dom =>
   Signal dom Bool -> Signal dom Bool ->
@@ -174,7 +148,7 @@ transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
   -> Signal dom ProcessingState
-  -> Signal dom Bool                       -- NEW: layerActive (not used yet)
+  -> Signal dom Bool -- NEW: layerActive (not used yet)
   -> Signal dom LayerData
   -> ( Signal dom LayerData
      , Signal dom Bool           -- writeDone
@@ -196,19 +170,6 @@ transformerLayer layer layerIndex processingState layerActive layerData =
  where
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
-
-  -- NEW: Detect when layer becomes active (rising edge) - not used yet
-  layerActivePrev = register False layerActive
-  layerStartPulse = layerActive .&&. (not <$> layerActivePrev)
-
-  -- === AUTONOMOUS WIRING PLAN ===
-  -- When complete, stages will be wired as:
-  -- layerActive --> QKV.validIn
-  -- QKV.validOut --> Write.validIn  
-  -- Write.validOut --> Attn.validIn
-  -- Attn.validOut --> FFN.validIn
-  -- FFN.validOut --> layerComplete
-  -- All readyOut signals from downstream stages propagate backward
 
   -- === Stage1: QKV Projection ===
   isStage1ThisLayer = (\ps -> processingStage ps == Stage1_ProjectQKV
@@ -232,22 +193,12 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   initHeadDone    = repeat (pure False)
   initWriteDone   = repeat (pure False)
 
-  -- NEW: Write stage FSM controller (runs alongside old logic)
-  (writeValidOutNew, writeReadyInNew, writeEnableNew) =
+  -- Write stage FSM controller - produces writeDone signal
+  (writeValidOutNew, _writeReadyIn, _writeEnable) =
     kvWriteControllerFSM 
       qkvValidOut           -- validIn: start when QKV completes
-      attnReadyInNew        -- readyOut: wire to attention stage
+      (pure True)           -- readyOut: always ready (attention doesn't use FSM)
       allBanksDone          -- writeComplete: all banks finished writing
-
-  -- NEW: Attention stage FSM controller (runs alongside old logic)
-  -- Attention is complete when all heads finish WO projection
-  allHeadsProjected = and <$> sequenceA perHeadValidOuts
-  
-  (attnValidOutNew, attnReadyInNew, attnEnableNew) =
-    attnControllerFSM
-      writeValidOutNew      -- validIn: start when write completes
-      ffnInReadyNew         -- readyOut: wire to FFN stage
-      validProjected        -- attnComplete: all heads WO done
 
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     foldl
@@ -303,9 +254,6 @@ transformerLayer layer layerIndex processingState layerActive layerData =
       ffnOutReady
       ffnInput
       ffn
-  
-  -- NEW: Wire FFN ready signal back to attention stage
-  ffnInReadyNew = ffnInReady
 
   nextLayerData = (layerDataWithFFN layerIndex <$> processingState)
                                    <*> baseNextLayerData
@@ -331,12 +279,6 @@ layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
         then withAttn { feedForwardOutput = ffnOut }
         else withAttn
 
-data FFNState = FFNIdle | FFNComputing | FFNDone
-  deriving (Show, Eq, Generic, NFDataX)
-
-data QKVState = QKVIdle | QKVComputing | QKVDone
-  deriving (Show, Eq, Generic, NFDataX)
-
 perHeadWOController ::
   forall dom .
   HiddenClockResetEnable dom
@@ -357,13 +299,6 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
-
--- Helper functions
-kvWriteDoneCond :: Index NumLayers -> ProcessingState -> Bool -> Bool
-kvWriteDoneCond layerIndex state banksDone =
-  processingStage state == Stage2_WriteKV
-  && processingLayer state == layerIndex
-  && banksDone
 
 inputsAggregator :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 inputsAggregator layerData = zipWith (+) (inputVector layerData)

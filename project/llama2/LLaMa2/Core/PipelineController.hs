@@ -57,24 +57,17 @@ runPipelineController ::
   -> Signal dom Bool  -- ^ ffnDoneThisLayer
   -> Signal dom Bool  -- ^ classifierDone
   -> Signal dom Bool  -- ^ inputTokenValid
-  -> Signal dom Bool  -- ^ downstreamReady (external consumer ready)
   -> PipelineOutputs dom
-runPipelineController 
-  attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer 
-  ffnDoneThisLayer classifierDone inputTokenValid downstreamReady = outs
+runPipelineController
+  attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer
+  ffnDoneThisLayer classifierDone inputTokenValid = outs
  where
-  stage2Ready = pure True
-  stage3Ready = pure True
-  stage4Ready = pure True
-  stage1CanAdvance = stage2Ready
-  stage2CanAdvance = stage3Ready
-  stage3CanAdvance = stage4Ready
   stage4CanAdvance = mux ((processingLayer <$> procState) .==. pure maxBound)
                          (pure True)
                          (pure True)
-  
+
   advance s done canAdvance = if done && canAdvance then nextProcessingState s else s
-  procState = register initialProcessingState 
+  procState = register initialProcessingState
     (advance <$> procState <*> stageFinishedSig <*> stageCanAdvance)
 
   stageSig = processingStage <$> procState
@@ -94,28 +87,28 @@ runPipelineController
     mux (isStage Stage1_ProjectQKV)
         (mux atFirstStage1
              (inputTokenValid .&&. qkvValidThisLayer)
-             (qkvValidThisLayer .&&. stage1CanAdvance)) $
-    mux (isStage Stage2_WriteKV)    
-        (writeDoneThisLayer .&&. stage2CanAdvance) $
-    mux (isStage Stage3_Attend)     
-        (attnDoneThisLayer .&&. stage3CanAdvance) $
-    mux (isStage Stage4_FeedForward) 
+             (qkvValidThisLayer .&&. pure True)) $
+    mux (isStage Stage2_WriteKV)
+        (writeDoneThisLayer .&&. pure True) $
+    mux (isStage Stage3_Attend)
+        (attnDoneThisLayer .&&. pure True) $
+    mux (isStage Stage4_FeedForward)
         (ffnDoneThisLayer .&&. stage4CanAdvance) $
-    mux (isStage Stage5_Classifier)  
-        (classifierDone .&&. downstreamReady) $
+    mux (isStage Stage5_Classifier)
+        (classifierDone .&&. pure True) $
     mux (isStage Stage6_Bookkeeping) (pure True) $
     pure False
 
   stageCanAdvance =
-    mux (isStage Stage1_ProjectQKV) stage1CanAdvance $
-    mux (isStage Stage2_WriteKV)    stage2CanAdvance $
-    mux (isStage Stage3_Attend)     stage3CanAdvance $
-    mux (isStage Stage4_FeedForward) stage4CanAdvance $
-    mux (isStage Stage5_Classifier)  downstreamReady $
+    mux (isStage Stage1_ProjectQKV) (pure True) $
+    mux (isStage Stage2_WriteKV)    (pure True) $
+    mux (isStage Stage3_Attend)     (pure True) $
+    mux (isStage Stage4_FeedForward) (pure True) $
+    mux (isStage Stage5_Classifier)  (pure True) $
     pure True
 
   readyPulseRaw =
-    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone .&&. downstreamReady
+    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone .&&. pure True
         rising now prev = now && not prev
     in rising <$> isClassifierDone <*> register False isClassifierDone
 
@@ -155,11 +148,11 @@ runMinimalController ::
 runMinimalController layerDone tokenValid = (layerIdx, posIdx, tokenReady)
  where
   state = register initialControllerState nextState
-  
+
   isLastLayer = (currentLayer <$> state) .==. pure maxBound
-  
+
   nextState = advance <$> state <*> layerDone <*> isLastLayer
-  
+
   advance :: ControllerState -> Bool -> Bool -> ControllerState
   advance s done lastLayer
     | not done = s
@@ -168,8 +161,7 @@ runMinimalController layerDone tokenValid = (layerIdx, posIdx, tokenReady)
         { currentLayer = 0
         , ctrlSeqPos = if ctrlSeqPos s == maxBound then 0 else succ (ctrlSeqPos s)
         }
-  
+
   layerIdx = currentLayer <$> state
   posIdx = ctrlSeqPos <$> state
-  tokenReady = liftA2 (\done lastL -> done && lastL) layerDone isLastLayer
-  
+  tokenReady = (&&) <$> layerDone <*> isLastLayer
