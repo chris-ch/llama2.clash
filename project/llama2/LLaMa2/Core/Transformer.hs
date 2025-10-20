@@ -122,7 +122,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
 
-  -- MIGRATED: Removed stage check - always prepare correct input based on layer
+  -- Always prepare correct input based on layer
   -- The layer itself will use inputVector when it needs it (at Stage1)
   layerInputSelector :: Index NumLayers -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
   layerInputSelector newIdx currentLayerData tokenEmbed
@@ -132,14 +132,13 @@ transformer decoder inputToken inputTokenValid temperature seed =
   selectedInput :: Signal dom LayerData
   selectedInput = layerInputSelector <$> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
 
-  -- MIGRATED: Pass newLayerIdx to pipelineProcessor
+  -- Pass newLayerIdx to pipelineProcessor
   (nextLayerData, _finalValidOut, doneFlags) =
     pipelineProcessor (pure True) (pure True) processingState newLayerIdx selectedInput transformerLayers
 
   -- Unpack the completion signals
   (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
 
-  -- MIGRATED: All uses now reference newLayerIdx from new controller
   writeDoneThisLayer :: Signal dom Bool
   writeDoneThisLayer = (!!) <$> sequenceA writeDone <*> newLayerIdx
 
@@ -162,7 +161,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   introspection :: TransformerIntrospection dom
   introspection = TransformerIntrospection
     { state         = processingState
-    , layerIndex    = newLayerIdx  -- MIGRATED: now uses new controller
+    , layerIndex    = newLayerIdx
     , ready         = readyPulse
     , logitsValid
     , attnDone      = attnDoneThisLayer
@@ -245,7 +244,6 @@ layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerCom
     validOut = ffnDone
     readyIn  = readyOut
 
-    -- MIGRATED: Use currentLayerSig from new controller instead of processingLayer
     selectedLd = mux (currentLayerSig .==. pure layerIndex)
                      ldNext
                      ldIn

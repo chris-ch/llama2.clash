@@ -1,7 +1,6 @@
 module LLaMa2.Core.PipelineController
   ( PipelineOutputs(..)
   , runPipelineController
-  -- NEW: Minimal controller
   , ControllerState(..)
   , runMinimalController
   ) where
@@ -9,10 +8,6 @@ module LLaMa2.Core.PipelineController
 import Clash.Prelude
 import LLaMa2.Core.Types (ProcessingState(..), CycleStage(..))
 import LLaMa2.Config (NumLayers, SequenceLength)
-
--- ============================================================================
--- OLD CONTROLLER (still in use)
--- ============================================================================
 
 initialProcessingState :: ProcessingState
 initialProcessingState = ProcessingState
@@ -62,13 +57,9 @@ runPipelineController
   attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer
   ffnDoneThisLayer classifierDone inputTokenValid = outs
  where
-  stage4CanAdvance = mux ((processingLayer <$> procState) .==. pure maxBound)
-                         (pure True)
-                         (pure True)
-
-  advance s done canAdvance = if done && canAdvance then nextProcessingState s else s
+  -- Simplified: stageCanAdvance is always True, so advance when done
   procState = register initialProcessingState
-    (advance <$> procState <*> stageFinishedSig <*> stageCanAdvance)
+    ((\s done -> if done then nextProcessingState s else s) <$> procState <*> stageFinishedSig)
 
   stageSig = processingStage <$> procState
   layerIx  = processingLayer <$> procState
@@ -83,32 +74,25 @@ runPipelineController
 
   atFirstStage1 = isFirstStage <$> procState
 
+  -- Simplified: removed all ".&&. pure True" occurrences
   stageFinishedSig =
     mux (isStage Stage1_ProjectQKV)
         (mux atFirstStage1
              (inputTokenValid .&&. qkvValidThisLayer)
-             (qkvValidThisLayer .&&. pure True)) $
+             qkvValidThisLayer) $
     mux (isStage Stage2_WriteKV)
-        (writeDoneThisLayer .&&. pure True) $
+        writeDoneThisLayer $
     mux (isStage Stage3_Attend)
-        (attnDoneThisLayer .&&. pure True) $
+        attnDoneThisLayer $
     mux (isStage Stage4_FeedForward)
-        (ffnDoneThisLayer .&&. stage4CanAdvance) $
+        ffnDoneThisLayer $
     mux (isStage Stage5_Classifier)
-        (classifierDone .&&. pure True) $
-    mux (isStage Stage6_Bookkeeping) (pure True) $
-    pure False
+        classifierDone $
+    isStage Stage6_Bookkeeping
 
-  stageCanAdvance =
-    mux (isStage Stage1_ProjectQKV) (pure True) $
-    mux (isStage Stage2_WriteKV)    (pure True) $
-    mux (isStage Stage3_Attend)     (pure True) $
-    mux (isStage Stage4_FeedForward) (pure True) $
-    mux (isStage Stage5_Classifier)  (pure True) $
-    pure True
-
+  -- Simplified: removed ".&&. pure True"
   readyPulseRaw =
-    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone .&&. pure True
+    let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
         rising now prev = now && not prev
     in rising <$> isClassifierDone <*> register False isClassifierDone
 
@@ -121,10 +105,6 @@ runPipelineController
       , stageFinished   = stageFinishedSig
       }
 
--- ============================================================================
--- NEW MINIMAL CONTROLLER (being added)
--- ============================================================================
-
 data ControllerState = ControllerState
   { currentLayer :: Index NumLayers
   , ctrlSeqPos   :: Index SequenceLength
@@ -136,7 +116,6 @@ initialControllerState = ControllerState
   , ctrlSeqPos   = 0
   }
 
--- Minimal controller: only tracks layer and sequence position
 runMinimalController ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ currentLayerDone

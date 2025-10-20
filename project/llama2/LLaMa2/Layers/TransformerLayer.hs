@@ -210,7 +210,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
 
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
   
-  -- MIGRATED: Use FSM completion signal instead of stage check
+  -- Use FSM completion signal instead of stage check
   writeDone = writeValidOutNew
 
   -- === Per-head WO projection ===
