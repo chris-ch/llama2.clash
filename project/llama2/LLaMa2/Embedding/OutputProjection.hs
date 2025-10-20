@@ -18,10 +18,9 @@ logitsProjector :: forall dom .
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> ( Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits output
      , Signal dom Bool  -- ^ validOut
-     , Signal dom Bool  -- ^ readyOut
      )
 logitsProjector validIn readyIn decoder tokenVecSig =
-  (logitsOut, validOut, readyOut)
+  (logitsOut, validOut)
   where
     emb = modelEmbedding decoder
 

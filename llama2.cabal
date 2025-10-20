@@ -92,7 +92,6 @@ library
   exposed-modules:
     LLaMa2.Config
     , LLaMa2.Core.Embedding
-    , LLaMa2.Core.PipelineController
     , LLaMa2.Core.Types
     , LLaMa2.Decoder.Decoder
     , LLaMa2.Decoder.LayerStack

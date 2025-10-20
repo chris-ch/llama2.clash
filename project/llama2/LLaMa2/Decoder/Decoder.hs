@@ -1,8 +1,8 @@
 module LLaMa2.Decoder.Decoder (
     decoder, DecoderIntrospection(..)
 ) where
-
 import Clash.Prelude
+
 import LLaMa2.Core.Types
   ( LayerData(..)
   , ProcessingState (..)
@@ -19,16 +19,13 @@ import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer
   )
 import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent (..))
 import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
-import qualified LLaMa2.Core.PipelineController as PipelineController
-  ( pipelineController
-  , PipelineOutputs (..)
-  , layerSequencer
-  )
+
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layer.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Embedding.OutputProjection (logitsProjector)
+import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
+import qualified LLaMa2.Decoder.SequenceController as SequenceController (PipelineOutputs (..), layerSequencer, pipelineController)
 
 initialLayerData :: LayerData
 initialLayerData = LayerData
@@ -72,34 +69,33 @@ decoder :: forall dom
 decoder params inputToken inputTokenValid temperature seed =
   ( outputToken, readyPulse, introspection)
  where
-  vocabulary :: MatI8E VocabularySize ModelDimension
-  vocabulary = Quantized.vocabularyQ $ modelEmbedding params
-
   transformerLayers :: Vec NumLayers TransformerLayerComponent
   transformerLayers  = modelLayers params
   
+  (newLayerIdx, newSeqPosIdx, readyPulse) =
+    SequenceController.layerSequencer ffnDoneThisLayer
+
+  qkvDoneThisLayer :: Signal dom Bool
+  qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> newLayerIdx
+
+  ffnDoneThisLayer :: Signal dom Bool
+  ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> newLayerIdx
+
   -- STAGE CONTROLLER - Provides stage sequencing for layer internals
   -- Note: Top-level layer tracking uses minimalController (newLayerIdx)
-  pipelineController =
-    PipelineController.pipelineController
+
+  processingState :: Signal dom ProcessingState
+  processingState = SequenceController.processingState (
+    SequenceController.pipelineController
       attnDoneThisLayer
       writeDoneThisLayer
       qkvDoneThisLayer
       ffnDoneThisLayer
       logitsValid
-      inputTokenValid
+      inputTokenValid)
 
-  -- Sequential classifier starts when last layer FFN completes
-  -- ffnDoneThisLayer already implies Stage4
-  lastLayerFfnDone = 
-    (newLayerIdx .==. pure maxBound) .&&. 
-    ffnDoneThisLayer
-
-  processingState :: Signal dom ProcessingState
-  processingState = PipelineController.processingState pipelineController
-
-  (newLayerIdx, newSeqPosIdx, readyPulse) =
-    PipelineController.layerSequencer ffnDoneThisLayer inputTokenValid
+  vocabulary :: MatI8E VocabularySize ModelDimension
+  vocabulary = Quantized.vocabularyQ $ modelEmbedding params
 
   -- Quantized embedding lookup via ROM (1-cycle)
   tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
@@ -119,7 +115,7 @@ decoder params inputToken inputTokenValid temperature seed =
   selectedInput = layerInputSelector <$> newLayerIdx <*> layerDataRegister <*> tokenEmbedding
 
   -- Pass newLayerIdx to pipelineProcessor
-  (nextLayerData, _finalValidOut, doneFlags) =
+  (nextLayerData, doneFlags) =
     pipelineProcessor processingState newLayerIdx selectedInput transformerLayers
 
   -- Unpack the completion signals
@@ -131,22 +127,18 @@ decoder params inputToken inputTokenValid temperature seed =
   attnDoneThisLayer :: Signal dom Bool
   attnDoneThisLayer  = (!!) <$> sequenceA attnDone <*> newLayerIdx
 
-  qkvDoneThisLayer :: Signal dom Bool
-  qkvDoneThisLayer = (!!) <$> sequenceA qkvDone <*> newLayerIdx
-
-  ffnDoneThisLayer :: Signal dom Bool
-  ffnDoneThisLayer = (!!) <$> sequenceA ffnDone <*> newLayerIdx
-
-  -- Lightweight vector diagnostics (sum of abs values)
-  embeddingNorm :: Signal dom FixedPoint
-  embeddingNorm = sum . map abs <$> tokenEmbedding
+  -- Sequential classifier starts when last layer FFN completes
+  -- ffnDoneThisLayer already implies Stage4
+  lastLayerFfnDone = 
+    (newLayerIdx .==. pure maxBound) .&&. 
+    ffnDoneThisLayer
 
   -- Extract final layer output (updated by ffnValidOut at Stage4)
   layerOutput :: Signal dom (Vec ModelDimension FixedPoint)
   layerOutput = feedForwardOutput <$> nextLayerData
 
-  (logits, logitsValid, logitsReadyOut) =
-    logitsProjector lastLayerFfnDone (pure True) params layerOutput
+  (logits, logitsValid) =
+    OutputProjection.logitsProjector lastLayerFfnDone (pure True) params layerOutput
 
   outputNorm :: Signal dom FixedPoint
   outputNorm = sum . map abs <$> layerOutput
@@ -161,6 +153,10 @@ decoder params inputToken inputTokenValid temperature seed =
 
   outputToken :: Signal dom Token
   outputToken = mux inputTokenValid inputToken feedbackToken
+
+  -- Lightweight vector diagnostics (sum of abs values)
+  embeddingNorm :: Signal dom FixedPoint
+  embeddingNorm = sum . map abs <$> tokenEmbedding
 
   introspection :: DecoderIntrospection dom
   introspection = DecoderIntrospection
@@ -185,31 +181,25 @@ pipelineProcessor
   :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom ProcessingState
-  -> Signal dom (Index NumLayers)           -- ^ currentLayer
-  -> Signal dom LayerData                   -- ^ current layer input
+  -> Signal dom (Index NumLayers)
+  -> Signal dom LayerData
   -> Vec NumLayers TransformerLayerComponent
   -> ( Signal dom LayerData
-     , Signal dom Bool
      , Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
      )
 pipelineProcessor psSig currentLayerSig initLayerData layers =
   let
-    indexedLayers = imap (,) layers
+    -- Process each layer sequentially, accumulating only the layer data
+    (finalData, layerResults) = 
+      mapAccumL (\ld (ix, comp) -> 
+        let (ldNext, doneFlags, vOut, rOut) = layerProcessor psSig currentLayerSig ld (ix, comp)
+        in (ldNext, (doneFlags, vOut, rOut))
+      ) initLayerData (imap (,) layers)
 
-    stepLayer (ld, _) (ix, comp) =
-      let
-        (ldNext, doneFlags, vOut, rOut) =
-          layerProcessor psSig currentLayerSig ld (ix, comp)
-      in ((ldNext, vOut), (doneFlags, vOut, rOut))
-
-    (finalState, layerResults) = mapAccumL stepLayer (initLayerData, pure True) indexedLayers
-
-    doneFlagsVec = map (\(df, _, _) -> df) layerResults
-    validOuts    = map (\(_, vOut, _) -> vOut) layerResults
-
-    finalValidOut = last validOuts
+    -- Extract required outputs
+    doneFlagsVec = fmap (\(df, _, _) -> df) layerResults
   in
-    (fst finalState, finalValidOut, doneFlagsVec)
+    (finalData, doneFlagsVec)
 
 -- | Process a single transformer layer
 layerProcessor :: HiddenClockResetEnable dom
