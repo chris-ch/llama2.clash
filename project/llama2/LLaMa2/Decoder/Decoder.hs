@@ -13,7 +13,7 @@ import LLaMa2.Core.Types
   )
 import LLaMa2.Types.Parameters (DecoderParameters (..))
 import LLaMa2.Config
-  ( NumLayers, VocabularySize, ModelDimension, SequenceLength
+  ( NumLayers, VocabularySize, ModelDimension
   , NumQueryHeads, NumKeyValueHeads, HeadDimension
   )
 import LLaMa2.Numeric.ParamPack (MatI8E)
@@ -49,19 +49,10 @@ initialLayerData = LayerData
 -- | Introspection signals for runtime visibility
 data DecoderIntrospection dom = DecoderIntrospection
   { state         :: Signal dom ProcessingState
-  , logitsValid   :: Signal dom Bool
-  , attnDone      :: Signal dom Bool
-  , qkvDone       :: Signal dom Bool
-  , ffnDone       :: Signal dom Bool
-  , writeDone     :: Signal dom Bool
-  , inputToken    :: Signal dom Token
-  , outputToken   :: Signal dom Token
-  , feedbackToken :: Signal dom Token
-  , embeddingNorm :: Signal dom FixedPoint
-  , outputNorm    :: Signal dom FixedPoint
   , layerIndex    :: Signal dom (Index NumLayers)
-  , seqPos        :: Signal dom (Index SequenceLength)
   , ready         :: Signal dom Bool
+  , attnDone      :: Signal dom Bool
+  , ffnDone       :: Signal dom Bool
   } deriving (Generic, NFDataX)
 
 -- ============================================================================
@@ -87,8 +78,7 @@ decoder params inputToken inputTokenValid temperature seed =
     -- ========================================================================
     -- Track which layer and sequence position we're processing
     
-    (layerIdx, seqPosIdx, readyPulse) =
-      SequenceController.layerSequencer ffnDoneThisLayer
+    (layerIdx, readyPulse) = SequenceController.layerSequencer ffnDoneThisLayer
     
     -- Stage controller manages internal layer stages (QKV, Write, Attn, FFN)
     pipelineCtrl = SequenceController.pipelineController
@@ -114,9 +104,7 @@ decoder params inputToken inputTokenValid temperature seed =
     
     tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
     tokenEmbedding = Embedding.embedder vocabulary outputToken
-    
-    embeddingNorm = sum . map abs <$> tokenEmbedding
-    
+        
     -- ========================================================================
     -- 3. LAYER STACK PROCESSING
     -- ========================================================================
@@ -164,7 +152,6 @@ decoder params inputToken inputTokenValid temperature seed =
     lastLayerFfnDone = (layerIdx .==. pure maxBound) .&&. ffnDoneThisLayer
     
     layerOutput = feedForwardOutput <$> nextLayerData
-    outputNorm = sum . map abs <$> layerOutput
     
     -- Project final layer output to logits
     (logits, logitsValid) =
@@ -186,18 +173,9 @@ decoder params inputToken inputTokenValid temperature seed =
     
     introspection = DecoderIntrospection
       { state         = processingState
-      , logitsValid
       , attnDone      = attnDoneThisLayer
-      , qkvDone       = qkvDoneThisLayer
       , ffnDone       = ffnDoneThisLayer
-      , writeDone     = writeDoneThisLayer
-      , inputToken
-      , outputToken
-      , feedbackToken
-      , embeddingNorm
-      , outputNorm
       , layerIndex    = layerIdx
-      , seqPos        = seqPosIdx
       , ready         = readyPulse
       }
 

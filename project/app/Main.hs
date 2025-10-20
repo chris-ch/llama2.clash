@@ -182,16 +182,8 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
     statesSampled         = C.sampleN simSteps (Top.state introspection)
     layerIndicesSampled   = C.sampleN simSteps (Top.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Top.ready introspection)
-    logitsValidsSampled   = C.sampleN simSteps (Top.logitsValid introspection)
     attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
-    qkvDonesSampled       = C.sampleN simSteps (Top.qkvDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
-    writeDonesSampled     = C.sampleN simSteps (Top.writeDone introspection)
-    inputTokensSampled    = C.sampleN simSteps (Top.inputToken introspection)
-    selectedTokensSampled = C.sampleN simSteps (Top.outputToken introspection)
-    feedbackTokensSampled = C.sampleN simSteps (Top.feedbackToken introspection)
-    embeddingNormsSampled = C.sampleN simSteps (Top.embeddingNorm introspection)
-    outputNormsSampled    = C.sampleN simSteps (Top.outputNorm introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -211,7 +203,7 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
   putStrLn "-----------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
-  let printCycle (cycleIdx, (tok, isReady)) = do
+  let printCycle (cycleIdx, tok) = do
         let li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
             ps     = processingStage (statesSampled !! cycleIdx)
             rdy    = readiesSampled !! cycleIdx
@@ -220,14 +212,14 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
             token  = coreOutputs !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %5d | %-8s"
+            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %-8s | %-8s"
               cycleIdx
               li
               (show ps)
               (show rdy)
               (show attn)
               (show ffn)
-              (fromIntegral tok :: Int)
+              (show $ fst tok)
               (show $ decodeToken tokenizer (fst token))
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)

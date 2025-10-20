@@ -119,10 +119,9 @@ layerSequencer ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ currentLayerDone
   -> ( Signal dom (Index NumLayers)
-     , Signal dom (Index SequenceLength)
      , Signal dom Bool  -- ^ readyForNewToken
      )
-layerSequencer layerDone = (layerIdx, posIdx, tokenReady)
+layerSequencer layerDone = (layerIdx, tokenReady)
  where
   state = register initialControllerState nextState
 
@@ -140,5 +139,4 @@ layerSequencer layerDone = (layerIdx, posIdx, tokenReady)
         }
 
   layerIdx = currentLayer <$> state
-  posIdx = ctrlSeqPos <$> state
   tokenReady = (&&) <$> layerDone <*> isLastLayer
