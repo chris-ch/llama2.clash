@@ -52,6 +52,13 @@ data LayerFlowState = LIdle | LQKV | LWrite | LAttn | LFFN | LDone
 data GenericState = Idle | Compute | Done
   deriving (Show, Eq, Generic, NFDataX)
 
+-- FSM states for autonomous stages
+data WriteState = WriteIdle | WriteWriting | WriteDone
+  deriving (Show, Eq, Generic, NFDataX)
+
+data AttnState = AttnIdle | AttnComputing | AttnDone
+  deriving (Show, Eq, Generic, NFDataX)
+
 fsmController ::
   HiddenClockResetEnable dom =>
   Signal dom Bool ->  -- inValid
@@ -76,6 +83,58 @@ fsmController inValid outReady computeDone = (enable, validOut, inReady)
                   (mux consume (pure Idle) (pure Done)))
 
   enable = startTx .||. (state .==. pure Compute)
+
+kvWriteControllerFSM ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->  -- validIn (QKV done)
+  Signal dom Bool ->  -- readyOut (Attn ready)
+  Signal dom Bool ->  -- writeComplete (all banks written)
+  ( Signal dom Bool   -- validOut (write done, ready for attn)
+  , Signal dom Bool   -- readyIn (can accept QKV)
+  , Signal dom Bool   -- enableWrite (trigger write)
+  )
+kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
+ where
+  state = register WriteIdle nextState
+  
+  readyIn = state .==. pure WriteIdle
+  startWrite = validIn .&&. readyIn
+  validOut = state .==. pure WriteDone
+  consume = validOut .&&. readyOut
+  
+  nextState = mux (state .==. pure WriteIdle)
+                  (mux startWrite (pure WriteWriting) (pure WriteIdle))
+                  (mux (state .==. pure WriteWriting)
+                      (mux writeComplete (pure WriteDone) (pure WriteWriting))
+                      (mux consume (pure WriteIdle) (pure WriteDone)))
+  
+  enableWrite = startWrite .||. (state .==. pure WriteWriting)
+
+attnControllerFSM ::
+  HiddenClockResetEnable dom =>
+  Signal dom Bool ->  -- validIn (Write done)
+  Signal dom Bool ->  -- readyOut (FFN ready)
+  Signal dom Bool ->  -- attnComplete (all heads done)
+  ( Signal dom Bool   -- validOut (attn done, ready for FFN)
+  , Signal dom Bool   -- readyIn (can accept Write)
+  , Signal dom Bool   -- enableAttn (trigger attention)
+  )
+attnControllerFSM validIn readyOut attnComplete = (validOut, readyIn, enableAttn)
+ where
+  state = register AttnIdle nextState
+  
+  readyIn = state .==. pure AttnIdle
+  startAttn = validIn .&&. readyIn
+  validOut = state .==. pure AttnDone
+  consume = validOut .&&. readyOut
+  
+  nextState = mux (state .==. pure AttnIdle)
+                  (mux startAttn (pure AttnComputing) (pure AttnIdle))
+                  (mux (state .==. pure AttnComputing)
+                      (mux attnComplete (pure AttnDone) (pure AttnComputing))
+                      (mux consume (pure AttnIdle) (pure AttnDone)))
+  
+  enableAttn = startAttn .||. (state .==. pure AttnComputing)
 
 ffnController ::
   HiddenClockResetEnable dom =>
@@ -114,8 +173,8 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, i
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
   -> Index NumLayers
-  -> Signal dom ProcessingState            -- OLD: still passed in
-  -> Signal dom Bool                       -- NEW: layerActive (is this layer currently processing?)
+  -> Signal dom ProcessingState
+  -> Signal dom Bool                       -- NEW: layerActive (not used yet)
   -> Signal dom LayerData
   -> ( Signal dom LayerData
      , Signal dom Bool           -- writeDone
@@ -138,7 +197,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   mha = multiHeadAttention layer
   ffn = feedforwardNetwork layer
 
-  -- NEW: Detect when layer becomes active (rising edge)
+  -- NEW: Detect when layer becomes active (rising edge) - not used yet
   layerActivePrev = register False layerActive
   layerStartPulse = layerActive .&&. (not <$> layerActivePrev)
 
@@ -199,7 +258,9 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qkvProjected
 
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-  writeDone = kvWriteDoneCond layerIndex <$> processingState <*> allBanksDone
+  
+  -- MIGRATED: Use FSM completion signal instead of stage check
+  writeDone = writeValidOutNew
 
   -- === Per-head WO projection ===
   (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
@@ -275,66 +336,6 @@ data FFNState = FFNIdle | FFNComputing | FFNDone
 
 data QKVState = QKVIdle | QKVComputing | QKVDone
   deriving (Show, Eq, Generic, NFDataX)
-
--- NEW: FSM for KV Write stage
-data WriteState = WriteIdle | WriteWriting | WriteDone
-  deriving (Show, Eq, Generic, NFDataX)
-
--- NEW: FSM for Attention stage
-data AttnState = AttnIdle | AttnComputing | AttnDone
-  deriving (Show, Eq, Generic, NFDataX)
-
-kvWriteControllerFSM ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->  -- validIn (QKV done)
-  Signal dom Bool ->  -- readyOut (Attn ready)
-  Signal dom Bool ->  -- writeComplete (all banks written)
-  ( Signal dom Bool   -- validOut (write done, ready for attn)
-  , Signal dom Bool   -- readyIn (can accept QKV)
-  , Signal dom Bool   -- enableWrite (trigger write)
-  )
-kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
- where
-  state = register WriteIdle nextState
-  
-  readyIn = state .==. pure WriteIdle
-  startWrite = validIn .&&. readyIn
-  validOut = state .==. pure WriteDone
-  consume = validOut .&&. readyOut
-  
-  nextState = mux (state .==. pure WriteIdle)
-                  (mux startWrite (pure WriteWriting) (pure WriteIdle))
-                  (mux (state .==. pure WriteWriting)
-                      (mux writeComplete (pure WriteDone) (pure WriteWriting))
-                      (mux consume (pure WriteIdle) (pure WriteDone)))
-  
-  enableWrite = startWrite .||. (state .==. pure WriteWriting)
-
-attnControllerFSM ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->  -- validIn (Write done)
-  Signal dom Bool ->  -- readyOut (FFN ready)
-  Signal dom Bool ->  -- attnComplete (all heads done)
-  ( Signal dom Bool   -- validOut (attn done, ready for FFN)
-  , Signal dom Bool   -- readyIn (can accept Write)
-  , Signal dom Bool   -- enableAttn (trigger attention)
-  )
-attnControllerFSM validIn readyOut attnComplete = (validOut, readyIn, enableAttn)
- where
-  state = register AttnIdle nextState
-  
-  readyIn = state .==. pure AttnIdle
-  startAttn = validIn .&&. readyIn
-  validOut = state .==. pure AttnDone
-  consume = validOut .&&. readyOut
-  
-  nextState = mux (state .==. pure AttnIdle)
-                  (mux startAttn (pure AttnComputing) (pure AttnIdle))
-                  (mux (state .==. pure AttnComputing)
-                      (mux attnComplete (pure AttnDone) (pure AttnComputing))
-                      (mux consume (pure AttnIdle) (pure AttnDone)))
-  
-  enableAttn = startAttn .||. (state .==. pure AttnComputing)
 
 perHeadWOController ::
   forall dom .
