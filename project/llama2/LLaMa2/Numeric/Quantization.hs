@@ -6,11 +6,9 @@ module LLaMa2.Numeric.Quantization
   , RowI8E
   , MatI8E
   ) where
-
 import Clash.Prelude
 import LLaMa2.Numeric.Types
-import LLaMa2.Core.Types (CArray2D(..))
-
+import LLaMa2.Types.LayerData (CArray2D(..))
 
 -- ===========================
 -- Quantization: F <-> I8E (PoT)

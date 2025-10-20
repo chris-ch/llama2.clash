@@ -1,4 +1,4 @@
-module LLaMa2.Helpers.MatVecI8E
+module LLaMa2.Numeric.Operations
   (
     matrixMultiplier
   , singleRowProcessor

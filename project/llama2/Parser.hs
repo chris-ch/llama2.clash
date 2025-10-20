@@ -11,7 +11,7 @@ import qualified Clash.Prelude as C
 
 import GHC.IO (unsafePerformIO)
 import Control.Monad (replicateM_)
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
     (
       SingleHeadComponent(SingleHeadComponent, rotary, wqHead, wkHead,
                           wvHead),
@@ -19,7 +19,7 @@ import LLaMa2.Core.Types
       EmbeddingComponent(EmbeddingComponent, rmsFinalWeight, vocabulary),
       CArray2D(CArray2D) )
 
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
     (
       HeadDimension,
       SequenceLength,

@@ -6,8 +6,8 @@ module LLaMa2.Decoder.SequenceController
   , SequenceState(..)
 ) where
 import Clash.Prelude
-import LLaMa2.Core.Types (ProcessingState (..), CycleStage (..))
-import LLaMa2.Config (NumLayers, SequenceLength)
+import LLaMa2.Types.LayerData (ProcessingState (..), CycleStage (..))
+import LLaMa2.Types.ModelConfig  (NumLayers, SequenceLength)
 
 data PipelineOutputs dom = PipelineOutputs
   { processingState   :: Signal dom ProcessingState

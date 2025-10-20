@@ -3,8 +3,8 @@ module LLaMa2.Helpers.MatVecI8ESpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Helpers.MatVecI8E (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier, cyclicalCounter32)
-import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
+import LLaMa2.Numeric.Operations (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier, cyclicalCounter32)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P

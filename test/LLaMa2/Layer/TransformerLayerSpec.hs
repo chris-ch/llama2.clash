@@ -3,12 +3,12 @@ module LLaMa2.Layer.TransformerLayerSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Numeric.Types (FixedPoint, Exponent)
+import LLaMa2.Numeric.Quantization (MatI8E)
+import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Layer.TransformerLayer (singleHeadController)
-import LLaMa2.Config (ModelDimension, HeadDimension)
+import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension)
 
 -- | Simple deterministic WO matrix for testing
 makeSimpleWOMatrix :: MatI8E ModelDimension HeadDimension

@@ -3,9 +3,9 @@ module LLaMa2.Sampling.Sampler (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
   ( Temperature, Token, Seed)
-import LLaMa2.Config ( VocabularySize )
+import LLaMa2.Types.ModelConfig  ( VocabularySize )
 
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Sampling.Distribution (pickSample, uniformRandom01Generator)

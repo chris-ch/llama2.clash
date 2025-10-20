@@ -4,14 +4,14 @@ module LLaMa2.Layer.FeedForward.FeedForwardNetwork (
 
 import Clash.Prelude
 import LLaMa2.Numeric.FixedPoint ( rmsNormFwFix )
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
     ( ModelDimension, ModelDimension, HiddenDimension )
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Layer.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF),
       FeedForwardNetworkComponentQ(..) )
 
-import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
+import LLaMa2.Numeric.Operations (parallel32RowMatrixMultiplier)
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
 
 feedForwardStage

@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-module LLaMa2.Config (
+module LLaMa2.Types.ModelConfig (
     ModelDimension,
     HiddenDimension,
     NumLayers,

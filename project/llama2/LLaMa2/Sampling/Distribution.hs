@@ -5,7 +5,7 @@ module LLaMa2.Sampling.Distribution (
 import Clash.Prelude
 
 import Data.Maybe (fromMaybe)
-import LLaMa2.Core.Types ( Token)
+import LLaMa2.Types.LayerData ( Token)
 
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (expF)

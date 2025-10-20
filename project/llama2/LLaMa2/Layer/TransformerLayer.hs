@@ -11,17 +11,17 @@ module LLaMa2.Layer.TransformerLayer (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
     ( ModelDimension,
       HeadDimension,
       NumLayers,
       NumQueryHeads,
       NumKeyValueHeads,
       SequenceLength )
-import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
+import LLaMa2.Numeric.Operations (matrixMultiplier)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization ( MatI8E, MatI8E )
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
   ( ProcessingState(..), LayerData(..), CycleStage(..)
   )
 import qualified LLaMa2.Memory.KVCacheBank as Cache
@@ -33,7 +33,7 @@ import LLaMa2.Layer.Components.Quantized
 
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Layer.Attention.AttentionHead (attentionHead)
-import LLaMa2.Memory.RamOps (trueDualPortRam)
+import LLaMa2.Memory.DualPortRAM (trueDualPortRam)
 import LLaMa2.Layer.Attention (fsmController)
 import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 

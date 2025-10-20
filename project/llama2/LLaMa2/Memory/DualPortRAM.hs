@@ -1,4 +1,4 @@
-module LLaMa2.Memory.RamOps (
+module LLaMa2.Memory.DualPortRAM (
     trueDualPortRam
 ) where
 

@@ -5,7 +5,7 @@ module LLaMa2.Layer.Attention.RotaryEncoding
 import Clash.Prelude
 
 import LLaMa2.Layer.Components.Quantized (RotaryEncodingComponentF (..))
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
 import LLaMa2.Numeric.Types (FixedPoint)
 
 rotaryEncoder

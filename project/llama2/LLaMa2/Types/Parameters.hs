@@ -4,7 +4,7 @@ module LLaMa2.Types.Parameters (
 import Clash.Prelude
 
 import LLaMa2.Layer.Components.Quantized (EmbeddingComponentQ)
-import LLaMa2.Config (NumLayers)
+import LLaMa2.Types.ModelConfig (NumLayers)
 import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent)
 
 data DecoderParameters = DecoderParameters

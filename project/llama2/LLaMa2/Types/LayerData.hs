@@ -1,4 +1,4 @@
-module LLaMa2.Core.Types
+module LLaMa2.Types.LayerData
   ( -- State machine
     CycleStage (..),
     ProcessingState (..),
@@ -15,7 +15,7 @@ where
 
 import Clash.Prelude
 import GHC.Stack (HasCallStack)
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
   ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,

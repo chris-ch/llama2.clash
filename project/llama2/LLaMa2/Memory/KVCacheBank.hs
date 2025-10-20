@@ -4,7 +4,7 @@ module LLaMa2.Memory.KVCacheBank (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Config (HeadDimension)
+import LLaMa2.Types.ModelConfig  (HeadDimension)
 
 -- Existing (unchanged) counter-based sequencer (if you still want it):
 writeSequencer

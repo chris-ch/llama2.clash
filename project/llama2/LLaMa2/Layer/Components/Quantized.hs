@@ -15,12 +15,12 @@ module LLaMa2.Layer.Components.Quantized
 
 import Clash.Prelude
 
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
   ( CArray2D(..)
   , RotaryEncodingComponent(..)
   , EmbeddingComponent(..), SingleHeadComponent (..)
   )
-import LLaMa2.Config (
+import LLaMa2.Types.ModelConfig  (
   ModelDimension
   , HiddenDimension
   , NumQueryHeads

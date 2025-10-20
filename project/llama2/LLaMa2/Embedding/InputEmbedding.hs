@@ -3,16 +3,15 @@ module LLaMa2.Embedding.InputEmbedding
 ) where
 import Clash.Prelude
 
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
     ( ModelDimension, VocabularySize, ModelDimension, VocabularySize )
-import LLaMa2.Core.Types ( Token, Token )
+import LLaMa2.Types.LayerData ( Token )
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint, scalePow2F )
 import LLaMa2.Numeric.Quantization ( MatI8E, MatI8E )
 import qualified LLaMa2.Layer.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 
 -- | Lookup token embedding from vocabulary
-inputEmbedding
-  :: HiddenClockResetEnable dom
+inputEmbedding :: HiddenClockResetEnable dom
   => Quantized.EmbeddingComponentQ           -- ^ Embedding parameters
   -> Signal dom Token                        -- ^ Input token
   -> Signal dom (Vec ModelDimension FixedPoint)  -- ^ Embedded vector

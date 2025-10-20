@@ -1,13 +1,13 @@
 module LLaMa2.Params.Decoder (decoderConst) where
 
 import Clash.Prelude
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
   ( ModelDimension, HiddenDimension
   , HeadDimension
   , RotaryPositionalEmbeddingDimension, SequenceLength
   , VocabularySize
   )
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
   ( CArray2D(..)
   , SingleHeadComponent(..)
   , RotaryEncodingComponent(..)

@@ -4,7 +4,7 @@ module LLaMa2.Top
 
 import Clash.Prelude
 
-import LLaMa2.Core.Types ( Temperature, Seed, Token )
+import LLaMa2.Types.LayerData ( Temperature, Seed, Token )
 
 import qualified LLaMa2.Decoder.Decoder as Decoder ( decoder, DecoderIntrospection(..) )
 import LLaMa2.Params.Decoder (decoderConst)

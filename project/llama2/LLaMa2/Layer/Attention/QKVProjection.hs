@@ -3,7 +3,7 @@ module LLaMa2.Layer.Attention.QKVProjection (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
     ( NumQueryHeads,
       ModelDimension,
       NumKeyValueHeads,
@@ -18,8 +18,8 @@ import LLaMa2.Layer.Components.Quantized
     ( MultiHeadAttentionComponentQ(..),
       SingleHeadComponentQ(..) )
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
-import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
-import LLaMa2.Core.Types (ProcessingState (..), LayerData (..))
+import LLaMa2.Numeric.Operations (matrixMultiplier)
+import LLaMa2.Types.LayerData (ProcessingState (..), LayerData (..))
 import LLaMa2.Layer.Attention (fsmController)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 

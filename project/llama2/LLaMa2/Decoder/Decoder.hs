@@ -6,14 +6,14 @@ module LLaMa2.Decoder.Decoder (
 
 import Clash.Prelude
 
-import LLaMa2.Core.Types
+import LLaMa2.Types.LayerData
   ( LayerData(..)
   , ProcessingState (..)
   , Temperature, Seed
   , Token
   )
 import LLaMa2.Types.Parameters (DecoderParameters (..))
-import LLaMa2.Config
+import LLaMa2.Types.ModelConfig 
   ( NumLayers, ModelDimension
   , NumQueryHeads, NumKeyValueHeads, HeadDimension
   )
