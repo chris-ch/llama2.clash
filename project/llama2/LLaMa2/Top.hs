@@ -1,14 +1,14 @@
 module LLaMa2.Top
-  ( topEntity, topEntitySim, TransformerIntrospection(..)
+  ( topEntity, topEntitySim, Decoder.DecoderIntrospection(..)
   ) where
 
 import Clash.Prelude
 
 import LLaMa2.Core.Types ( Temperature, Seed, Token )
 
-import LLaMa2.Core.Transformer as Transformer ( transformer, TransformerIntrospection(..) )
+import qualified LLaMa2.Decoder.Decoder as Decoder ( decoder, DecoderIntrospection(..) )
 import LLaMa2.Params.Decoder (decoderConst)
-import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent)
+import LLaMa2.Types.Parameters (DecoderParameters)
 
 -- Monomorphic, fully applied top. Domain: System
 {-# ANN topEntity
@@ -53,20 +53,20 @@ topEntity
   -> (
     Signal System Token
   , Signal System Bool
-  , TransformerIntrospection System -- ^ introspection signals
+  , Decoder.DecoderIntrospection System -- ^ introspection signals
   )
 topEntity clk rst en inTok inTokValid temp seed =
   withClockResetEnable clk rst en $
-    transformer decoderConst inTok inTokValid temp seed
+    Decoder.decoder decoderConst inTok inTokValid temp seed
 
 topEntitySim :: HiddenClockResetEnable System
-  => TransformerLayer.TransformerDecoderComponent
+  => DecoderParameters
   -> Signal System Token  -- Input token
   -> Signal System Bool           -- ^ inputTokenValid: high when inputTokenSignal carries the prompt token (pos 0)
   -> Signal System Temperature
   -> Signal System Seed
   -> ( Signal System Token                -- sampled token
       , Signal System Bool                 -- ready pulse (end of last FFN)
-      , TransformerIntrospection System -- ^ introspection signals
+      , Decoder.DecoderIntrospection System -- ^ introspection signals
      )
-topEntitySim = transformer
+topEntitySim = Decoder.decoder

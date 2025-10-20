@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Attention.OnlineSoftmax
+module LLaMa2.Layer.Attention.OnlineSoftmax
   ( softInit, softStep, softResult, SoftState(..)
   ) where
 

@@ -1,4 +1,4 @@
-module LLaMa2.Layers.FeedForward.FeedForwardNetwork (
+module LLaMa2.Layer.FeedForward.FeedForwardNetwork (
    feedForwardStage
 ) where
 
@@ -7,9 +7,9 @@ import LLaMa2.Helpers.FixedPoint ( rmsNormFwFix )
 import LLaMa2.Config
     ( ModelDimension, ModelDimension )
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
-import LLaMa2.Layers.Components.Quantized
+import LLaMa2.Layer.Components.Quantized
     ( FeedForwardNetworkComponentQ(fRMSFfnF) )
-import LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal (feedForwardCore)
+import LLaMa2.Layer.FeedForward.FeedForwardNetwork.Internal (feedForwardCore)
 
 feedForwardStage
   :: HiddenClockResetEnable dom

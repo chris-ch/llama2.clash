@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Attention.MultiHeadAttention (
+module LLaMa2.Layer.Attention.MultiHeadAttention (
   qkvProjector
 ) where
 
@@ -8,9 +8,9 @@ import LLaMa2.Config
   , HeadDimension, SequenceLength)
 
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layers.Components.Quantized
+import LLaMa2.Layer.Components.Quantized
   ( MultiHeadAttentionComponentQ(..) )
-import LLaMa2.Layers.Attention.MultiHeadAttention.Internal
+import LLaMa2.Layer.Attention.MultiHeadAttention.Internal
   ( queryHeadProjector, keyValueHeadProjector )
 import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 

@@ -1,20 +1,14 @@
 module LLaMa2.Embedding.PRNG (
-    tokenSampler, logitsProjector, pseudoRandomGenerator
+    tokenSampler, pseudoRandomGenerator
 ) where
-
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import LLaMa2.Core.Types
   ( Temperature, Token, Seed)
-import LLaMa2.Config ( VocabularySize , ModelDimension )
+import LLaMa2.Config ( VocabularySize )
 
-import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer (TransformerDecoderComponent(..))
-import qualified Clash.Sized.Vector as CV
-import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Fixed (expF)
-import LLaMa2.Layers.Components.Quantized (EmbeddingComponentQ(..))
-import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
 
 -- xorshift32 unchanged
 xorshift32 :: Unsigned 32 -> Unsigned 32
@@ -23,28 +17,6 @@ xorshift32 s0 =
       s2 = s1 `xor` shiftR s1 17
       s3 = s2 `xor` shiftL s2 5
   in s3
-
-logitsProjector :: forall dom .
-  HiddenClockResetEnable dom
-  => Signal dom Bool  -- ^ validIn (readyPulse from pipeline)
-  -> Signal dom Bool  -- ^ readyIn (always True for now, sampler is combinational)
-  -> TransformerLayer.TransformerDecoderComponent
-  -> Signal dom (Vec ModelDimension FixedPoint)
-  -> ( Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits output
-     , Signal dom Bool  -- ^ validOut
-     , Signal dom Bool  -- ^ readyOut
-     )
-logitsProjector validIn readyIn decoder tokenVecSig =
-  (logitsOut, validOut, readyOut)
-  where
-    emb = TransformerLayer.modelEmbedding decoder
-
-    -- Pre-normalize (combinational)
-    tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> pure (rmsFinalWeightF emb)
-
-    -- Sequential matrix multiply (tied embeddings as classifier)
-    (logitsOut, validOut, readyOut) =
-      parallel32RowMatrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
 
 pickSample :: (KnownNat n, KnownNat (n + 1)) => FixedPoint -> Vec (n + 1) FixedPoint -> FixedPoint -> Token
 pickSample temperature logits rand = if temperature <= 0 then argMax logits
@@ -82,7 +54,7 @@ uniformRandom01Generator readyPulse seed =
 -- categorical sampling from FixedPoint probabilities
 categoricalSampler :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32
 categoricalSampler u probs =
-  let cdf = CV.scanl1 (+) probs
+  let cdf = scanl1 (+) probs
       idxM = findIndex (>= u) cdf
   in fromIntegral (fromEnum (fromMaybe maxBound idxM))
 

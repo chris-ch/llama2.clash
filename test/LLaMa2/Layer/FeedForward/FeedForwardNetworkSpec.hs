@@ -1,4 +1,4 @@
-module LLaMa2.Layers.FeedForward.FeedForwardNetworkSpec (spec) where
+module LLaMa2.Layer.FeedForward.FeedForwardNetworkSpec (spec) where
 
 import Test.Hspec
 import Clash.Prelude

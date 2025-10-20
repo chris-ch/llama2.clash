@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
+module LLaMa2.Layer.Attention.MultiHeadAttention.Internal (
   rotaryPositionEncoder
   , rotaryEncoder
   , queryHeadProjector
@@ -12,7 +12,7 @@ import LLaMa2.Config
       RotaryPositionalEmbeddingDimension,
       SequenceLength  )
 import LLaMa2.Numeric.Types ( FixedPoint )
-import LLaMa2.Layers.Components.Quantized
+import LLaMa2.Layer.Components.Quantized
     ( SingleHeadComponentQ(..), RotaryEncodingComponentF (..) )
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 

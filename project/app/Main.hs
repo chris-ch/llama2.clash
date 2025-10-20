@@ -19,11 +19,11 @@ import Text.Printf (printf)
 import LLaMa2.Core.Types ( Token, Temperature, Seed, ProcessingState (..) )
 
 import LLaMa2.Config ( VocabularySize )
-import qualified LLaMa2.Top as Top ( topEntitySim, TransformerIntrospection (..) )
+import qualified LLaMa2.Top as Top ( topEntitySim, DecoderIntrospection (..) )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
-import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
+import LLaMa2.Types.Parameters (DecoderParameters)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -143,7 +143,7 @@ type DecoderInputState = (Token, [Token], Bool)
 
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
-  :: TransformerDecoderComponent
+  :: DecoderParameters
   -> T.Tokenizer
   -> Int             -- ^ Number of tokens to generate
   -> [Token]         -- ^ Prompt tokens
@@ -188,7 +188,7 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
     ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
     writeDonesSampled     = C.sampleN simSteps (Top.writeDone introspection)
     inputTokensSampled    = C.sampleN simSteps (Top.inputToken introspection)
-    selectedTokensSampled = C.sampleN simSteps (Top.selectedToken introspection)
+    selectedTokensSampled = C.sampleN simSteps (Top.outputToken introspection)
     feedbackTokensSampled = C.sampleN simSteps (Top.feedbackToken introspection)
     embeddingNormsSampled = C.sampleN simSteps (Top.embeddingNorm introspection)
     outputNormsSampled    = C.sampleN simSteps (Top.outputNorm introspection)
@@ -236,9 +236,9 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
   putStrLn ""
   pure (length sampledTokens)
 
-bundledOutputs :: TransformerDecoderComponent
+bundledOutputs :: DecoderParameters
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> (C.Signal C.System (Token, Bool), Top.TransformerIntrospection C.System)
+  -> (C.Signal C.System (Token, Bool), Top.DecoderIntrospection C.System)
 bundledOutputs decoder bundledInputs =
   (C.bundle (outToken, readyPulse), introspection)
  where

@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Components.Quantized
+module LLaMa2.Layer.Components.Quantized
   ( -- Types
     SingleHeadComponentQ(..)
   , MultiHeadAttentionComponentQ(..)

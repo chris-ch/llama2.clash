@@ -13,15 +13,15 @@ import LLaMa2.Core.Types
   , RotaryEncodingComponent(..)
   , EmbeddingComponent(..)
   )
-import LLaMa2.Layers.TransformerLayer
-  ( TransformerDecoderComponent(..)
-  , TransformerLayerComponent(..)
+import LLaMa2.Layer.TransformerLayer
+  ( TransformerLayerComponent(..)
   )
-import LLaMa2.Layers.Components.Quantized
+import LLaMa2.Layer.Components.Quantized
   ( MultiHeadAttentionComponent(..)
   , FeedForwardNetworkComponent(..)
   , quantizeMHA, quantizeFFN, quantizeEmbedding
   )
+import LLaMa2.Types.Parameters (DecoderParameters (..))
 
 -- Helpers: zero-filled Float matrices/vectors to make the design elaborate now.
 zeroMatF :: forall rows cols. (KnownNat rows, KnownNat cols) => CArray2D rows cols
@@ -63,13 +63,13 @@ embeddingFloat = EmbeddingComponent
   }
 
 -- Public constant: quantized components embedded in hardware.
-decoderConst :: TransformerDecoderComponent
+decoderConst :: DecoderParameters
 decoderConst =
   let layerQ = TransformerLayerComponent
                 { multiHeadAttention = quantizeMHA mhaFloat
                 , feedforwardNetwork = quantizeFFN ffnFloat
                 }
-  in TransformerDecoderComponent
+  in DecoderParameters
         { modelEmbedding = quantizeEmbedding embeddingFloat
         , modelLayers    = repeat layerQ  -- Vec NumLayers
         }

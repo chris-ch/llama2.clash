@@ -1,4 +1,4 @@
-module LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal  (
+module LLaMa2.Layer.FeedForward.FeedForwardNetwork.Internal  (
   feedForwardCore
 )where
 
@@ -10,7 +10,7 @@ import LLaMa2.Config
 
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Numeric.Fixed
-import LLaMa2.Layers.Components.Quantized (FeedForwardNetworkComponentQ (..))
+import LLaMa2.Layer.Components.Quantized (FeedForwardNetworkComponentQ (..))
 import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
 
 sigmoidLinearUnit :: FixedPoint -> FixedPoint

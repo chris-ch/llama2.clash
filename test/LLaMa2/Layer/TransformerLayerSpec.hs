@@ -1,4 +1,4 @@
-module LLaMa2.Layers.TransformerLayerSpec (spec) where
+module LLaMa2.Layer.TransformerLayerSpec (spec) where
 
 import Clash.Prelude
 import qualified Clash.Signal as CS
@@ -7,7 +7,7 @@ import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint, Exponent)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Layers.TransformerLayer.Internal (singleHeadController)
+import LLaMa2.Layer.TransformerLayer.Internal (singleHeadController)
 import LLaMa2.Config (ModelDimension, HeadDimension)
 
 -- | Simple deterministic WO matrix for testing

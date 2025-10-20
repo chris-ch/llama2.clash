@@ -1,4 +1,4 @@
-module LLaMa2.Layers.TransformerLayer (
+module LLaMa2.Layer.TransformerLayer (
     transformerLayer
     , getKeyVector
     , getValueVector
@@ -6,12 +6,11 @@ module LLaMa2.Layers.TransformerLayer (
     , queryHeadIndex1
     , queryHeadIndex0
     , hasSecondQueryHead
-  , TransformerDecoderComponent(..)
   , TransformerLayerComponent(..)
 ) where
 
 import Clash.Prelude
-import LLaMa2.Layers.TransformerLayer.Internal
+import LLaMa2.Layer.TransformerLayer.Internal
 import LLaMa2.Core.Types
   ( ProcessingState(..), LayerData(..), CycleStage(..)
   )
@@ -22,27 +21,21 @@ import LLaMa2.Config
   )
 import qualified LLaMa2.Memory.KVCacheBank as Cache
 
-import LLaMa2.Layers.Components.Quantized
+import LLaMa2.Layer.Components.Quantized
   ( FeedForwardNetworkComponentQ(..)
   , MultiHeadAttentionComponentQ(..)
-  , EmbeddingComponentQ(..)
   )
 
-import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
+import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layers.Attention.AttentionHead (attentionHead)
+import LLaMa2.Layer.Attention.AttentionHead (attentionHead)
 import LLaMa2.Memory.RamOps (trueDualPortRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Layers.Attention.MultiHeadAttention (qkvProjector)
+import LLaMa2.Layer.Attention.MultiHeadAttention (qkvProjector)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
   , feedforwardNetwork :: FeedForwardNetworkComponentQ
-  } deriving (Show)
-
-data TransformerDecoderComponent = TransformerDecoderComponent
-  { modelEmbedding :: EmbeddingComponentQ
-  , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
 -- Shared 3-state valid/ready controller

@@ -93,21 +93,24 @@ library
     LLaMa2.Config
     , LLaMa2.Core.Embedding
     , LLaMa2.Core.PipelineController
-    , LLaMa2.Core.Transformer
-    , LLaMa2.Core.Transformer.Internal
     , LLaMa2.Core.Types
+    , LLaMa2.Decoder.Decoder
+    , LLaMa2.Decoder.LayerStack
+    , LLaMa2.Decoder.SequenceController
     , LLaMa2.Embedding.PRNG
+    , LLaMa2.Embedding.InputEmbedding
+    , LLaMa2.Embedding.OutputProjection
     , LLaMa2.Helpers.FixedPoint
     , LLaMa2.Helpers.MatVecI8E
-    , LLaMa2.Layers.Attention.AttentionHead
-    , LLaMa2.Layers.Attention.MultiHeadAttention
-    , LLaMa2.Layers.Attention.MultiHeadAttention.Internal
-    , LLaMa2.Layers.Attention.OnlineSoftmax
-    , LLaMa2.Layers.Components.Quantized
-    , LLaMa2.Layers.FeedForward.FeedForwardNetwork
-    , LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal
-    , LLaMa2.Layers.TransformerLayer
-    , LLaMa2.Layers.TransformerLayer.Internal
+    , LLaMa2.Layer.Attention.AttentionHead
+    , LLaMa2.Layer.Attention.MultiHeadAttention
+    , LLaMa2.Layer.Attention.MultiHeadAttention.Internal
+    , LLaMa2.Layer.Attention.OnlineSoftmax
+    , LLaMa2.Layer.Components.Quantized
+    , LLaMa2.Layer.FeedForward.FeedForwardNetwork
+    , LLaMa2.Layer.FeedForward.FeedForwardNetwork.Internal
+    , LLaMa2.Layer.TransformerLayer
+    , LLaMa2.Layer.TransformerLayer.Internal
     , LLaMa2.Memory.KVCacheBank
     , LLaMa2.Memory.RamOps
     , LLaMa2.Numeric.Types
@@ -115,6 +118,7 @@ library
     , LLaMa2.Numeric.ParamPack
     , LLaMa2.Params.Decoder
     , LLaMa2.Top
+    , LLaMa2.Types.Parameters
     , Parser
     , Simulation.MatVecSim
     , Tokenizer
@@ -146,12 +150,12 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Layers.Attention.AttentionHeadSpec
-      LLaMa2.Layers.Attention.MultiHeadAttentionSpec
-      LLaMa2.Layers.FeedForward.FeedForwardNetworkSpec
-      LLaMa2.Layers.TransformerLayerSpec
+      LLaMa2.Layer.Attention.AttentionHeadSpec
+      LLaMa2.Layer.Attention.MultiHeadAttentionSpec
+      LLaMa2.Layer.FeedForward.FeedForwardNetworkSpec
+      LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Helpers.MatVecI8ESpec 
-      LLaMa2.Layers.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
   hs-source-dirs:
       test
   build-depends:

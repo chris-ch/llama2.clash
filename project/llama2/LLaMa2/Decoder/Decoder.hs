@@ -1,23 +1,23 @@
-module LLaMa2.Core.Transformer (
-    transformer, TransformerIntrospection(..)
+module LLaMa2.Decoder.Decoder (
+    decoder, DecoderIntrospection(..)
 ) where
 
 import Clash.Prelude
-import LLaMa2.Core.Transformer.Internal
 import LLaMa2.Core.Types
   ( LayerData(..)
   , ProcessingState (..)
   , Temperature, Seed
   , Token
   )
+
+import LLaMa2.Types.Parameters (DecoderParameters (..))
 import LLaMa2.Config
-  (  NumLayers, VocabularySize, ModelDimension, SequenceLength
+  (  NumLayers, VocabularySize, ModelDimension, SequenceLength, NumQueryHeads, NumKeyValueHeads, HeadDimension
   )
-import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
-  ( TransformerDecoderComponent(..)
-  , transformerLayer
+import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer
+  ( transformerLayer
   )
-import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
+import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent (..))
 import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( pipelineController
@@ -25,51 +25,58 @@ import qualified LLaMa2.Core.PipelineController as PipelineController
   , layerSequencer
   )
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
-import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
+import qualified LLaMa2.Layer.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Embedding.PRNG (logitsProjector)
+import LLaMa2.Embedding.OutputProjection (logitsProjector)
+
+initialLayerData :: LayerData
+initialLayerData = LayerData
+  { inputVector       = repeat 0          :: Vec ModelDimension FixedPoint
+  , queryVectors      = repeat (repeat 0) :: Vec NumQueryHeads (Vec HeadDimension FixedPoint)
+  , keyVectors        = repeat (repeat 0) :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  , valueVectors      = repeat (repeat 0) :: Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  , attentionOutput   = repeat 0          :: Vec ModelDimension FixedPoint
+  , feedForwardOutput = repeat 0          :: Vec ModelDimension FixedPoint
+  }
 
 -- | Introspection signals — meant for runtime visibility / observability
-data TransformerIntrospection dom = TransformerIntrospection
+data DecoderIntrospection dom = DecoderIntrospection
   { state         :: Signal dom ProcessingState
-  , layerIndex    :: Signal dom (Index NumLayers)
-  , ready         :: Signal dom Bool
   , logitsValid   :: Signal dom Bool
   , attnDone      :: Signal dom Bool
   , qkvDone       :: Signal dom Bool
   , ffnDone       :: Signal dom Bool
   , writeDone     :: Signal dom Bool
   , inputToken    :: Signal dom Token
-  , selectedToken :: Signal dom Token
+  , outputToken :: Signal dom Token
   , feedbackToken :: Signal dom Token
   , embeddingNorm :: Signal dom FixedPoint
   , outputNorm    :: Signal dom FixedPoint
-  -- NEW: signals from new controller
-  , newLayerIndex :: Signal dom (Index NumLayers)
-  , newSeqPos     :: Signal dom (Index SequenceLength)
-  , newReady      :: Signal dom Bool
+  , layerIndex :: Signal dom (Index NumLayers)
+  , seqPos     :: Signal dom (Index SequenceLength)
+  , ready      :: Signal dom Bool
   } deriving (Generic, NFDataX)
 
-transformer :: forall dom
+decoder :: forall dom
    . HiddenClockResetEnable dom
-  => TransformerLayer.TransformerDecoderComponent
+  => DecoderParameters
   -> Signal dom Token
   -> Signal dom Bool            -- ^ inputTokenValid (True while external prompt is used)
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Signal dom Token
       , Signal dom Bool
-      , TransformerIntrospection dom -- ^ introspection signals
+      , DecoderIntrospection dom -- ^ introspection signals
      )
-transformer decoder inputToken inputTokenValid temperature seed =
-  ( selectedToken, readyPulse, introspection)
+decoder params inputToken inputTokenValid temperature seed =
+  ( outputToken, readyPulse, introspection)
  where
   vocabulary :: MatI8E VocabularySize ModelDimension
-  vocabulary = Quantized.vocabularyQ $ modelEmbedding decoder
+  vocabulary = Quantized.vocabularyQ $ modelEmbedding params
 
   transformerLayers :: Vec NumLayers TransformerLayerComponent
-  transformerLayers  = modelLayers decoder
+  transformerLayers  = modelLayers params
   
   -- STAGE CONTROLLER - Provides stage sequencing for layer internals
   -- Note: Top-level layer tracking uses minimalController (newLayerIdx)
@@ -88,36 +95,15 @@ transformer decoder inputToken inputTokenValid temperature seed =
     (newLayerIdx .==. pure maxBound) .&&. 
     ffnDoneThisLayer
 
-  readyPulse :: Signal dom Bool
-  readyPulse = newReadyPulse
-
   processingState :: Signal dom ProcessingState
   processingState = PipelineController.processingState pipelineController
 
-  (newLayerIdx, newSeqPosIdx, newReadyPulse) =
+  (newLayerIdx, newSeqPosIdx, readyPulse) =
     PipelineController.layerSequencer ffnDoneThisLayer inputTokenValid
-
-  -- Extract final layer output (updated by ffnValidOut at Stage4)
-  finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)
-  finalLayerOutput = feedForwardOutput <$> nextLayerData
-
-  (logits, logitsValid, logitsReadyOut) =
-    logitsProjector lastLayerFfnDone (pure True) decoder finalLayerOutput
-
-  -- keep 
-  tokenSample :: Signal dom Token
-  tokenSample = PRNG.tokenSampler logitsValid temperature seed logits
-
-  -- Register token when logits become valid (not just readyPulse)
-  feedbackToken :: Signal dom Token
-  feedbackToken = regEn 0 logitsValid tokenSample
-
-  selectedToken :: Signal dom Token
-  selectedToken = mux inputTokenValid inputToken feedbackToken
 
   -- Quantized embedding lookup via ROM (1-cycle)
   tokenEmbedding :: Signal dom (Vec ModelDimension FixedPoint)
-  tokenEmbedding = Embedding.embedder vocabulary selectedToken
+  tokenEmbedding = Embedding.embedder vocabulary outputToken
 
   layerDataRegister :: Signal dom LayerData
   layerDataRegister = register initialLayerData nextLayerData
@@ -134,7 +120,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
 
   -- Pass newLayerIdx to pipelineProcessor
   (nextLayerData, _finalValidOut, doneFlags) =
-    pipelineProcessor (pure True) (pure True) processingState newLayerIdx selectedInput transformerLayers
+    pipelineProcessor processingState newLayerIdx selectedInput transformerLayers
 
   -- Unpack the completion signals
   (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
@@ -155,37 +141,50 @@ transformer decoder inputToken inputTokenValid temperature seed =
   embeddingNorm :: Signal dom FixedPoint
   embeddingNorm = sum . map abs <$> tokenEmbedding
 
-  outputNorm :: Signal dom FixedPoint
-  outputNorm = sum . map abs <$> finalLayerOutput
+  -- Extract final layer output (updated by ffnValidOut at Stage4)
+  layerOutput :: Signal dom (Vec ModelDimension FixedPoint)
+  layerOutput = feedForwardOutput <$> nextLayerData
 
-  introspection :: TransformerIntrospection dom
-  introspection = TransformerIntrospection
+  (logits, logitsValid, logitsReadyOut) =
+    logitsProjector lastLayerFfnDone (pure True) params layerOutput
+
+  outputNorm :: Signal dom FixedPoint
+  outputNorm = sum . map abs <$> layerOutput
+
+  -- Token sampling from logits 
+  sampledToken :: Signal dom Token
+  sampledToken = PRNG.tokenSampler logitsValid temperature seed logits
+
+  -- Feedback register
+  feedbackToken :: Signal dom Token
+  feedbackToken = regEn 0 logitsValid sampledToken
+
+  outputToken :: Signal dom Token
+  outputToken = mux inputTokenValid inputToken feedbackToken
+
+  introspection :: DecoderIntrospection dom
+  introspection = DecoderIntrospection
     { state         = processingState
-    , layerIndex    = newLayerIdx
-    , ready         = readyPulse
     , logitsValid
     , attnDone      = attnDoneThisLayer
     , qkvDone       = qkvDoneThisLayer
     , ffnDone       = ffnDoneThisLayer
     , writeDone     = writeDoneThisLayer
     , inputToken
-    , selectedToken
+    , outputToken
     , feedbackToken
     , embeddingNorm
     , outputNorm
-    -- NEW: expose new controller signals
-    , newLayerIndex = newLayerIdx
-    , newSeqPos     = newSeqPosIdx
-    , newReady      = newReadyPulse
+    , layerIndex = newLayerIdx
+    , seqPos     = newSeqPosIdx
+    , ready      = readyPulse
     }
 
 -- | Process all layers sequentially in the pipeline
 pipelineProcessor
   :: forall dom
    . HiddenClockResetEnable dom
-  => Signal dom Bool                        -- ^ validIn
-  -> Signal dom Bool                        -- ^ readyOut
-  -> Signal dom ProcessingState
+  => Signal dom ProcessingState
   -> Signal dom (Index NumLayers)           -- ^ currentLayer
   -> Signal dom LayerData                   -- ^ current layer input
   -> Vec NumLayers TransformerLayerComponent
@@ -193,17 +192,17 @@ pipelineProcessor
      , Signal dom Bool
      , Vec NumLayers (Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
      )
-pipelineProcessor validIn readyOut psSig currentLayerSig initLayerData layers =
+pipelineProcessor psSig currentLayerSig initLayerData layers =
   let
     indexedLayers = imap (,) layers
 
-    stepLayer (ld, vIn) (ix, comp) =
+    stepLayer (ld, _) (ix, comp) =
       let
         (ldNext, doneFlags, vOut, rOut) =
-          layerProcessor psSig currentLayerSig vIn readyOut ld (ix, comp)
+          layerProcessor psSig currentLayerSig ld (ix, comp)
       in ((ldNext, vOut), (doneFlags, vOut, rOut))
 
-    (finalState, layerResults) = mapAccumL stepLayer (initLayerData, validIn) indexedLayers
+    (finalState, layerResults) = mapAccumL stepLayer (initLayerData, pure True) indexedLayers
 
     doneFlagsVec = map (\(df, _, _) -> df) layerResults
     validOuts    = map (\(_, vOut, _) -> vOut) layerResults
@@ -216,8 +215,6 @@ pipelineProcessor validIn readyOut psSig currentLayerSig initLayerData layers =
 layerProcessor :: HiddenClockResetEnable dom
   => Signal dom ProcessingState
   -> Signal dom (Index NumLayers)            -- ^ NEW: currentLayer from new controller
-  -> Signal dom Bool                         -- ^ validIn
-  -> Signal dom Bool                         -- ^ readyOut from next layer
   -> Signal dom LayerData                    -- ^ input data
   -> (Index NumLayers, TransformerLayerComponent)
   -> ( Signal dom LayerData
@@ -225,7 +222,7 @@ layerProcessor :: HiddenClockResetEnable dom
      , Signal dom Bool                     -- ^ validOut (FFN done)
      , Signal dom Bool                     -- ^ readyIn
      )
-layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerComp) =
+layerProcessor psSig currentLayerSig ldIn (layerIndex, layerComp) =
   let
     -- Compute layerActive signal: true when this is the current layer
     layerActive = currentLayerSig .==. pure layerIndex
@@ -242,10 +239,9 @@ layerProcessor psSig currentLayerSig validIn readyOut ldIn (layerIndex, layerCom
 
     -- Ready/Valid handshake
     validOut = ffnDone
-    readyIn  = readyOut
 
     selectedLd = mux (currentLayerSig .==. pure layerIndex)
                      ldNext
                      ldIn
   in
-    (selectedLd, (writeDone, attnDone, qkvDone, qkvInReady, ffnDone), validOut, readyIn)
+    (selectedLd, (writeDone, attnDone, qkvDone, qkvInReady, ffnDone), validOut, pure True)

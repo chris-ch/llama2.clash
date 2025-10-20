@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Attention.AttentionHeadSpec (spec) where
+module LLaMa2.Layer.Attention.AttentionHeadSpec (spec) where
     
 import Clash.Prelude
 import Test.Hspec (Spec, describe, it, shouldBe)

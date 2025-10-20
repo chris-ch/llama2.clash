@@ -31,9 +31,10 @@ import LLaMa2.Config
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent (..), TransformerLayerComponent (..))
-import qualified LLaMa2.Layers.Components.Quantized as Quantized
+import LLaMa2.Layer.TransformerLayer (TransformerLayerComponent (..))
+import qualified LLaMa2.Layer.Components.Quantized as Quantized
     ( MultiHeadAttentionComponent, MultiHeadAttentionComponent(..), FeedForwardNetworkComponent(..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding )
+import LLaMa2.Types.Parameters (DecoderParameters (..))
 
 
 -- ============================================================================
@@ -109,7 +110,7 @@ readVec4D = do
     chunksOf _ [] = []
     chunksOf k xs = take k xs : chunksOf k (drop k xs)
 
-parseLLaMa2ConfigFile :: BG.Get TransformerDecoderComponent
+parseLLaMa2ConfigFile :: BG.Get DecoderParameters
 parseLLaMa2ConfigFile = do
   replicateM_ 7 BG.getInt32le
   tokenEmbeddingTable' <- readVec2D @VocabularySize @ModelDimension
@@ -195,7 +196,7 @@ parseLLaMa2ConfigFile = do
            , feedforwardNetwork = ffnQ
            }
 
-    decoder = TransformerDecoderComponent
+    decoder = DecoderParameters
       { modelEmbedding = embeddingQ
       , modelLayers    = C.map layer (C.indicesI :: C.Vec NumLayers (C.Index NumLayers))
       }

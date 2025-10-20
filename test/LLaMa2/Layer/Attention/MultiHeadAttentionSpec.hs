@@ -1,4 +1,4 @@
-module LLaMa2.Layers.Attention.MultiHeadAttentionSpec (spec) where
+module LLaMa2.Layer.Attention.MultiHeadAttentionSpec (spec) where
 
 import Test.Hspec
 import Clash.Prelude

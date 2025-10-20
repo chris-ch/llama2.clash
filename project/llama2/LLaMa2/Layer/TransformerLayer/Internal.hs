@@ -1,4 +1,4 @@
-module LLaMa2.Layers.TransformerLayer.Internal (
+module LLaMa2.Layer.TransformerLayer.Internal (
     singleHeadController
 ) where
 

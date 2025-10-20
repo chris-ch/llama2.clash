@@ -1,11 +1,11 @@
-module LLaMa2.Layers.Attention.AttentionHead
+module LLaMa2.Layer.Attention.AttentionHead
   ( attentionHead ) where
 
 import Clash.Prelude
 import LLaMa2.Config (HeadDimension)
 import LLaMa2.Numeric.Types (FixedPoint)
 
-import qualified LLaMa2.Layers.Attention.OnlineSoftmax as OnlineSoftmax
+import qualified LLaMa2.Layer.Attention.OnlineSoftmax as OnlineSoftmax
   ( softInit, softResult, softStep )
 
 dotProduct :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
