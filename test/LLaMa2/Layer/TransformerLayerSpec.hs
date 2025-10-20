@@ -7,7 +7,7 @@ import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint, Exponent)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Layer.TransformerLayer.Internal (singleHeadController)
+import LLaMa2.Layer.TransformerLayer (singleHeadController)
 import LLaMa2.Config (ModelDimension, HeadDimension)
 
 -- | Simple deterministic WO matrix for testing

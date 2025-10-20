@@ -3,7 +3,7 @@ module LLaMa2.Embedding.OutputProjection
 ) where
 import Clash.Prelude
 
-import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
+import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Layer.Components.Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Helpers.MatVecI8E (parallel32RowMatrixMultiplier)
 import LLaMa2.Types.Parameters (DecoderParameters (..))

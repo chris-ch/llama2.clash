@@ -1,4 +1,4 @@
-module LLaMa2.Helpers.FixedPoint
+module LLaMa2.Numeric.FixedPoint
   ( dotProductF
   , rmsNormFwFix          -- FixedPoint-weighted (for Q path)
   ) where

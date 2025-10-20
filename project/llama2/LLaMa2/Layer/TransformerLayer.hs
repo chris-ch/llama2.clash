@@ -6,18 +6,23 @@ module LLaMa2.Layer.TransformerLayer (
     , queryHeadIndex1
     , queryHeadIndex0
     , hasSecondQueryHead
+    , singleHeadController
   , TransformerLayerComponent(..)
 ) where
 
 import Clash.Prelude
-import LLaMa2.Layer.TransformerLayer.Internal
+import LLaMa2.Config
+    ( ModelDimension,
+      HeadDimension,
+      NumLayers,
+      NumQueryHeads,
+      NumKeyValueHeads,
+      SequenceLength )
+import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Quantization ( MatI8E, MatI8E )
 import LLaMa2.Core.Types
   ( ProcessingState(..), LayerData(..), CycleStage(..)
-  )
-import LLaMa2.Config
-  ( ModelDimension
-  , NumLayers, NumQueryHeads, NumKeyValueHeads
-  , HeadDimension,  SequenceLength
   )
 import qualified LLaMa2.Memory.KVCacheBank as Cache
 
@@ -27,49 +32,19 @@ import LLaMa2.Layer.Components.Quantized
   )
 
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
-import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.AttentionHead (attentionHead)
 import LLaMa2.Memory.RamOps (trueDualPortRam)
-import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Layer.Attention.MultiHeadAttention (qkvProjector)
+import LLaMa2.Layer.Attention (fsmController)
+import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
   , feedforwardNetwork :: FeedForwardNetworkComponentQ
   } deriving (Show)
 
--- Shared 3-state valid/ready controller
-data GenericState = Idle | Compute | Done
-  deriving (Show, Eq, Generic, NFDataX)
-
 -- FSM states for autonomous stages
 data WriteState = WriteIdle | WriteWriting | WriteDone
   deriving (Show, Eq, Generic, NFDataX)
-
-fsmController ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool ->  -- inValid
-  Signal dom Bool ->  -- outReady
-  Signal dom Bool ->  -- computeDone
-  ( Signal dom Bool   -- enable
-  , Signal dom Bool   -- validOut
-  , Signal dom Bool   -- inReady
-  )
-fsmController inValid outReady computeDone = (enable, validOut, inReady)
- where
-  state    = register Idle next
-  inReady  = state .==. pure Idle
-  startTx  = inValid .&&. inReady
-  validOut = state .==. pure Done
-  consume  = validOut .&&. outReady
-
-  next = mux (state .==. pure Idle)
-              (mux startTx (pure Compute) (pure Idle))
-              (mux (state .==. pure Compute)
-                  (mux computeDone (pure Done) (pure Compute))
-                  (mux consume (pure Idle) (pure Done)))
-
-  enable = startTx .||. (state .==. pure Compute)
 
 kvWriteControllerFSM ::
   HiddenClockResetEnable dom =>
@@ -83,18 +58,18 @@ kvWriteControllerFSM ::
 kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
  where
   state = register WriteIdle nextState
-  
+
   readyIn = state .==. pure WriteIdle
   startWrite = validIn .&&. readyIn
   validOut = state .==. pure WriteDone
   consume = validOut .&&. readyOut
-  
+
   nextState = mux (state .==. pure WriteIdle)
                   (mux startWrite (pure WriteWriting) (pure WriteIdle))
                   (mux (state .==. pure WriteWriting)
                       (mux writeComplete (pure WriteDone) (pure WriteWriting))
                       (mux consume (pure WriteIdle) (pure WriteDone)))
-  
+
   enableWrite = startWrite .||. (state .==. pure WriteWriting)
 
 ffnController ::
@@ -110,26 +85,6 @@ ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
   (enable, validOut, inReady) = fsmController inValid outReady ffnSeqValid
   (result, ffnSeqValid, _ready) =
     FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
-
-
-qkvProjectionController ::
-  HiddenClockResetEnable dom =>
-  Signal dom Bool -> Signal dom Bool ->
-  Signal dom LayerData ->
-  MultiHeadAttentionComponentQ ->
-  Signal dom ProcessingState ->
-  ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
-                , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-                , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-  , Signal dom Bool
-  , Signal dom Bool )
-qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, inReady)
- where
-  (enable, validOut, inReady) = fsmController inValid outReady matVecValid
-  (result, matVecValid, _ready) =
-    qkvProjector enable (pure True) mhaQ
-               (sequencePosition <$> psSig)
-               (inputVector <$> idSig)
 
 transformerLayer :: forall dom . HiddenClockResetEnable dom
   => TransformerLayerComponent
@@ -182,7 +137,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
 
   -- Write stage FSM controller - produces writeDone signal
   (writeValidOutNew, _writeReadyIn, _writeEnable) =
-    kvWriteControllerFSM 
+    kvWriteControllerFSM
       qkvValidOut           -- validIn: start when QKV completes
       (pure True)           -- readyOut: always ready (attention doesn't use FSM)
       allBanksDone          -- writeComplete: all banks finished writing
@@ -196,7 +151,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qkvProjected
 
   allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-  
+
   -- Use FSM completion signal instead of stage check
   writeDone = writeValidOutNew
 
@@ -445,3 +400,86 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
     lastTRow = register False lastNow
 
   in (rowCounter, stepEnRow, lastTRow)
+
+
+-- FSM states
+data FSMState = IDLE | REQUESTING | PROJECTING | DONE
+  deriving (Eq, Show, Generic, NFDataX)
+
+{-|
+  Ready/Valid Handshaking Protocol with internal backpressure control:
+
+  • IDLE: Waiting for new input (validIn && readyOut)
+  • REQUESTING: Sending request to multiplier until it accepts (woReadyOut)
+  • PROJECTING: Multiplier is computing. We assert woReadyIn based on downstream readiness.
+  • DONE: Output is valid, waiting to be consumed.
+-}
+singleHeadController :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool                              -- validIn (head done signal)
+  -> Signal dom (Vec HeadDimension FixedPoint)    -- head vector
+  -> MatI8E ModelDimension HeadDimension          -- WO matrix
+  -> ( Signal dom (Vec ModelDimension FixedPoint) -- projected output
+     , Signal dom Bool                            -- validOut
+     , Signal dom Bool                            -- readyOut (can accept new head)
+     )
+singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
+  where
+    -- === FSM State ===
+    state :: Signal dom FSMState
+    state = register IDLE nextState
+
+    -- === Handshakes ===
+    upstreamHandshake         = validIn .&&. readyOut
+    multiplierRequestHandshake = woValidIn .&&. woReadyOut
+    multiplierResultHandshake  = woValidOut .&&. internalReady  -- now uses internal backpressure
+
+    -- === State Transition Logic ===
+    nextState = transition <$> state
+                <*> upstreamHandshake
+                <*> multiplierRequestHandshake
+                <*> multiplierResultHandshake
+
+    transition :: FSMState -> Bool -> Bool -> Bool -> FSMState
+    transition IDLE upHS _ _
+      | upHS      = REQUESTING
+      | otherwise = IDLE
+
+    transition REQUESTING _ reqHS _
+      | reqHS     = PROJECTING
+      | otherwise = REQUESTING
+
+    transition PROJECTING _ _ resHS
+      | resHS     = DONE
+      | otherwise = PROJECTING
+
+    transition DONE _ _ _ = IDLE
+
+    -- === Ready signals ===
+    readyOut :: Signal dom Bool
+    readyOut = (==) <$> state <*> pure IDLE
+
+    -- === Input latch ===
+    latchedVector :: Signal dom (Vec HeadDimension FixedPoint)
+    latchedVector = regEn (repeat 0) upstreamHandshake headVector
+
+    -- === Multiplier interface ===
+    woValidIn :: Signal dom Bool
+    woValidIn = (==) <$> state <*> pure REQUESTING
+
+    -- Internal backpressure: allow multiplier progress if computing OR consumer ready
+    internalReady :: Signal dom Bool
+    internalReady = mux (state .==. pure PROJECTING)
+                        (pure True)   -- while computing, proceed freely
+                        readyOut      -- when done, only accept if consumer ready
+
+    -- Connect to matrix multiplier
+    (woResult, woValidOut, woReadyOut) =
+      matrixMultiplier woValidIn internalReady woMatrix latchedVector
+
+    -- === Output latch and valid signal ===
+    projOut :: Signal dom (Vec ModelDimension FixedPoint)
+    projOut = regEn (repeat 0) multiplierResultHandshake woResult
+
+    validOut :: Signal dom Bool
+    validOut = (==) <$> state <*> pure DONE

@@ -1,14 +1,14 @@
-module LLaMa2.Embedding.PRNG (
-    tokenSampler, pseudoRandomGenerator
+module LLaMa2.Sampling.Distribution (
+    pickSample, uniformRandom01Generator
 ) where
+
 import Clash.Prelude
+
 import Data.Maybe (fromMaybe)
-import LLaMa2.Core.Types
-  ( Temperature, Token, Seed)
-import LLaMa2.Config ( VocabularySize )
+import LLaMa2.Core.Types ( Token)
 
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.Fixed (expF)
+import LLaMa2.Numeric.Quantization (expF)
 
 -- xorshift32 unchanged
 xorshift32 :: Unsigned 32 -> Unsigned 32
@@ -22,16 +22,6 @@ pickSample :: (KnownNat n, KnownNat (n + 1)) => FixedPoint -> Vec (n + 1) FixedP
 pickSample temperature logits rand = if temperature <= 0 then argMax logits
         else let probabilities = softmax temperature logits
              in categoricalSampler rand probabilities
-
--- Pure sampling function (combinational)
-tokenSampler :: forall dom
-   . HiddenClockResetEnable dom
-  => Signal dom Bool          -- ^ logitsValid
-  -> Signal dom Temperature
-  -> Signal dom Seed
-  -> Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits
-  -> Signal dom Token
-tokenSampler logitsValid temperature seed logits = pickSample <$> temperature <*> logits <*> uniformRandom01Generator logitsValid seed
 
 pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool           -- ^ readyPulse

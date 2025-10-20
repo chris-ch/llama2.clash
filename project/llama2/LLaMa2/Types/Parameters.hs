@@ -1,7 +1,7 @@
 module LLaMa2.Types.Parameters (
     DecoderParameters(..)
 ) where
-import Clash.Explicit.Prelude
+import Clash.Prelude
 
 import LLaMa2.Layer.Components.Quantized (EmbeddingComponentQ)
 import LLaMa2.Config (NumLayers)

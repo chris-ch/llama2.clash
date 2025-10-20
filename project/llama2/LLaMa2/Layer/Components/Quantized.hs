@@ -28,7 +28,7 @@ import LLaMa2.Config (
   , VocabularySize, RotaryPositionalEmbeddingDimension, SequenceLength
   )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.ParamPack (MatI8E, quantizeMatI8E)
+import LLaMa2.Numeric.Quantization (MatI8E, quantizeMatI8E)
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent

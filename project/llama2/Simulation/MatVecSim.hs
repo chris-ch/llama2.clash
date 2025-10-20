@@ -6,8 +6,8 @@ module Simulation.MatVecSim
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E, dequantRowToF)
-import LLaMa2.Helpers.FixedPoint (dotProductF)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E, dequantRowToF)
+import LLaMa2.Numeric.FixedPoint (dotProductF)
 
 -- Dot product: dequantize a row once, then reuse existing F dot-product.
 dotProductRowI8E :: KnownNat n => RowI8E n -> Vec n FixedPoint -> FixedPoint

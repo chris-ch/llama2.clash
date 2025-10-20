@@ -9,7 +9,7 @@ import qualified Prelude as P
 import LLaMa2.Config (ModelDimension, HeadDimension)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E, dequantRowToF)
-import LLaMa2.Layer.TransformerLayer.Internal (singleHeadController)
+import LLaMa2.Layer.TransformerLayer (singleHeadController)
 import LLaMa2.Helpers.FixedPoint (dotProductF)
 
 -- ==========

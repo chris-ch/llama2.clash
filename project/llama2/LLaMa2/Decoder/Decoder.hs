@@ -20,12 +20,12 @@ import LLaMa2.Config
 import LLaMa2.Numeric.Types (FixedPoint)
 
 -- Import sub-modules
-import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
 import qualified LLaMa2.Decoder.SequenceController as SequenceController
-  ( PipelineOutputs (..), pipelineController, processingState, SequenceState (..), sequenceController )
+  ( pipelineController, processingState, sequenceController, SequenceState (..) )
 import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurrentLayerFlag, prepareLayerInput)
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
+import qualified LLaMa2.Sampling.Sampler as Sampler
 
 -- ============================================================================
 -- Initial State
@@ -128,7 +128,7 @@ decoder params inputToken inputTokenValid temperature seed =
     (logits, logitsValid) = OutputProjection.outputProjection params lastLayerComplete layerOutput
     
     sampledToken :: Signal dom Token
-    sampledToken = PRNG.tokenSampler logitsValid temperature seed logits
+    sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
     
     feedbackToken :: Signal dom Token
     feedbackToken = regEn 0 logitsValid sampledToken
