@@ -1,5 +1,5 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
-  applyRotaryPositionEncoding
+  rotaryPositionEncoder
   , rotaryEncoder
   , queryHeadProjector
   , keyValueHeadProjector
@@ -13,8 +13,7 @@ import LLaMa2.Config
       SequenceLength  )
 import LLaMa2.Numeric.Types ( FixedPoint )
 import LLaMa2.Layers.Components.Quantized
-    ( SingleHeadComponentQ(..) )
-import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
+    ( SingleHeadComponentQ(..), RotaryEncodingComponentF (..) )
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
 queryHeadProjector
@@ -81,12 +80,12 @@ vec2ToPair :: NFDataX a => Vec 2 a -> (a, a)
 vec2ToPair (x :> y :> Nil) = (x, y)
 vec2ToPair _   = deepErrorX "Impossible: Vec 2 had wrong shape"
 
-applyRotaryPositionEncoding
+rotaryPositionEncoder
   :: Vec HeadDimension FixedPoint
   -> Vec RotaryPositionalEmbeddingDimension FixedPoint
   -> Vec RotaryPositionalEmbeddingDimension FixedPoint
   -> Vec HeadDimension FixedPoint
-applyRotaryPositionEncoding inputVec cosVecF sinVecF =
+rotaryPositionEncoder inputVec cosVecF sinVecF =
   concat (imap rotatePair (unconcat d2 inputVec))
  where
   rotatePair :: Index RotaryPositionalEmbeddingDimension
@@ -108,4 +107,4 @@ rotaryEncoder
 rotaryEncoder rot step tokenVec =
   let cosF = freqCosF rot !! step
       sinF = freqSinF rot !! step
-  in  applyRotaryPositionEncoding tokenVec cosF sinF
+  in  rotaryPositionEncoder tokenVec cosF sinF

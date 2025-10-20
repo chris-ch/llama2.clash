@@ -6,12 +6,12 @@ import Clash.Prelude
 import Data.Maybe (isJust)
 
 -- Convert separate read and optional-write signals into a unified RAM operation stream.
-toRamOperation
+ramOpConverter
   :: NFDataX a
   => Signal dom (Index n)              -- ^ read address
   -> Signal dom (Maybe (Index n, a))   -- ^ optional write
   -> Signal dom (RamOp n a)
-toRamOperation rdAddr wrM =
+ramOpConverter rdAddr wrM =
   mux (isJust <$> wrM)
       (uncurry RamWrite . fromJustX <$> wrM)
       (RamRead <$> rdAddr)
@@ -31,5 +31,5 @@ trueDualPortRam
       , Signal dom a )                 -- Port B read data
 trueDualPortRam rdAddrA wrM_A rdAddrB wrM_B =
   trueDualPortBlockRam
-    (toRamOperation rdAddrA wrM_A)
-    (toRamOperation rdAddrB wrM_B)
+    (ramOpConverter rdAddrA wrM_A)
+    (ramOpConverter rdAddrB wrM_B)

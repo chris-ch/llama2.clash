@@ -1,5 +1,5 @@
 module LLaMa2.Embedding.PRNG (
-    tokenSamplerFromLogits, transformerLogitsSeq, pseudoRandomGenerator
+    tokenSampler, logitsProjector, pseudoRandomGenerator
 ) where
 
 import Clash.Prelude
@@ -24,7 +24,7 @@ xorshift32 s0 =
       s3 = s2 `xor` shiftL s2 5
   in s3
 
-transformerLogitsSeq :: forall dom .
+logitsProjector :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ validIn (readyPulse from pipeline)
   -> Signal dom Bool  -- ^ readyIn (always True for now, sampler is combinational)
@@ -34,7 +34,7 @@ transformerLogitsSeq :: forall dom .
      , Signal dom Bool  -- ^ validOut
      , Signal dom Bool  -- ^ readyOut
      )
-transformerLogitsSeq validIn readyIn decoder tokenVecSig =
+logitsProjector validIn readyIn decoder tokenVecSig =
   (logitsOut, validOut, readyOut)
   where
     emb = TransformerLayer.modelEmbedding decoder
@@ -49,17 +49,17 @@ transformerLogitsSeq validIn readyIn decoder tokenVecSig =
 pickSample :: (KnownNat n, KnownNat (n + 1)) => FixedPoint -> Vec (n + 1) FixedPoint -> FixedPoint -> Token
 pickSample temperature logits rand = if temperature <= 0 then argMax logits
         else let probabilities = softmax temperature logits
-             in sampleFromProbs rand probabilities
+             in categoricalSampler rand probabilities
 
 -- Pure sampling function (combinational)
-tokenSamplerFromLogits :: forall dom
+tokenSampler :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom Bool          -- ^ logitsValid
   -> Signal dom Temperature
   -> Signal dom Seed
   -> Signal dom (Vec VocabularySize FixedPoint)  -- ^ logits
   -> Signal dom Token
-tokenSamplerFromLogits logitsValid temperature seed logits = pickSample <$> temperature <*> logits <*> uniformRandom01Generator logitsValid seed
+tokenSampler logitsValid temperature seed logits = pickSample <$> temperature <*> logits <*> uniformRandom01Generator logitsValid seed
 
 pseudoRandomGenerator :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool           -- ^ readyPulse
@@ -80,8 +80,8 @@ uniformRandom01Generator readyPulse seed =
     <$> pseudoRandomGenerator readyPulse seed
 
 -- categorical sampling from FixedPoint probabilities
-sampleFromProbs :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32
-sampleFromProbs u probs =
+categoricalSampler :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32
+categoricalSampler u probs =
   let cdf = CV.scanl1 (+) probs
       idxM = findIndex (>= u) cdf
   in fromIntegral (fromEnum (fromMaybe maxBound idxM))

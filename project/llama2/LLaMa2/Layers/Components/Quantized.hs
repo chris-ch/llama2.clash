@@ -6,6 +6,7 @@ module LLaMa2.Layers.Components.Quantized
   , EmbeddingComponentQ(..)
   , MultiHeadAttentionComponent (..)
   , FeedForwardNetworkComponent (..)
+  , RotaryEncodingComponentF(..)
     -- Converters (elaboration-time)
   , quantizeMHA
   , quantizeFFN
@@ -24,11 +25,10 @@ import LLaMa2.Config (
   , HiddenDimension
   , NumQueryHeads
   , HeadDimension
-  , VocabularySize
+  , VocabularySize, RotaryPositionalEmbeddingDimension, SequenceLength
   )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.ParamPack (MatI8E, quantizeMatI8E)
-import LLaMa2.Layers.Components.RotaryQ (quantizeRotary, RotaryEncodingComponentF)
 
 data MultiHeadAttentionComponent = MultiHeadAttentionComponent
   { heads  :: Vec NumQueryHeads SingleHeadComponent
@@ -42,6 +42,11 @@ data FeedForwardNetworkComponent = FeedForwardNetworkComponent
   , fW3 :: CArray2D HiddenDimension ModelDimension
   , fRMSFfn :: Vec ModelDimension Float
   } deriving (Show)
+
+data RotaryEncodingComponentF = RotaryEncodingComponentF
+  { freqCosF :: Vec SequenceLength (Vec RotaryPositionalEmbeddingDimension FixedPoint)
+  , freqSinF :: Vec SequenceLength (Vec RotaryPositionalEmbeddingDimension FixedPoint)
+  } deriving (Generic, NFDataX, Show, Eq)
 
 -- Float-free, quantized single head (per-row I8E weights).
 data SingleHeadComponentQ = SingleHeadComponentQ
@@ -106,3 +111,11 @@ quantizeEmbedding e =
     , rmsFinalWeightF = map realToFrac (rmsFinalWeight e)
     }
 
+quantizeRotary :: (CArray2D SequenceLength RotaryPositionalEmbeddingDimension,
+                   CArray2D SequenceLength RotaryPositionalEmbeddingDimension)
+               -> RotaryEncodingComponentF
+quantizeRotary (CArray2D cosF, CArray2D sinF) =
+  RotaryEncodingComponentF
+    { freqCosF = map (map realToFrac) cosF
+    , freqSinF = map (map realToFrac) sinF
+    }

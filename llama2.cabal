@@ -106,7 +106,6 @@ library
     , LLaMa2.Layers.Components.Quantized
     , LLaMa2.Layers.FeedForward.FeedForwardNetwork
     , LLaMa2.Layers.FeedForward.FeedForwardNetwork.Internal
-    , LLaMa2.Layers.Components.RotaryQ
     , LLaMa2.Layers.TransformerLayer
     , LLaMa2.Layers.TransformerLayer.Internal
     , LLaMa2.Memory.KVCacheBank

@@ -8,8 +8,8 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Layers.Attention.OnlineSoftmax as OnlineSoftmax
   ( softInit, softResult, softStep )
 
-dotF :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
-dotF a b = sum (zipWith (*) a b)
+dotProduct :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
+dotProduct a b = sum (zipWith (*) a b)
 
 attentionHead :: HiddenClockResetEnable dom
   => Signal dom Bool
@@ -28,7 +28,7 @@ attentionHead clear stepEn qSig kSig vSig lastT =
 
   stepInput =
     mux stepEn
-      (Just <$> bundle ( (* scale) <$> (dotF <$> qSig <*> kSig), vSig))
+      (Just <$> bundle ( (* scale) <$> (dotProduct <$> qSig <*> kSig), vSig))
       (pure Nothing)
 
   st = mealy

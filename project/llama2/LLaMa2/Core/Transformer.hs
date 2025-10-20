@@ -18,7 +18,7 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
   , transformerLayer
   )
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
-import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
+import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
 import qualified LLaMa2.Core.PipelineController as PipelineController
   ( pipelineController
   , PipelineOutputs (..)
@@ -28,7 +28,7 @@ import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Embedding.PRNG (transformerLogitsSeq)
+import LLaMa2.Embedding.PRNG (logitsProjector)
 
 -- | Introspection signals — meant for runtime visibility / observability
 data TransformerIntrospection dom = TransformerIntrospection
@@ -102,15 +102,15 @@ transformer decoder inputToken inputTokenValid temperature seed =
   finalLayerOutput = feedForwardOutput <$> nextLayerData
 
   (logits, logitsValid, logitsReadyOut) =
-    transformerLogitsSeq lastLayerFfnDone (pure True) decoder finalLayerOutput
+    logitsProjector lastLayerFfnDone (pure True) decoder finalLayerOutput
 
   -- keep 
-  tokenSampleSeq :: Signal dom Token
-  tokenSampleSeq = PRNG.tokenSamplerFromLogits logitsValid temperature seed logits
+  tokenSample :: Signal dom Token
+  tokenSample = PRNG.tokenSampler logitsValid temperature seed logits
 
   -- Register token when logits become valid (not just readyPulse)
   feedbackToken :: Signal dom Token
-  feedbackToken = regEn 0 logitsValid tokenSampleSeq
+  feedbackToken = regEn 0 logitsValid tokenSample
 
   selectedToken :: Signal dom Token
   selectedToken = mux inputTokenValid inputToken feedbackToken

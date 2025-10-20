@@ -1,6 +1,6 @@
 module LLaMa2.Memory.KVCacheBank (
   writeSequencer,
-  writeOnce
+  writePulseGenerator
 ) where
 
 import Clash.Prelude
@@ -19,12 +19,12 @@ writeSequencer enSig = doneSig
   doneSig    = (&&) <$> enSig <*> atLastDim
 
 -- New: one-pulse generator (rising edge of 'en')
-writeOnce
+writePulseGenerator
   :: HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ en (Level during Stage2)
   -> ( Signal dom Bool  -- ^ wrPulse (1 cycle on Stage2 entry)
      , Signal dom Bool) -- ^ donePulse (1 cycle, same as wrPulse by default)
-writeOnce enSig =
+writePulseGenerator enSig =
   let enPrev   = register False enSig
       pulse    = enSig .&&. not <$> enPrev
   in (pulse, pulse)

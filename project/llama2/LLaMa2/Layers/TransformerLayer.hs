@@ -33,7 +33,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layers.Attention.AttentionHead (attentionHead)
 import LLaMa2.Memory.RamOps (trueDualPortRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
-import LLaMa2.Layers.Attention.MultiHeadAttention (projectQKV)
+import LLaMa2.Layers.Attention.MultiHeadAttention (qkvProjector)
 
 data TransformerLayerComponent = TransformerLayerComponent
   { multiHeadAttention :: MultiHeadAttentionComponentQ
@@ -45,18 +45,12 @@ data TransformerDecoderComponent = TransformerDecoderComponent
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
   } deriving (Show)
 
-data LayerFlowState = LIdle | LQKV | LWrite | LAttn | LFFN | LDone
-  deriving (Show, Eq, Generic, NFDataX)
-
 -- Shared 3-state valid/ready controller
 data GenericState = Idle | Compute | Done
   deriving (Show, Eq, Generic, NFDataX)
 
 -- FSM states for autonomous stages
 data WriteState = WriteIdle | WriteWriting | WriteDone
-  deriving (Show, Eq, Generic, NFDataX)
-
-data AttnState = AttnIdle | AttnComputing | AttnDone
   deriving (Show, Eq, Generic, NFDataX)
 
 fsmController ::
@@ -140,7 +134,7 @@ qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, i
  where
   (enable, validOut, inReady) = fsmController inValid outReady matVecValid
   (result, matVecValid, _ready) =
-    projectQKV enable (pure True) mhaQ
+    qkvProjector enable (pure True) mhaQ
                (sequencePosition <$> psSig)
                (inputVector <$> idSig)
 
@@ -202,7 +196,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
 
   (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
     foldl
-      (fillOneBank layerIndex processingState layerData qkvDone)
+      (kvBankController layerIndex processingState layerData qkvDone)
       (initHeadOutputs, initHeadDone, initWriteDone)
       indicesI
 
@@ -226,7 +220,7 @@ transformerLayer layer layerIndex processingState layerActive layerData =
 
   woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
   validProjected = and <$> sequenceA perHeadReadyOuts
-  xAfterAttn = inputsAggregator <$> layerData <*> woHeads
+  xAfterAttn = residualAdder <$> layerData <*> woHeads
   attentionDone = let prevReady = register False validProjected
                   in validProjected .&&. (not <$> prevReady)
 
@@ -261,7 +255,6 @@ transformerLayer layer layerIndex processingState layerActive layerData =
                                    <*> attentionDone
                                    <*> ffnOutput
                                    <*> ffnValidOut
-
 
 layerDataWithFFN :: Index NumLayers
   -> ProcessingState
@@ -300,8 +293,8 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
 
-inputsAggregator :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
-inputsAggregator layerData = zipWith (+) (inputVector layerData)
+residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
+residualAdder layerData = zipWith (+) (inputVector layerData)
 
 layerDataAttnDone :: Index NumLayers
   -> ProcessingState
@@ -362,7 +355,7 @@ getKeyVector idSig kvIx = (\i -> keyVectors i !! kvIx) <$> idSig
 getValueVector :: Signal dom LayerData -> Index NumKeyValueHeads -> Signal dom (Vec HeadDimension FixedPoint)
 getValueVector idSig kvIx = (\i -> valueVectors i !! kvIx) <$> idSig
 
-fillOneBank ::
+kvBankController ::
   forall dom.
   HiddenClockResetEnable dom =>
   Index NumLayers ->
@@ -376,7 +369,7 @@ fillOneBank ::
   ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Vec NumKeyValueHeads (Signal dom Bool) )
-fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
+kvBankController layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
   -- Stage signals
@@ -398,7 +391,7 @@ fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneA
   valVec = getValueVector idSig kvIx
 
   -- KV Write controller
-  (wrPulse, wrDone) = Cache.writeOnce (isStage2Write .&&. qkvValid)
+  (wrPulse, wrDone) = Cache.writePulseGenerator (isStage2Write .&&. qkvValid)
   wrKVRowK = mux wrPulse (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
   wrKVRowV = mux wrPulse (Just <$> bundle (seqPos, valVec)) (pure Nothing)
 

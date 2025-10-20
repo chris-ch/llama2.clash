@@ -1,5 +1,5 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention (
-  projectQKV
+  qkvProjector
 ) where
 
 import Clash.Prelude
@@ -15,7 +15,7 @@ import LLaMa2.Layers.Attention.MultiHeadAttention.Internal
 import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 
 
-projectQKV :: forall dom .
+qkvProjector :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn (enable computation)
   -> Signal dom Bool              -- ^ readyIn (downstream ready)
@@ -28,7 +28,7 @@ projectQKV :: forall dom .
      , Signal dom Bool            -- ^ validOut (all heads done)
      , Signal dom Bool            -- ^ readyOut (can accept)
      )
-projectQKV validIn readyIn mhaQ seqPosSig xSig =
+qkvProjector validIn readyIn mhaQ seqPosSig xSig =
   (qkvOut, allValid, allReady)
   where
     xNorm = rmsNormFwFix <$> xSig <*> pure (rmsAttF mhaQ)
