@@ -24,7 +24,7 @@ import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSampler)
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
 import qualified LLaMa2.Decoder.SequenceController as SequenceController
   ( PipelineOutputs (..), pipelineController, processingState, SequenceState (..), sequenceController )
-import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurrentLayerFlag)
+import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurrentLayerFlag, prepareLayerInput)
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 
 -- ============================================================================
@@ -75,30 +75,25 @@ decoder params inputToken inputTokenValid temperature seed =
     -- ========================================================================
     -- SEQUENCE CONTROL
     -- ========================================================================
-    
+      
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     
-    -- Extract layer index and sequence position
+    layerIdx :: Signal dom (Index NumLayers)
     layerIdx = SequenceController.currentLayer <$> seqState
     
-    -- Stage controller manages internal layer stages (QKV, Write, Attn, FFN)
+    processingState :: Signal dom ProcessingState
     processingState = SequenceController.processingState (
       SequenceController.pipelineController
-        attnDoneThisLayer
-        writeDoneThisLayer
-        qkvDoneThisLayer
-        ffnDoneThisLayer
-        logitsValid
-        inputTokenValid)
+        attnDoneThisLayer writeDoneThisLayer qkvDoneThisLayer
+        ffnDoneThisLayer logitsValid inputTokenValid)
     
     -- ========================================================================
     -- TOKEN SELECTION & EMBEDDING
     -- ========================================================================
-      
-    -- Token selection: external input or feedback
+    
+    outputToken :: Signal dom Token
     outputToken = mux inputTokenValid inputToken feedbackToken
     
-    -- Lookup token embedding from vocabulary
     embeddedVector :: Signal dom (Vec ModelDimension FixedPoint)
     embeddedVector = InputEmbedding.inputEmbedding (modelEmbedding params) outputToken
 
@@ -106,31 +101,15 @@ decoder params inputToken inputTokenValid temperature seed =
     -- LAYER STACK PROCESSING
     -- ========================================================================
     
-    -- Maintain layer data state
-    layerDataReg :: Signal dom LayerData
-    layerDataReg = register initialLayerData nextLayerData
-    
-    -- Select input for current layer:
-    -- - Layer 0 gets token embedding
-    -- - Other layers get previous layer's FFN output
     layerInput :: Signal dom LayerData
-    layerInput = prepareLayerInput <$> layerIdx <*> layerDataReg <*> embeddedVector
-    
-    prepareLayerInput :: Index NumLayers -> LayerData -> Vec ModelDimension FixedPoint -> LayerData
-    prepareLayerInput idx currentData embedding
-      | idx == 0  = currentData { inputVector = embedding }
-      | otherwise = currentData { inputVector = feedForwardOutput currentData }
-    
-    -- Process all layers (only active layer computes)
+    layerInput = LayerStack.prepareLayerInput <$> layerIdx 
+                   <*> register initialLayerData nextLayerData 
+                   <*> embeddedVector
+
     (nextLayerData, doneFlags) = 
-      LayerStack.processLayers 
-        processingState 
-        layerIdx 
-        layerInput 
-        (modelLayers params)
+      LayerStack.processLayers processingState layerIdx layerInput (modelLayers params)
     
-    -- Extract current layer completion flags
-    (writeDone, attnDone, qkvDone, _qkvReady, ffnDone) = unzip5 doneFlags
+    (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone
     attnDoneThisLayer  = LayerStack.getCurrentLayerFlag layerIdx attnDone
     qkvDoneThisLayer   = LayerStack.getCurrentLayerFlag layerIdx qkvDone
@@ -140,21 +119,18 @@ decoder params inputToken inputTokenValid temperature seed =
     -- OUTPUT PROJECTION & SAMPLING
     -- ========================================================================
     
-    lastLayerFfnDone = (layerIdx .==. pure maxBound) .&&. ffnDoneThisLayer
-    
+    layerOutput :: Signal dom (Vec ModelDimension FixedPoint)
     layerOutput = feedForwardOutput <$> nextLayerData
-
-    -- Output projection (unembedding + logits)
-    (logits, logitsValid) =
-      OutputProjection.outputProjection 
-        params 
-        lastLayerFfnDone 
-        layerOutput
     
-    -- Sample next token from logits
+    lastLayerComplete :: Signal dom Bool
+    lastLayerComplete = (layerIdx .==. pure maxBound) .&&. ffnDoneThisLayer
+
+    (logits, logitsValid) = OutputProjection.outputProjection params lastLayerComplete layerOutput
+    
+    sampledToken :: Signal dom Token
     sampledToken = PRNG.tokenSampler logitsValid temperature seed logits
     
-    -- Register sampled token for feedback
+    feedbackToken :: Signal dom Token
     feedbackToken = regEn 0 logitsValid sampledToken
     
     -- ========================================================================
@@ -162,9 +138,5 @@ decoder params inputToken inputTokenValid temperature seed =
     -- ========================================================================
     
     introspection = DecoderIntrospection
-      { state         = processingState
-      , attnDone      = attnDoneThisLayer
-      , ffnDone       = ffnDoneThisLayer
-      , layerIndex    = layerIdx
-      , ready         = readyPulse
-      }
+      { state = processingState, layerIndex = layerIdx, ready = readyPulse
+      , attnDone = attnDoneThisLayer, ffnDone = ffnDoneThisLayer }
