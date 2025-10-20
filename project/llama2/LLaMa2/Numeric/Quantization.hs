@@ -10,14 +10,6 @@ import Clash.Prelude
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.LayerData (CArray2D(..))
 
-import LLaMa2.Types.LayerData
-  ( CArray2D(..)
-  , RotaryEncodingComponent(..)
-  , EmbeddingComponent(..), SingleHeadComponent (..), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..)
-  )
-import LLaMa2.Types.ModelConfig  (
-  RotaryPositionalEmbeddingDimension, SequenceLength
-  )
 -- ===========================
 -- Quantization: F <-> I8E (PoT)
 -- ===========================
