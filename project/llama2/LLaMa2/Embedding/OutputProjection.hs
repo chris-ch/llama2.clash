@@ -1,5 +1,5 @@
 module LLaMa2.Embedding.OutputProjection
- ( logitsProjector
+ ( outputProjection
 ) where
 import Clash.Prelude
 
@@ -30,3 +30,17 @@ logitsProjector validIn readyIn decoder tokenVecSig =
     -- Sequential matrix multiply (tied embeddings as classifier)
     (logitsOut, validOut, readyOut) =
       parallel32RowMatrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
+
+-- | Simplified output projection wrapper
+outputProjection
+  :: HiddenClockResetEnable dom
+  => DecoderParameters                           -- ^ Model parameters
+  -> Signal dom Bool                             -- ^ layerComplete signal
+  -> Signal dom (Vec ModelDimension FixedPoint)  -- ^ Final layer output
+  -> ( Signal dom (Vec VocabularySize FixedPoint)  -- ^ Logits
+     , Signal dom Bool                            -- ^ Logits valid
+     )
+outputProjection params layerComplete = logitsProjector
+    layerComplete   -- validIn
+    (pure True)     -- readyIn (always ready)
+    params

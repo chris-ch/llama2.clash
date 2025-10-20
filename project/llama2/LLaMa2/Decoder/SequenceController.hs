@@ -1,8 +1,8 @@
 module LLaMa2.Decoder.SequenceController
  (PipelineOutputs(..)
   , pipelineController
-  , layerSequencer
-  , ControllerState(..)
+  , sequenceController
+  , SequenceState(..)
 ) where
 import Clash.Prelude
 import LLaMa2.Core.Types (ProcessingState (..), CycleStage (..))
@@ -17,9 +17,9 @@ data PipelineOutputs dom = PipelineOutputs
   , stageFinished     :: Signal dom Bool
   }
 
-data ControllerState = ControllerState
+data SequenceState = SequenceState
   { currentLayer :: Index NumLayers
-  , ctrlSeqPos   :: Index SequenceLength
+  , seqPosition  :: Index SequenceLength
   } deriving (Generic, NFDataX, Show, Eq)
 
 pipelineController ::
@@ -109,19 +109,20 @@ nextProcessingState state = case processingStage state of
                                 then 0 else succ (sequencePosition state)
           }
 
-initialControllerState :: ControllerState
-initialControllerState = ControllerState
+initialControllerState :: SequenceState
+initialControllerState = SequenceState
   { currentLayer = 0
-  , ctrlSeqPos   = 0
+  , seqPosition   = 0
   }
 
 layerSequencer ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ currentLayerDone
   -> ( Signal dom (Index NumLayers)
+     , Signal dom (Index SequenceLength)
      , Signal dom Bool  -- ^ readyForNewToken
      )
-layerSequencer layerDone = (layerIdx, tokenReady)
+layerSequencer layerDone = (layerIdx, posIdx, tokenReady)
  where
   state = register initialControllerState nextState
 
@@ -129,14 +130,29 @@ layerSequencer layerDone = (layerIdx, tokenReady)
 
   nextState = advance <$> state <*> layerDone <*> isLastLayer
 
-  advance :: ControllerState -> Bool -> Bool -> ControllerState
+  advance :: SequenceState -> Bool -> Bool -> SequenceState
   advance s done lastLayer
     | not done = s
     | not lastLayer = s { currentLayer = succ (currentLayer s) }
-    | otherwise = ControllerState
+    | otherwise = SequenceState
         { currentLayer = 0
-        , ctrlSeqPos = if ctrlSeqPos s == maxBound then 0 else succ (ctrlSeqPos s)
+        , seqPosition = if seqPosition s == maxBound then 0 else succ (seqPosition s)
         }
 
   layerIdx = currentLayer <$> state
+  posIdx = seqPosition <$> state
   tokenReady = (&&) <$> layerDone <*> isLastLayer
+
+-- | Unified sequence controller with clean interface
+-- Wraps layerSequencer to return SequenceState instead of tuple
+sequenceController
+  :: HiddenClockResetEnable dom
+  => Signal dom Bool  -- ^ layerComplete (FFN done from last layer)
+  -> ( Signal dom SequenceState  -- ^ Current sequence state
+     , Signal dom Bool            -- ^ readyPulse (token complete)
+     )
+sequenceController layerComplete =
+  (state, readyPulse)
+  where
+    (layerIdx, seqPosIdx, readyPulse) = layerSequencer layerComplete
+    state = SequenceState <$> layerIdx <*> seqPosIdx

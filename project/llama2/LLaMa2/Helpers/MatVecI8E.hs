@@ -15,7 +15,7 @@ import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
 import LLaMa2.Numeric.ParamPack (MatI8E, RowI8E)
 import qualified Simulation.MatVecSim
 
-parallel32RowMatrixMultiplier' :: forall dom rows cols .
+parallel32RowMatrixMultiplier :: forall dom rows cols .
  ( HiddenClockResetEnable dom
  , KnownNat cols, KnownNat rows
  )
@@ -27,9 +27,9 @@ parallel32RowMatrixMultiplier' :: forall dom rows cols .
  , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
  , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
  )
-parallel32RowMatrixMultiplier' = Simulation.MatVecSim.matrixMultiplierStub
+parallel32RowMatrixMultiplier = Simulation.MatVecSim.matrixMultiplierStub
 
-matrixMultiplier' :: forall dom rows cols .
+matrixMultiplier :: forall dom rows cols .
  ( HiddenClockResetEnable dom
  , KnownNat cols, KnownNat rows
  )
@@ -41,7 +41,7 @@ matrixMultiplier' :: forall dom rows cols .
  , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
  , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
  )
-matrixMultiplier' = Simulation.MatVecSim.matrixMultiplierStub
+matrixMultiplier = Simulation.MatVecSim.matrixMultiplierStub
 
 -- | A stateful column counter for tracking the current column index in a sequential
 -- matrix-vector multiplication process. The counter cyclicylly increments when enabled
@@ -179,7 +179,7 @@ matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
 -- Upstream |                 | Multiplier |                  | Downstream
 --          | <---readyOut--- |            | <---readyIn----- |
 --
-matrixMultiplier :: forall dom rows cols .
+matrixMultiplier' :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )
@@ -191,7 +191,7 @@ matrixMultiplier :: forall dom rows cols .
      , Signal dom Bool      -- validOut
      , Signal dom Bool      -- readyOut
      )
-matrixMultiplier validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
+matrixMultiplier' validIn readyInDownstream rowVectors inputVector = (outputVector, validOut, readyOut)
   where
     -- Row counter
     rowIndex = register (0 :: Index rows) nextRowIndex
@@ -495,7 +495,7 @@ cyclicalCounter32 reset enable = index
 -- Upstream |                 | Multiplier |                  | Downstream
 --          | <---readyOut--- |            | <---readyIn----- |
 --
-parallel32RowMatrixMultiplier :: forall dom rows cols .
+parallel32RowMatrixMultiplier' :: forall dom rows cols .
      ( HiddenClockResetEnable dom
      , KnownNat cols, KnownNat rows
      )
@@ -507,7 +507,7 @@ parallel32RowMatrixMultiplier :: forall dom rows cols .
      , Signal dom Bool      -- validOut
      , Signal dom Bool      -- readyOut
      )
-parallel32RowMatrixMultiplier validIn readyInDownstream rowVectors inputVector = 
+parallel32RowMatrixMultiplier' validIn readyInDownstream rowVectors inputVector = 
   (outputVector, validOut, readyOut)
   where
     -- Row counter
