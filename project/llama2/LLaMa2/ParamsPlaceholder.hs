@@ -1,36 +1,32 @@
 {-# LANGUAGE CPP #-}
+{-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 module LLaMa2.ParamsPlaceholder (decoderConst) where
 
 import Prelude
 
 import System.IO.Unsafe (unsafePerformIO)
-import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString as BS (readFile)  -- Use STRICT ByteString
 import qualified Data.Binary.Get as BG
 import qualified Parser
 import LLaMa2.Types.Parameters (DecoderParameters)
+import qualified Data.ByteString.Lazy.Char8 as BSL
 
-
--- Load real trained weights at Clash compile-time
+-- Load weights with strict ByteString to avoid lazy I/O issues
+{-# NOINLINE decoderConst #-}
 decoderConst :: DecoderParameters
 decoderConst = unsafePerformIO $ do
-  putStrLn "Loading weights for synthesis..."
-  content <- BSL.readFile weightFile
-  let params = BG.runGet Parser.parseLLaMa2ConfigFile content
-  putStrLn $ "✅ Loaded " ++ weightFile
-  return params
-{-# NOINLINE decoderConst #-}
+  putStrLn $ "Loading: " ++ weightFile
+  content <- BS.readFile weightFile  -- STRICT, not lazy
+  let params = BG.runGet Parser.parseLLaMa2ConfigFile (BSL.fromStrict content)
+  putStrLn "✅ Loaded"
+  -- Force evaluation by pattern matching on the structure
+  case params of
+    p -> seq p (return p)
 
--- Select weight file based on CPP model flag
 weightFile :: FilePath
 weightFile = 
 #ifdef MODEL_260K
   "./data/stories260K.bin"
-#elif defined(MODEL_15M)
-  "./data/stories15M.bin"
-#elif defined(MODEL_42M)
-  "./data/stories42M.bin"
-#elif defined(MODEL_110M)
-  "./data/stories110M.bin"
 #else
   "./data/stories260K.bin"
 #endif

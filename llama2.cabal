@@ -81,6 +81,7 @@ common project-defaults
     , clash-prelude
     , clash-lib
     , containers
+    , ghc-typelits-knownnat
     , mtl
     , random
     , vector
