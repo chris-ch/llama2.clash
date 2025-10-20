@@ -5,7 +5,7 @@ import Test.Hspec (Spec, describe, it, shouldBe)
 
 spec :: Spec
 spec = do
-  describe "attendHead" $ do
+  describe "attentionHead" $ do
 
     it "returns V at the only position when allowed" $ do
       True `shouldBe` True

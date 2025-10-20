@@ -30,8 +30,8 @@ import LLaMa2.Layers.Components.Quantized
 
 import qualified LLaMa2.Layers.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layers.Attention.AttentionHead (attendHead)
-import LLaMa2.Memory.RamOps (runTdpRam)
+import LLaMa2.Layers.Attention.AttentionHead (attentionHead)
+import LLaMa2.Memory.RamOps (trueDualPortRam)
 import LLaMa2.Numeric.ParamPack (MatI8E)
 import LLaMa2.Layers.Attention.MultiHeadAttention (projectQKV)
 
@@ -402,8 +402,8 @@ fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneA
   wrKVRowK = mux wrPulse (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
   wrKVRowV = mux wrPulse (Just <$> bundle (seqPos, valVec)) (pure Nothing)
 
-  (kRow, _kRowB) = runTdpRam tAddrRow (pure Nothing) seqPos wrKVRowK
-  (vRow, _vRowB) = runTdpRam tAddrRow (pure Nothing) seqPos wrKVRowV
+  (kRow, _kRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowK
+  (vRow, _vRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowV
   writeDoneAcc1 = replace kvIx wrDone writeDoneAcc
 
   -- Attention row sequencer
@@ -412,8 +412,8 @@ fillOneBank layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneA
   (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3Attn seqPos
 
   -- Per-head attention
-  (out0, done0) = attendHead clearS3 stepEnRow query0 kRow vRow lastTRow
-  (out1, done1) = if hasQ1 then attendHead clearS3 stepEnRow query1 kRow vRow lastTRow
+  (out0, done0) = attentionHead clearS3 stepEnRow query0 kRow vRow lastTRow
+  (out1, done1) = if hasQ1 then attentionHead clearS3 stepEnRow query1 kRow vRow lastTRow
                            else (pure (repeat 0), pure False)
 
   headOutAcc1  = replace qIdx0 out0 headOutAcc

@@ -20,9 +20,9 @@ import qualified LLaMa2.Layers.TransformerLayer as TransformerLayer
 import LLaMa2.Layers.TransformerLayer (TransformerDecoderComponent(..), TransformerLayerComponent (..))
 import qualified LLaMa2.Embedding.PRNG as PRNG (tokenSamplerFromLogits)
 import qualified LLaMa2.Core.PipelineController as PipelineController
-  ( runPipelineController
+  ( pipelineController
   , PipelineOutputs (..)
-  , runMinimalController
+  , layerSequencer
   )
 import qualified LLaMa2.Core.Embedding as Embedding (embedder)
 import qualified LLaMa2.Layers.Components.Quantized as Quantized (EmbeddingComponentQ(..))
@@ -74,7 +74,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   -- STAGE CONTROLLER - Provides stage sequencing for layer internals
   -- Note: Top-level layer tracking uses minimalController (newLayerIdx)
   pipelineController =
-    PipelineController.runPipelineController
+    PipelineController.pipelineController
       attnDoneThisLayer
       writeDoneThisLayer
       qkvDoneThisLayer
@@ -95,7 +95,7 @@ transformer decoder inputToken inputTokenValid temperature seed =
   processingState = PipelineController.processingState pipelineController
 
   (newLayerIdx, newSeqPosIdx, newReadyPulse) =
-    PipelineController.runMinimalController ffnDoneThisLayer inputTokenValid
+    PipelineController.layerSequencer ffnDoneThisLayer inputTokenValid
 
   -- Extract final layer output (updated by ffnValidOut at Stage4)
   finalLayerOutput :: Signal dom (Vec ModelDimension FixedPoint)

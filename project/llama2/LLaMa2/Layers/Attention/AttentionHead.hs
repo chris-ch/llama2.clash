@@ -1,5 +1,5 @@
 module LLaMa2.Layers.Attention.AttentionHead
-  ( attendHead ) where
+  ( attentionHead ) where
 
 import Clash.Prelude
 import LLaMa2.Config (HeadDimension)
@@ -11,7 +11,7 @@ import qualified LLaMa2.Layers.Attention.OnlineSoftmax as OnlineSoftmax
 dotF :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
 dotF a b = sum (zipWith (*) a b)
 
-attendHead :: HiddenClockResetEnable dom
+attentionHead :: HiddenClockResetEnable dom
   => Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Vec HeadDimension FixedPoint)
@@ -20,7 +20,7 @@ attendHead :: HiddenClockResetEnable dom
   -> Signal dom Bool
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool )
-attendHead clear stepEn qSig kSig vSig lastT =
+attentionHead clear stepEn qSig kSig vSig lastT =
   (OnlineSoftmax.softResult <$> st, stepEn .&&. lastT)
  where
   scale :: FixedPoint

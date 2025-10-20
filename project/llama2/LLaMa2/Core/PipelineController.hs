@@ -1,8 +1,8 @@
 module LLaMa2.Core.PipelineController
   ( PipelineOutputs(..)
-  , runPipelineController
+  , pipelineController
   , ControllerState(..)
-  , runMinimalController
+  , layerSequencer
   ) where
 
 import Clash.Prelude
@@ -44,7 +44,7 @@ data PipelineOutputs dom = PipelineOutputs
   , stageFinished     :: Signal dom Bool
   }
 
-runPipelineController ::
+pipelineController ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ attnDoneThisLayer
   -> Signal dom Bool  -- ^ writeDoneThisLayer  
@@ -53,7 +53,7 @@ runPipelineController ::
   -> Signal dom Bool  -- ^ classifierDone
   -> Signal dom Bool  -- ^ inputTokenValid
   -> PipelineOutputs dom
-runPipelineController
+pipelineController
   attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer
   ffnDoneThisLayer classifierDone inputTokenValid = outs
  where
@@ -116,7 +116,7 @@ initialControllerState = ControllerState
   , ctrlSeqPos   = 0
   }
 
-runMinimalController ::
+layerSequencer ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ currentLayerDone
   -> Signal dom Bool  -- ^ inputTokenValid
@@ -124,7 +124,7 @@ runMinimalController ::
      , Signal dom (Index SequenceLength)
      , Signal dom Bool  -- ^ readyForNewToken
      )
-runMinimalController layerDone tokenValid = (layerIdx, posIdx, tokenReady)
+layerSequencer layerDone tokenValid = (layerIdx, posIdx, tokenReady)
  where
   state = register initialControllerState nextState
 

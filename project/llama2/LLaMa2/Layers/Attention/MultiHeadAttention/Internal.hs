@@ -1,8 +1,8 @@
 module LLaMa2.Layers.Attention.MultiHeadAttention.Internal (
   applyRotaryPositionEncoding
-  , applyRotation
-  , computeHeadQ
-  , computeHeadKV
+  , rotaryEncoder
+  , queryHeadProjector
+  , keyValueHeadProjector
 ) where
 
 import Clash.Prelude
@@ -17,7 +17,7 @@ import LLaMa2.Layers.Components.Quantized
 import LLaMa2.Layers.Components.RotaryQ (RotaryEncodingComponentF (..))
 import LLaMa2.Helpers.MatVecI8E (matrixMultiplier)
 
-computeHeadQ
+queryHeadProjector
   :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn
@@ -29,7 +29,7 @@ computeHeadQ
      , Signal dom Bool            -- ^ validOut
      , Signal dom Bool            -- ^ readyOut (can accept input)
      )
-computeHeadQ validIn readyIn headComp stepCountSig xHatSig =
+queryHeadProjector validIn readyIn headComp stepCountSig xHatSig =
   (qRoOut, validOut, readyOut)
   where
     -- Matrix multiply with handshaking
@@ -37,13 +37,13 @@ computeHeadQ validIn readyIn headComp stepCountSig xHatSig =
       matrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
 
     -- Apply rotary encoding (combinational, but gated by valid)
-    qRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> qOut
+    qRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> qOut
 
     -- Pass through handshaking signals
     validOut = qValidOut
     readyOut = qReadyOut
 
-computeHeadKV
+keyValueHeadProjector
   :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn
@@ -56,7 +56,7 @@ computeHeadKV
      , Signal dom Bool            -- ^ validOut
      , Signal dom Bool            -- ^ readyOut (can accept input)
      )
-computeHeadKV validIn readyIn headComp stepCountSig xHatSig =
+keyValueHeadProjector validIn readyIn headComp stepCountSig xHatSig =
   (kRoOut, vOut, validOut, readyOut)
   where
     -- K matrix multiply
@@ -68,7 +68,7 @@ computeHeadKV validIn readyIn headComp stepCountSig xHatSig =
       matrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
 
     -- Apply rotary to K
-    kRoOut = (applyRotation (rotaryQ headComp) <$> stepCountSig) <*> kOut
+    kRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> kOut
 
     -- Both K and V must be valid (should happen simultaneously since same input)
     validOut = kValidOut .&&. vValidOut
@@ -100,12 +100,12 @@ applyRotaryPositionEncoding inputVec cosVecF sinVecF =
         im = realC * s + imagC * c
     in  r :> im :> Nil
 
-applyRotation
+rotaryEncoder
   :: RotaryEncodingComponentF
   -> Index SequenceLength
   -> Vec HeadDimension FixedPoint
   -> Vec HeadDimension FixedPoint
-applyRotation rot step tokenVec =
+rotaryEncoder rot step tokenVec =
   let cosF = freqCosF rot !! step
       sinF = freqSinF rot !! step
   in  applyRotaryPositionEncoding tokenVec cosF sinF

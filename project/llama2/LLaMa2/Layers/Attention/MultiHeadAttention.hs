@@ -11,7 +11,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layers.Components.Quantized
   ( MultiHeadAttentionComponentQ(..) )
 import LLaMa2.Layers.Attention.MultiHeadAttention.Internal
-  ( computeHeadQ, computeHeadKV )
+  ( queryHeadProjector, keyValueHeadProjector )
 import LLaMa2.Helpers.FixedPoint (rmsNormFwFix)
 
 
@@ -34,7 +34,7 @@ projectQKV validIn readyIn mhaQ seqPosSig xSig =
     xNorm = rmsNormFwFix <$> xSig <*> pure (rmsAttF mhaQ)
 
     -- Propagate readyIn to all Q-head multipliers
-    qResults = map (\headQ -> computeHeadQ validIn readyIn headQ seqPosSig xNorm)
+    qResults = map (\headQ -> queryHeadProjector validIn readyIn headQ seqPosSig xNorm)
                    (headsQ mhaQ)
 
     queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
@@ -43,7 +43,7 @@ projectQKV validIn readyIn mhaQ seqPosSig xSig =
 
     -- Propagate readyIn to all KV-head multipliers
     kvResults = map (\kvIdx -> let headQ = headsQ mhaQ !! kvIdx
-                                in computeHeadKV validIn readyIn headQ seqPosSig xNorm)
+                                in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm)
                     kvHeadIndices
 
     qVecs    = map (\(q, _, _) -> q) qResults
