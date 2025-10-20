@@ -1,70 +1,36 @@
-module LLaMa2.ParamsPlaceholder (
-    decoderConst
-) where
+{-# LANGUAGE CPP #-}
+module LLaMa2.ParamsPlaceholder (decoderConst) where
 
-import Clash.Prelude
-import LLaMa2.Types.ModelConfig 
-  ( ModelDimension, HiddenDimension
-  , HeadDimension
-  , RotaryPositionalEmbeddingDimension, SequenceLength
-  , VocabularySize
-  )
-import LLaMa2.Types.LayerData
-  ( CArray2D(..)
-  , SingleHeadComponent(..)
-  , RotaryEncodingComponent(..)
-  , EmbeddingComponent(..), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..)
-  )
+import Prelude
 
-import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), quantizeEmbedding, quantizeFFN, quantizeMHA)
+import System.IO.Unsafe (unsafePerformIO)
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Binary.Get as BG
+import qualified Parser
+import LLaMa2.Types.Parameters (DecoderParameters)
 
--- Helpers: zero-filled Float matrices/vectors to make the design elaborate now.
-zeroMatF :: forall rows cols. (KnownNat rows, KnownNat cols) => CArray2D rows cols
-zeroMatF = CArray2D (repeat (repeat 0.0))
 
-rotaryZerosF :: RotaryEncodingComponent
-rotaryZerosF = RotaryEncodingComponent
-  { freqCos = zeroMatF @SequenceLength @RotaryPositionalEmbeddingDimension
-  , freqSin = zeroMatF @SequenceLength @RotaryPositionalEmbeddingDimension
-  }
-
-singleHeadF :: SingleHeadComponent
-singleHeadF = SingleHeadComponent
-  { wqHead = zeroMatF @HeadDimension @ModelDimension
-  , wkHead = zeroMatF @HeadDimension @ModelDimension
-  , wvHead = zeroMatF @HeadDimension @ModelDimension
-  , rotary = rotaryZerosF
-  }
-
-mhaFloat :: MultiHeadAttentionComponent
-mhaFloat = MultiHeadAttentionComponent
-  { heads  = repeat singleHeadF                 -- Vec NumQueryHeads
-  , mWo    = repeat (zeroMatF @ModelDimension @HeadDimension)
-  , rmsAtt = repeat 0.0                         -- Vec ModelDimension
-  }
-
-ffnFloat :: FeedForwardNetworkComponent
-ffnFloat = FeedForwardNetworkComponent
-  { fW1     = zeroMatF @HiddenDimension @ModelDimension
-  , fW2     = zeroMatF @ModelDimension @HiddenDimension
-  , fW3     = zeroMatF @HiddenDimension @ModelDimension
-  , fRMSFfn = repeat 0.0
-  }
-
-embeddingFloat :: EmbeddingComponent
-embeddingFloat = EmbeddingComponent
-  { vocabulary     = zeroMatF @VocabularySize @ModelDimension
-  , rmsFinalWeight = repeat 0.0
-  }
-
--- Public constant: quantized components embedded in hardware.
+-- Load real trained weights at Clash compile-time
 decoderConst :: DecoderParameters
-decoderConst =
-  let layerQ = TransformerLayerComponent
-                { multiHeadAttention = quantizeMHA mhaFloat
-                , feedforwardNetwork = quantizeFFN ffnFloat
-                }
-  in DecoderParameters
-        { modelEmbedding = quantizeEmbedding embeddingFloat
-        , modelLayers    = repeat layerQ  -- Vec NumLayers
-        }
+decoderConst = unsafePerformIO $ do
+  putStrLn "Loading weights for synthesis..."
+  content <- BSL.readFile weightFile
+  let params = BG.runGet Parser.parseLLaMa2ConfigFile content
+  putStrLn $ "✅ Loaded " ++ weightFile
+  return params
+{-# NOINLINE decoderConst #-}
+
+-- Select weight file based on CPP model flag
+weightFile :: FilePath
+weightFile = 
+#ifdef MODEL_260K
+  "./data/stories260K.bin"
+#elif defined(MODEL_15M)
+  "./data/stories15M.bin"
+#elif defined(MODEL_42M)
+  "./data/stories42M.bin"
+#elif defined(MODEL_110M)
+  "./data/stories110M.bin"
+#else
+  "./data/stories260K.bin"
+#endif

@@ -107,6 +107,10 @@ cabal exec -- clash --verilog \
   -iproject/llama2 \
   -package llama2 \
   -outputdir /tmp/clash-build \
+  -DMODEL_260K \
+  -fclash-inline-limit=20 \
+  -fclash-spec-limit=10 \
+  -fclash-clear \
   project/llama2/LLaMa2/Top.hs
 ```
 
