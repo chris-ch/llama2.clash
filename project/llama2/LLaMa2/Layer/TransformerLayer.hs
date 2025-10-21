@@ -43,7 +43,6 @@ transformerLayer ::
   TransformerLayerComponent ->
   Index NumLayers ->
   Signal dom ProcessingState ->
-  Signal dom Bool -> -- layerActive (not used yet)
   Signal dom LayerData ->
   ( Signal dom LayerData,
     Signal dom Bool, -- writeDone
@@ -53,7 +52,7 @@ transformerLayer ::
     Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
-transformerLayer layer layerIndex processingState layerActive layerData =
+transformerLayer layer layerIndex processingState layerData =
   ( nextLayerData,
     writeDone,
     attentionDone,

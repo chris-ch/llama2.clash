@@ -58,8 +58,7 @@ processLayers processingState currentLayerIdx inputLayerData layers =
           ) = TransformerLayer.transformerLayer 
                 layerComponent 
                 layerIdx 
-                processingState 
-                isActive 
+                processingState
                 layerDataIn
         
         -- Only update layer data when this layer is active
