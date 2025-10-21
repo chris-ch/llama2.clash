@@ -1,4 +1,7 @@
-module LLaMa2.Memory.WeightLoader where
+module LLaMa2.Memory.WeightLoader 
+(bootWeightLoader, calculateLayerBaseAddress, layerWeightStreamer, parseI8EChunk, weightManagementSystem)
+    
+    where
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
