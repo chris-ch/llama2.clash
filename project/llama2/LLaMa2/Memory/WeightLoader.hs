@@ -125,7 +125,7 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
 
     -- Write to DDR4 (stream through)
     startWrite = readValid
-    (ddrMaster, writeComplete, _ddrReady) =
+    (ddrMaster, writeComplete, ddrReady) =
       axiWriteMaster ddrSlave ddrAddr readData startWrite
 
     -- Track burst completion
@@ -270,10 +270,12 @@ data WeightSystemState
   deriving (Generic, NFDataX, Show, Eq)
 
 -- | Complete weight management system
--- | Complete weight management system
+-- Find the weightManagementSystem function and ADD a bypass parameter:
+
 weightManagementSystem
   :: forall dom . HiddenClockResetEnable dom
-  => AxiSlaveIn dom                     -- eMMC AXI slave
+  => Signal dom Bool                    -- NEW: bypass (skip boot for simulation)
+  -> AxiSlaveIn dom                     -- eMMC AXI slave
   -> AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom Bool                    -- Power on / start boot
   -> Signal dom (Index NumLayers)       -- Current layer
@@ -285,133 +287,47 @@ weightManagementSystem
      , Signal dom Bool                  -- System ready
      , Signal dom (Unsigned 32)         -- Boot progress (bytes)
      )
-weightManagementSystem emmcSlave ddrSlave powerOn layerRequest loadTrigger =
+weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigger =
   (emmcMaster, ddrMaster, weightStream, streamValid, systemReady, bootProgress)
   where
+    -- When bypassed, immediately mark as ready
+    systemReady = mux bypass 
+      (pure True)                       -- Bypass: always ready
+      (sysState .==. pure WSReady)     -- Normal: wait for boot
+    
+    -- Rest of the function stays the same...
     sysState = register WSBoot nextSysState
     
-    -- Boot configuration
     emmcBaseAddr = 0 :: Unsigned 32
     ddrBaseAddr = 0 :: Unsigned 32
     
-    -- Boot loader (eMMC → DDR4)
-    startBoot = powerOn .&&. (sysState .==. pure WSBoot)
+    startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypass)
     (emmcMaster, ddrMasterBoot, bootDone, bootProgress) =
       bootWeightLoader emmcSlave ddrSlave startBoot
                        (pure emmcBaseAddr) (pure ddrBaseAddr)
     
-    -- Runtime streamer (DDR4 → FPGA)
-    startStream = (sysState .==. pure WSReady) .&&. loadTrigger
+    startStream = (sysState .==. pure WSReady) .&&. loadTrigger .&&. (not <$> bypass)
     (ddrMasterRuntime, weightStream, streamValid, streamComplete) =
       layerWeightStreamer ddrSlave layerRequest startStream
     
-    -- Multiplex DDR4 master by multiplexing each field
     isBoot = sysState .==. pure WSBoot
     ddrMaster = AxiMasterOut
-      { arvalid = mux isBoot (arvalid ddrMasterBoot) (arvalid ddrMasterRuntime)
-      , ardata  = mux isBoot (ardata ddrMasterBoot) (ardata ddrMasterRuntime)
-      , rready  = mux isBoot (rready ddrMasterBoot) (rready ddrMasterRuntime)
-      , awvalid = mux isBoot (awvalid ddrMasterBoot) (awvalid ddrMasterRuntime)
-      , awdata  = mux isBoot (awdata ddrMasterBoot) (awdata ddrMasterRuntime)
-      , wvalid  = mux isBoot (wvalid ddrMasterBoot) (wvalid ddrMasterRuntime)
-      , wdataMI = mux isBoot (wdataMI ddrMasterBoot) (wdataMI ddrMasterRuntime)
-      , bready  = mux isBoot (bready ddrMasterBoot) (bready ddrMasterRuntime)
+      { arvalid = mux bypass (pure False) (mux isBoot (arvalid ddrMasterBoot) (arvalid ddrMasterRuntime))
+      , ardata  = mux bypass (pure (errorX "bypass")) (mux isBoot (ardata ddrMasterBoot) (ardata ddrMasterRuntime))
+      , rready  = mux bypass (pure False) (mux isBoot (rready ddrMasterBoot) (rready ddrMasterRuntime))
+      , awvalid = mux bypass (pure False) (mux isBoot (awvalid ddrMasterBoot) (awvalid ddrMasterRuntime))
+      , awdata  = mux bypass (pure (errorX "bypass")) (mux isBoot (awdata ddrMasterBoot) (awdata ddrMasterRuntime))
+      , wvalid  = mux bypass (pure False) (mux isBoot (wvalid ddrMasterBoot) (wvalid ddrMasterRuntime))
+      , wdataMI = mux bypass (pure (errorX "bypass")) (mux isBoot (wdataMI ddrMasterBoot) (wdataMI ddrMasterRuntime))
+      , bready  = mux bypass (pure False) (mux isBoot (bready ddrMasterBoot) (bready ddrMasterRuntime))
       }
     
-    -- System state transitions
-    nextSysState = mux (sysState .==. pure WSBoot)
-      (mux bootDone (pure WSReady) (pure WSBoot))
-      (mux (sysState .==. pure WSReady)
-        (mux startStream (pure WSStreaming) (pure WSReady))
-        (mux (sysState .==. pure WSStreaming)
-          (mux streamComplete (pure WSReady) (pure WSStreaming))
-          sysState))
-    
-    systemReady = sysState .==. pure WSReady
-
--- ============================================================================
--- USAGE EXAMPLE: Integration with Decoder
--- ============================================================================
-
-{-
--- Modified top entity with dynamic weight loading
-topEntityWithDynamicWeights
-  :: Clock System
-  -> Reset System
-  -> Enable System
-  -> AxiSlaveIn System              -- eMMC interface
-  -> AxiSlaveIn System              -- DDR4 interface
-  -> Signal System Bool             -- Power on
-  -> Signal System Token
-  -> Signal System Bool
-  -> Signal System Temperature
-  -> Signal System Seed
-  -> ( AxiMasterOut System          -- eMMC master
-     , AxiMasterOut System          -- DDR4 master
-     , Signal System Token          -- Output token
-     , Signal System Bool           -- Ready pulse
-     , Signal System Bool           -- Weights ready
-     , Signal System (Unsigned 32)  -- Boot progress
-     , Decoder.DecoderIntrospection System
-     )
-topEntityWithDynamicWeights clk rst en emmcSlave ddrSlave powerOn inTok inTokValid temp seed =
-  withClockResetEnable clk rst en $
-    (emmcMaster, ddrMaster, outToken, readyPulse, weightsReady, bootProgress, introspection)
-  where
-    -- Extract current layer from decoder
-    currentLayer = layerIndex introspection
-    
-    -- Detect layer changes to trigger streaming
-    prevLayer = register 0 currentLayer
-    layerChanged = currentLayer ./=. prevLayer
-    
-    -- Weight management system
-    -- Boot: ~17.5 seconds to load 7GB from eMMC to DDR4
-    -- Runtime: ~5ms to stream each layer from DDR4 to FPGA
-    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress) =
-      weightManagementSystem emmcSlave ddrSlave powerOn currentLayer layerChanged
-    
-    -- Run decoder (currently uses static weights from ParamsPlaceholder)
-    -- TODO: Modify decoder to accept streaming weights via weightStream
-    (outToken, readyPulse, introspection) =
-      Decoder.decoder decoderConst inTok inTokValid temp seed
-    
-    -- Future enhancement: Parse weightStream and feed to decoder
-    -- parsedWeights = parseI8EChunk <$> weightStream
-    -- Then modify decoder to use parsedWeights instead of decoderConst
-
--- Simulation version with progress monitoring
-topEntitySimWithWeightLoading
-  :: HiddenClockResetEnable System
-  => AxiSlaveIn System
-  -> AxiSlaveIn System
-  -> Signal System Bool             -- Power on
-  -> Signal System Token
-  -> Signal System Bool
-  -> Signal System Temperature
-  -> Signal System Seed
-  -> ( AxiMasterOut System
-     , AxiMasterOut System
-     , Signal System Token
-     , Signal System Bool
-     , Signal System Bool           -- System ready
-     , Signal System (Unsigned 32)  -- Boot progress
-     , Signal System (Index NumLayers)  -- Current layer
-     , Decoder.DecoderIntrospection System
-     )
-topEntitySimWithWeightLoading emmcSlave ddrSlave powerOn inTok inTokValid temp seed =
-  (emmcMaster, ddrMaster, outToken, readyPulse, weightsReady, bootProgress, currentLayer, introspection)
-  where
-    currentLayer = layerIndex introspection
-    prevLayer = register 0 currentLayer
-    layerChanged = currentLayer ./=. prevLayer
-    
-    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress) =
-      weightManagementSystem emmcSlave ddrSlave powerOn currentLayer layerChanged
-    
-    -- Gate decoder until weights are loaded
-    gatedInTokValid = inTokValid .&&. weightsReady
-    
-    (outToken, readyPulse, introspection) =
-      Decoder.decoder decoderConst inTok gatedInTokValid temp seed
--}
+    nextSysState = mux bypass
+      (pure WSReady)  -- Bypass: skip directly to ready
+      (mux (sysState .==. pure WSBoot)
+        (mux bootDone (pure WSReady) (pure WSBoot))
+        (mux (sysState .==. pure WSReady)
+          (mux startStream (pure WSStreaming) (pure WSReady))
+          (mux (sysState .==. pure WSStreaming)
+            (mux streamComplete (pure WSReady) (pure WSStreaming))
+            sysState)))

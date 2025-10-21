@@ -19,11 +19,14 @@ import Text.Printf (printf)
 import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..) )
 
 import LLaMa2.Types.ModelConfig ( VocabularySize )
-import qualified LLaMa2.Top as Top ( topEntitySim, DecoderIntrospection (..) )
+import qualified LLaMa2.Top as Top ( DecoderIntrospection (..), topEntityWithAxi )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import LLaMa2.Types.Parameters (DecoderParameters)
+import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
+import LLaMa2.Memory.FakeAxiSlave (createFakeAxiSlave)
+import LLaMa2.Memory.SimAxiSlave (createSimAxiSlave)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -172,7 +175,8 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, introspection) = bundledOutputs decoder inputSignals
+    (coreOutputsSignal, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) = 
+        bundledOutputs decoder inputSignals
 
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
@@ -184,6 +188,11 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
     readiesSampled        = C.sampleN simSteps (Top.ready introspection)
     attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
+    weightsReadySampled = C.sampleN simSteps weightsReady
+    weightValidSampled = C.sampleN simSteps (Top.weightStreamValid introspection)
+    weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
+    bootProgressSampled = C.sampleN simSteps (Top.bootProgressBytes introspection)
+    layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -199,27 +208,35 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
     sampledTokens = [ tok | (tok, isReady) <- zip outputTokens readyFlags, isReady ]
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage | Ready | AttnDone | FFNDone | Token"
-  putStrLn "-----------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Stage              | Ready | FFNDone  | WeightsRdy | WgtValid | LayerChange | WgtSample | Boot   | Token ID | Token"
+  putStrLn "--------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, tok) = do
         let li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
             ps     = processingStage (statesSampled !! cycleIdx)
             rdy    = readiesSampled !! cycleIdx
-            attn   = attnDonesSampled !! cycleIdx
             ffn    = ffnDonesSampled !! cycleIdx
+            wRdy   = weightsReadySampled !! cycleIdx
+            wValid = weightValidSampled !! cycleIdx
+            wSample = weightSampleSampled !! cycleIdx
+            boot   = bootProgressSampled !! cycleIdx
+            layChg = layerChangeSampled !! cycleIdx
             token  = coreOutputs !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-32s | %5s | %8s | %8s | %-8s | %-8s"
+            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s"
               cycleIdx
               li
               (show ps)
+              (show boot)
               (show rdy)
-              (show attn)
               (show ffn)
-              (show $ fst tok)
+              (show wRdy)
+              (show wValid)
+              (show layChg)
+              wSample
+              (show $ fst token)
               (show $ decodeToken tokenizer (fst token))
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
@@ -230,15 +247,28 @@ generateTokensSimAutoregressive decoder tokenizer stepCount promptTokens tempera
 
 bundledOutputs :: DecoderParameters
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> (C.Signal C.System (Token, Bool), Top.DecoderIntrospection C.System)
+  -> ( C.Signal C.System (Token, Bool)
+     , AxiMasterOut C.System
+     , AxiMasterOut C.System
+     , C.Signal C.System Bool
+     , C.Signal C.System (C.Unsigned 32)
+     , Top.DecoderIntrospection C.System
+     )
 bundledOutputs decoder bundledInputs =
-  (C.bundle (outToken, readyPulse), introspection)
+  (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster, weightsReady, bootProgress, introspection)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
-
-  (outToken, readyPulse, introspection) =
+  
+  bypass = C.pure True
+  powerOn = C.pure True
+  
+  fakeEmmcSlave = createFakeAxiSlave :: AxiSlaveIn C.System
+  fakeDdrSlave = createFakeAxiSlave :: AxiSlaveIn C.System
+  
+  -- Put exposeClockResetEnable AROUND the call to topEntityWithAxi
+  (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
     C.exposeClockResetEnable
-      (Top.topEntitySim decoder token isValid temperature seed)
+      (Top.topEntityWithAxi bypass fakeEmmcSlave fakeDdrSlave powerOn token isValid temperature seed)
       CS.systemClockGen
       CS.resetGen
       CS.enableGen

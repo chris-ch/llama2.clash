@@ -39,61 +39,7 @@ Scaling from 260K model (weights embedded in FPGA) to 7B model (weights in exter
 
 ### Required Code Changes
 
-#### 1. **Core AXI Types** (`LLaMa2/Memory/AXI.hs`)
-```haskell
--- Define AXI4 channel types
-data AxiAR, AxiR, AxiAW, AxiW, AxiB  -- Address/Data/Response
-data AxiMasterOut dom                 -- FPGA → Memory
-data AxiSlaveIn dom                   -- Memory → FPGA
-```
-
-#### 2. **AXI Read Master** (`LLaMa2/Memory/AxiReadMaster.hs`)
-```haskell
-axiReadMaster
-  :: AxiSlaveIn dom              -- From slave
-  -> Signal dom (Unsigned 32)    -- Address to read
-  -> Signal dom Bool             -- Start read
-  -> ( AxiMasterOut dom          -- To slave
-     , Signal dom (BitVector 512) -- Data out (64 bytes)
-     , Signal dom Bool           -- Data valid
-     , Signal dom Bool           -- Ready
-     )
-
--- States: Idle → SendAddr → ReceiveData → Done
--- Handshake: Transfer when valid AND ready both high
-```
-
-#### 3. **AXI Write Master** (`LLaMa2/Memory/AxiWriteMaster.hs`)
-```haskell
-axiWriteMaster
-  :: AxiSlaveIn dom
-  -> Signal dom (Unsigned 32)    -- Write address
-  -> Signal dom (BitVector 512)  -- Write data
-  -> Signal dom Bool             -- Start write
-  -> ( AxiMasterOut dom
-     , Signal dom Bool           -- Write done
-     , Signal dom Bool           -- Ready
-     )
-
--- States: Idle → SendAddr → SendData → WaitResp → Done
-```
-
-#### 4. **Weight Loader** (`LLaMa2/Memory/WeightLoader.hs`)
-```haskell
-layerWeightLoader
-  :: AxiMasterOut dom (eMMC)     -- Read from eMMC
-  -> AxiMasterOut dom (DDR4)     -- Write to DDR4
-  -> Signal dom (Index NumLayers) -- Which layer
-  -> Signal dom TransformerLayerComponent -- Loaded weights
-
--- Flow:
--- 1. Read I8E weights from eMMC (220MB compressed)
--- 2. Dequantize to FixedPoint (1.2GB uncompressed)
--- 3. Cache in DDR4
--- 4. Return weights to compute core
-```
-
-#### 5. **Modified Decoder** (`LLaMa2/Decoder/Decoder.hs`)
+#### **Modified Decoder** (`LLaMa2/Decoder/Decoder.hs`)
 ```haskell
 -- OLD signature:
 decoder :: DecoderParameters -> Signal dom Token -> ...
@@ -116,7 +62,7 @@ decoder
 -- - Process layers sequentially (0→31)
 ```
 
-#### 6. **Top Entity Changes** (`LLaMa2/Top.hs`)
+#### **Top Entity Changes** (`LLaMa2/Top.hs`)
 ```haskell
 topEntity
   :: Clock System -> Reset System -> Enable System

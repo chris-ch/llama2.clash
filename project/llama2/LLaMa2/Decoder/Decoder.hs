@@ -17,7 +17,7 @@ import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension
   , NumQueryHeads, NumKeyValueHeads, HeadDimension
   )
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
 -- Import sub-modules
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
@@ -26,6 +26,9 @@ import qualified LLaMa2.Decoder.SequenceController as SequenceController
 import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurrentLayerFlag, prepareLayerInput)
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
+import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
+import LLaMa2.Memory.WeightLoader (weightManagementSystem, parseI8EChunk)
+import LLaMa2.Numeric.Quantization (RowI8E)
 
 -- ============================================================================
 -- Initial State
@@ -52,6 +55,10 @@ data DecoderIntrospection dom = DecoderIntrospection
   , ready         :: Signal dom Bool
   , attnDone      :: Signal dom Bool
   , ffnDone       :: Signal dom Bool
+  , weightStreamValid :: Signal dom Bool
+  , parsedWeightSample :: Signal dom Mantissa
+  , bootProgressBytes :: Signal dom (Unsigned 32)
+  , layerChangeDetected :: Signal dom Bool
   } deriving (Generic, NFDataX)
 
 -- ============================================================================
@@ -60,18 +67,53 @@ data DecoderIntrospection dom = DecoderIntrospection
 
 decoder :: forall dom
    . HiddenClockResetEnable dom
-  => DecoderParameters
-  -> Signal dom Token                    -- ^ Input token
-  -> Signal dom Bool                     -- ^ Input token valid
+  => Signal dom Bool                     -- ^ NEW: bypass weight loading (for simulation)
+  -> AxiSlaveIn dom                      -- ^ eMMC interface
+  -> AxiSlaveIn dom                      -- ^ DDR4 interface  
+  -> Signal dom Bool                     -- ^ Power on / boot trigger
+  -> DecoderParameters                   -- ^ Still using static params
+  -> Signal dom Token
+  -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token                  -- ^ Output token
-     , Signal dom Bool                   -- ^ Ready pulse
-     , DecoderIntrospection dom          -- ^ Introspection signals
+  -> ( Signal dom Token
+     , Signal dom Bool
+     , AxiMasterOut dom
+     , AxiMasterOut dom
+     , Signal dom Bool
+     , Signal dom (Unsigned 32)
+     , DecoderIntrospection dom
      )
-decoder params inputToken inputTokenValid temperature seed =
-  (outputToken, readyPulse, introspection)
+decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temperature seed =
+  (outputToken, readyPulse, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection)
   where
+    -- ========================================================================
+    -- WEIGHT MANAGEMENT SYSTEM
+    -- ========================================================================
+    
+    -- Detect layer changes to trigger weight streaming
+    prevLayer = register 0 layerIdx
+    layerChanged = layerIdx ./=. prevLayer
+    
+    -- Trigger load when layer changes AND system is ready
+    loadTrigger = layerChanged .&&. weightsReady
+    
+    -- Instantiate the weight management system
+    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress) =
+      weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger
+    
+    parsedWeights :: Signal dom (RowI8E ModelDimension)
+    parsedWeights = parseI8EChunk <$> weightStream
+    
+    -- Extract first mantissa for debugging
+    (mantissas, exponent) = unbundle parsedWeights
+
+    firstMantissa :: Signal dom Mantissa
+    firstMantissa = fmap (bitCoerce . head) mantissas
+    
+    -- Gate input token until weights are ready (important!)
+    gatedTokenValid = inputTokenValid .&&. weightsReady
+    
     -- ========================================================================
     -- SEQUENCE CONTROL
     -- ========================================================================
@@ -85,14 +127,14 @@ decoder params inputToken inputTokenValid temperature seed =
     processingState = SequenceController.processingState (
       SequenceController.pipelineController
         attnDoneThisLayer writeDoneThisLayer qkvDoneThisLayer
-        ffnDoneThisLayer logitsValid inputTokenValid)
+        ffnDoneThisLayer logitsValid gatedTokenValid)
     
     -- ========================================================================
     -- TOKEN SELECTION & EMBEDDING
     -- ========================================================================
     
     outputToken :: Signal dom Token
-    outputToken = mux inputTokenValid inputToken feedbackToken
+    outputToken = mux gatedTokenValid inputToken feedbackToken  -- CHANGED: use gated
     
     embeddedVector :: Signal dom (Vec ModelDimension FixedPoint)
     embeddedVector = InputEmbedding.inputEmbedding (modelEmbedding params) outputToken
@@ -138,5 +180,13 @@ decoder params inputToken inputTokenValid temperature seed =
     -- ========================================================================
     
     introspection = DecoderIntrospection
-      { state = processingState, layerIndex = layerIdx, ready = readyPulse
-      , attnDone = attnDoneThisLayer, ffnDone = ffnDoneThisLayer }
+      { state = processingState
+      , layerIndex = layerIdx
+      , ready = readyPulse
+      , attnDone = attnDoneThisLayer
+      , ffnDone = ffnDoneThisLayer
+      , weightStreamValid = streamValid
+      , parsedWeightSample = firstMantissa 
+      , bootProgressBytes = bootProgress
+      , layerChangeDetected = layerChanged
+      }
