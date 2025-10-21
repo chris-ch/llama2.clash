@@ -135,6 +135,17 @@ cabal exec -- clash --verilog \
 9. Pipeline advances, isStage1ThisLayer goes LOW (outReady asserted)
 10. QKV controller transitions: Done -> Idle
 
+
+# Key Design Decisions Summary
+
+| Aspect | Choice | Rationale |
+|--------|--------|-----------|
+| **Weight Storage** | NVMe SSD (ROM) | Non-volatile, reprogrammable, 10× cheaper than RAM |
+| **Weight Format** | I8E (8-bit + 7-bit exp) | 4× compression vs FixedPoint, minimal quality loss |
+| **Compute Format** | FixedPoint (SFixed 12 20) | Native FPGA arithmetic, good precision |
+| **Working Memory** | DDR4 DRAM | Fast random access for KV cache, affordable |
+| **Layer Strategy** | One at a time + prefetch | Fits in available memory, hides ROM latency |
+| **KV Cache** | External DDR4 | Too large for on-chip, needs fast random access |
 # Few first cycles (combinational multiplier)
 
 ```text

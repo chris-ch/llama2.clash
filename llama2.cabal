@@ -107,6 +107,10 @@ library
     , LLaMa2.Layer.TransformerLayer
     , LLaMa2.Memory.KVCacheBank
     , LLaMa2.Memory.DualPortRAM
+    , LLaMa2.Memory.WeightLoader
+    , LLaMa2.Memory.AXI
+    , LLaMa2.Memory.AxiReadMaster
+    , LLaMa2.Memory.AxiWriteMaster
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization
     , LLaMa2.Numeric.Operations
