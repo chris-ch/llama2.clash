@@ -16,7 +16,7 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Operations (matrixMultiplier)
-import LLaMa2.Types.LayerData (ProcessingState (..), LayerData (..))
+import LLaMa2.Types.LayerData (ProcessingState (..))
 import LLaMa2.Layer.Attention (fsmController)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..), SingleHeadComponentQ (..))
@@ -68,25 +68,25 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig =
 
 qkvProjectionController ::
   HiddenClockResetEnable dom =>
-  Signal dom Bool -> Signal dom Bool ->
-  Signal dom LayerData ->
-  MultiHeadAttentionComponentQ ->
-  Signal dom ProcessingState ->
-  ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
+  Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> MultiHeadAttentionComponentQ
+  -> Signal dom ProcessingState
+  -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                 , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                 , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
   , Signal dom Bool
   , Signal dom Bool )
-qkvProjectionController inValid outReady idSig mhaQ psSig = (result, validOut, inReady)
+qkvProjectionController inValid outReady input mhaQ psSig = (result, validOut, inReady)
  where
   (enable, validOut, inReady) = fsmController inValid outReady matVecValid
   (result, matVecValid, _ready) =
     qkvProjector enable (pure True) mhaQ
                (sequencePosition <$> psSig)
-               (inputVector <$> idSig)
+               input
 
-queryHeadProjector
-  :: forall dom .
+queryHeadProjector :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom Bool              -- ^ validIn
   -> Signal dom Bool              -- ^ readyIn (downstream ready)

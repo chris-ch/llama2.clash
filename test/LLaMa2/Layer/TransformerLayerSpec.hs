@@ -7,8 +7,8 @@ import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Layer.TransformerLayer (singleHeadController)
 import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension)
+import LLaMa2.Layer.Attention.MultiHeadAttention (singleHeadController)
 
 -- | Simple deterministic WO matrix for testing
 makeSimpleWOMatrix :: MatI8E ModelDimension HeadDimension

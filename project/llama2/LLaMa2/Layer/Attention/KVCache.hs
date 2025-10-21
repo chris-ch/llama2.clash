@@ -24,26 +24,26 @@ kvBankController ::
   ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Vec NumKeyValueHeads (Signal dom Bool) )
-kvBankController layerIndex psSig idSig qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
+kvBankController layerIndex processingState layerData qkvValid (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
   -- Stage signals
   isStage2Write = liftA2 (\ps _ -> processingStage ps == Stage2_WriteKV &&
-                                   processingLayer ps == layerIndex) psSig (pure ())
+                                   processingLayer ps == layerIndex) processingState (pure ())
   isStage3Attn  = liftA2 (\ps _ -> processingStage ps == Stage3_Attend &&
-                                   processingLayer ps == layerIndex) psSig (pure ())
+                                   processingLayer ps == layerIndex) processingState (pure ())
 
-  seqPos = sequencePosition <$> psSig
+  seqPos = sequencePosition <$> processingState
 
   -- Query indices
   qIdx0 = queryHeadIndex0 kvIx
   hasQ1 = hasSecondQueryHead kvIx
   qIdx1 = queryHeadIndex1 kvIx
 
-  query0 = getQueryVector idSig qIdx0
-  query1 = if hasQ1 then getQueryVector idSig qIdx1 else pure (repeat 0)
-  keyVec = getKeyVector idSig kvIx
-  valVec = getValueVector idSig kvIx
+  query0 = getQueryVector layerData qIdx0
+  query1 = if hasQ1 then getQueryVector layerData qIdx1 else pure (repeat 0)
+  keyVec = getKeyVector layerData kvIx
+  valVec = getValueVector layerData kvIx
 
   -- KV Write controller
   (wrPulse, wrDone) = Cache.writePulseGenerator (isStage2Write .&&. qkvValid)
