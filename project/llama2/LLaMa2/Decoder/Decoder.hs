@@ -27,7 +27,7 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurr
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
-import LLaMa2.Memory.WeightLoader (weightManagementSystem, parseI8EChunk)
+import LLaMa2.Memory.WeightLoader (weightManagementSystem, parseI8EChunk, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
 
 -- ============================================================================
@@ -59,6 +59,8 @@ data DecoderIntrospection dom = DecoderIntrospection
   , parsedWeightSample :: Signal dom Mantissa
   , bootProgressBytes :: Signal dom (Unsigned 32)
   , layerChangeDetected :: Signal dom Bool
+  , sysState :: Signal dom WeightSystemState
+  , bootState :: Signal dom BootLoaderState
   } deriving (Generic, NFDataX)
 
 -- ============================================================================
@@ -99,7 +101,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     loadTrigger = layerChanged .&&. weightsReady
     
     -- Instantiate the weight management system
-    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress) =
+    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
       weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger
     
     parsedWeights :: Signal dom (RowI8E ModelDimension)
@@ -189,4 +191,6 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
       , parsedWeightSample = firstMantissa 
       , bootProgressBytes = bootProgress
       , layerChangeDetected = layerChanged
+      , sysState = sysState
+      , bootState = bootState
       }

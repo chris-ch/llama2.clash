@@ -1,5 +1,5 @@
 module LLaMa2.Memory.WeightLoader 
-(bootWeightLoader, calculateLayerBaseAddress, layerWeightStreamer, parseI8EChunk, weightManagementSystem)
+(bootWeightLoader, calculateLayerBaseAddress, layerWeightStreamer, parseI8EChunk, weightManagementSystem, WeightSystemState(..), BootLoaderState(..))
     
     where
 
@@ -99,9 +99,10 @@ bootWeightLoader
      , AxiMasterOut dom                 -- DDR4 AXI master
      , Signal dom Bool                  -- Boot complete
      , Signal dom (Unsigned 32)         -- Bytes transferred
+     , Signal dom BootLoaderState 
      )
 bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
-  (emmcMaster, ddrMaster, bootComplete, bytesTransferred)
+  (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state)
   where
     state = register BootIdle nextState
 
@@ -286,23 +287,25 @@ weightManagementSystem
      , Signal dom Bool                  -- Weight data valid
      , Signal dom Bool                  -- System ready
      , Signal dom (Unsigned 32)         -- Boot progress (bytes)
+     , Signal dom WeightSystemState     -- expose state
+     , Signal dom BootLoaderState  -- boot state
      )
 weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigger =
-  (emmcMaster, ddrMaster, weightStream, streamValid, systemReady, bootProgress)
+  (emmcMaster, ddrMaster, weightStream, streamValid, systemReady, bootProgress, sysState, bootState)
   where
     -- When bypassed, immediately mark as ready
-    systemReady = mux bypass 
+    systemReady' = mux bypass 
       (pure True)                       -- Bypass: always ready
       (sysState .==. pure WSReady)     -- Normal: wait for boot
-    
-    -- Rest of the function stays the same...
+    systemReady = sysState .==. pure WSReady
+
     sysState = register WSBoot nextSysState
     
     emmcBaseAddr = 0 :: Unsigned 32
     ddrBaseAddr = 0 :: Unsigned 32
     
     startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypass)
-    (emmcMaster, ddrMasterBoot, bootDone, bootProgress) =
+    (emmcMaster, ddrMasterBoot, bootDone, bootProgress, bootState) =
       bootWeightLoader emmcSlave ddrSlave startBoot
                        (pure emmcBaseAddr) (pure ddrBaseAddr)
     

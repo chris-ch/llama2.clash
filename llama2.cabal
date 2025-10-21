@@ -112,6 +112,7 @@ library
     , LLaMa2.Memory.AxiReadMaster
     , LLaMa2.Memory.AxiWriteMaster
     , LLaMa2.Memory.FakeAxiSlave
+    , LLaMa2.Memory.FileBackedAxiSlave
     , LLaMa2.Memory.SimAxiSlave
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization
