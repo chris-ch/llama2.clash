@@ -11,6 +11,7 @@ import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (matrixMultiplier)
+import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
@@ -20,17 +21,14 @@ multiHeadAttentionStage :: forall dom.
   Signal dom LayerData ->
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
-    Signal
-      dom
-      ( Vec NumQueryHeads (Vec HeadDimension FixedPoint),
-        Vec NumKeyValueHeads (Vec HeadDimension FixedPoint),
-        Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-      ),
+    Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
     Signal dom Bool,
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDone, xAfterAttn, qkvProjected, qkvInReady, writeDone, qkvDone)
+multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDone, xAfterAttn, q, k ,v, qkvInReady, writeDone, qkvDone)
   where
     -- === Multi-Head Attention (MHA) Stages ===
     -- Stage1: QKV Projection
@@ -52,15 +50,14 @@ multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDon
         <$> processingState
 
     input = inputVector <$> layerData
-    (qkvProjected, qkvValidOut, qkvInReady) =
+    (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
         isStage1ThisLayer
         qkvOutReady
         input
         mha
         processingState
-    qkvDone = qkvValidOut
-
+    (q, k, v) = unbundle qkvProjected
     -- Stage2/3: KV Cache and Attention
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
@@ -73,7 +70,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDon
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeValidOutNew, _writeReadyIn, _writeEnable) =
       kvWriteControllerFSM
-        qkvValidOut -- validIn: start when QKV completes
+        qkvDone -- validIn: start when QKV completes
         (pure True) -- readyOut: always ready (attention doesn't use FSM)
         allBanksDone -- writeComplete: all banks finished writing
     writeDone = writeValidOutNew
@@ -119,10 +116,6 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
 residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 residualAdder layerData = zipWith (+) (inputVector layerData)
 
--- FSM states
-data FSMState = IDLE | REQUESTING | PROJECTING | DONE
-  deriving (Eq, Show, Generic, NFDataX)
-
 -- |
 --  Ready/Valid Handshaking Protocol with internal backpressure control:
 --
@@ -143,8 +136,8 @@ singleHeadController ::
 singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
   where
     -- === FSM State ===
-    state :: Signal dom FSMState
-    state = register IDLE nextState
+    state :: Signal dom SingleHeadState
+    state = register SINGLE_HEAD_IDLE nextState
 
     -- === Handshakes ===
     upstreamHandshake = validIn .&&. readyOut
@@ -159,21 +152,21 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
         <*> multiplierRequestHandshake
         <*> multiplierResultHandshake
 
-    transition :: FSMState -> Bool -> Bool -> Bool -> FSMState
-    transition IDLE upHS _ _
-      | upHS = REQUESTING
-      | otherwise = IDLE
-    transition REQUESTING _ reqHS _
-      | reqHS = PROJECTING
-      | otherwise = REQUESTING
-    transition PROJECTING _ _ resHS
-      | resHS = DONE
-      | otherwise = PROJECTING
-    transition DONE _ _ _ = IDLE
+    transition :: SingleHeadState -> Bool -> Bool -> Bool -> SingleHeadState
+    transition SINGLE_HEAD_IDLE upHS _ _
+      | upHS = SINGLE_HEAD_REQUESTING
+      | otherwise = SINGLE_HEAD_IDLE
+    transition SINGLE_HEAD_REQUESTING _ reqHS _
+      | reqHS = SINGLE_HEAD_PROJECTING
+      | otherwise = SINGLE_HEAD_REQUESTING
+    transition SINGLE_HEAD_PROJECTING _ _ resHS
+      | resHS = SINGLE_HEAD_DONE
+      | otherwise = SINGLE_HEAD_PROJECTING
+    transition SINGLE_HEAD_DONE _ _ _ = SINGLE_HEAD_IDLE
 
     -- === Ready signals ===
     readyOut :: Signal dom Bool
-    readyOut = (==) <$> state <*> pure IDLE
+    readyOut = (==) <$> state <*> pure SINGLE_HEAD_IDLE
 
     -- === Input latch ===
     latchedVector :: Signal dom (Vec HeadDimension FixedPoint)
@@ -181,13 +174,13 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
 
     -- === Multiplier interface ===
     woValidIn :: Signal dom Bool
-    woValidIn = (==) <$> state <*> pure REQUESTING
+    woValidIn = (==) <$> state <*> pure SINGLE_HEAD_REQUESTING
 
     -- Internal backpressure: allow multiplier progress if computing OR consumer ready
     internalReady :: Signal dom Bool
     internalReady =
       mux
-        (state .==. pure PROJECTING)
+        (state .==. pure SINGLE_HEAD_PROJECTING)
         (pure True) -- while computing, proceed freely
         readyOut -- when done, only accept if consumer ready
 
@@ -200,38 +193,4 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     projOut = regEn (repeat 0) multiplierResultHandshake woResult
 
     validOut :: Signal dom Bool
-    validOut = (==) <$> state <*> pure DONE
-
--- FSM states for autonomous stages
-data WriteState = WriteIdle | WriteWriting | WriteDone
-  deriving (Show, Eq, Generic, NFDataX)
-
-kvWriteControllerFSM ::
-  (HiddenClockResetEnable dom) =>
-  Signal dom Bool -> -- validIn (QKV done)
-  Signal dom Bool -> -- readyOut (Attn ready)
-  Signal dom Bool -> -- writeComplete (all banks written)
-  ( Signal dom Bool, -- validOut (write done, ready for attn)
-    Signal dom Bool, -- readyIn (can accept QKV)
-    Signal dom Bool -- enableWrite (trigger write)
-  )
-kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
-  where
-    state = register WriteIdle nextState
-
-    readyIn = state .==. pure WriteIdle
-    startWrite = validIn .&&. readyIn
-    validOut = state .==. pure WriteDone
-    consume = validOut .&&. readyOut
-
-    nextState =
-      mux
-        (state .==. pure WriteIdle)
-        (mux startWrite (pure WriteWriting) (pure WriteIdle))
-        ( mux
-            (state .==. pure WriteWriting)
-            (mux writeComplete (pure WriteDone) (pure WriteWriting))
-            (mux consume (pure WriteIdle) (pure WriteDone))
-        )
-
-    enableWrite = startWrite .||. (state .==. pure WriteWriting)
+    validOut = (==) <$> state <*> pure SINGLE_HEAD_DONE

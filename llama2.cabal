@@ -96,8 +96,8 @@ library
     , LLaMa2.Decoder.SequenceController
     , LLaMa2.Embedding.InputEmbedding
     , LLaMa2.Embedding.OutputProjection
-    , LLaMa2.Layer.Attention
     , LLaMa2.Layer.Attention.AttentionHead
+    , LLaMa2.Layer.Attention.FSM
     , LLaMa2.Layer.Attention.KVCache
     , LLaMa2.Layer.Attention.MultiHeadAttention
     , LLaMa2.Layer.Attention.QKVProjection

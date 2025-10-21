@@ -3,7 +3,7 @@ module LLaMa2.Layer.TransformerLayer
 where
 
 import Clash.Prelude
-import LLaMa2.Layer.Attention (fsmController)
+import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.LayerData
@@ -33,7 +33,7 @@ ffnController ::
   )
 ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
   where
-    (enable, validOut, inReady) = fsmController inValid outReady ffnSeqValid
+    (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
     (result, ffnSeqValid, _ready) =
       FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
 
@@ -65,13 +65,13 @@ transformerLayer layer layerIndex processingState layerActive layerData =
   where
     mha = multiHeadAttention layer
     ffn = feedforwardNetwork layer
-    (attentionDone, xAfterAttn, qkvProjected, qkvInReady, writeDone, qkvDone) = multiHeadAttentionStage mha processingState layerIndex layerData
+    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) = multiHeadAttentionStage mha processingState layerIndex layerData
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
         <*> layerData
         <*> xAfterAttn
         <*> attentionDone
-    baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qkvProjected
+    baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
     -- === Stage4: Feedforward Network (FFN) ===
     isStage4ThisLayer =
@@ -149,16 +149,14 @@ layerDataAttnDone layerIndex stage cur attOut attnDone =
     then cur {attentionOutput = attOut}
     else cur
 
-updateLayerDataForStage ::
-  Index NumLayers ->
-  ProcessingState ->
-  LayerData ->
-  ( Vec NumQueryHeads (Vec HeadDimension FixedPoint),
-    Vec NumKeyValueHeads (Vec HeadDimension FixedPoint),
-    Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  ) ->
-  LayerData
-updateLayerDataForStage layerIndex ps idata (qs, ks, vs)
+updateLayerDataForStage :: Index NumLayers
+  -> ProcessingState
+  -> LayerData 
+  -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
+  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+  -> LayerData
+updateLayerDataForStage layerIndex ps idata qs ks vs
   | processingLayer ps /= layerIndex = idata
   | otherwise = case processingStage ps of
       Stage1_ProjectQKV ->

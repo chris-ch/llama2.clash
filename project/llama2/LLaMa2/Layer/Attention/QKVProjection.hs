@@ -17,7 +17,7 @@ import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Operations (matrixMultiplier)
 import LLaMa2.Types.LayerData (ProcessingState (..))
-import LLaMa2.Layer.Attention (fsmController)
+import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..), SingleHeadComponentQ (..))
 
@@ -80,7 +80,7 @@ qkvProjectionController ::
   , Signal dom Bool )
 qkvProjectionController inValid outReady input mhaQ psSig = (result, validOut, inReady)
  where
-  (enable, validOut, inReady) = fsmController inValid outReady matVecValid
+  (enable, validOut, inReady) = processingControllerFSM inValid outReady matVecValid
   (result, matVecValid, _ready) =
     qkvProjector enable (pure True) mhaQ
                (sequencePosition <$> psSig)
