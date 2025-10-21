@@ -12,17 +12,17 @@ Scaling from 260K model (weights embedded in FPGA) to 7B model (weights in exter
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ FPGA                                                         │
-│                                                              │
-│  Compute Core (LLaMA decoder) ──┐                          │
+│ FPGA                                                        │
+│                                                             │
+│   Compute Core (LLaMA decoder) ──┐                          │
 │                                  │                          │
-│  ┌───────────────────────────────▼─────────────────────┐   │
-│  │ AXI Master Controllers                               │   │
-│  │ ├─ Read Master (eMMC): Load weights                 │   │
-│  │ ├─ Read Master (DDR4): Read cached weights          │   │
-│  │ └─ Write Master (DDR4): Cache dequantized weights   │   │
-│  └───────────┬──────────────────┬────────────────────────┘   │
-└──────────────┼──────────────────┼──────────────────────────┘
+│  ┌───────────────────────────────▼─────────────────────┐    │
+│  │ AXI Master Controllers                              │    │
+│  │ ├─ Read Master (eMMC): Load weights                 │    │
+│  │ ├─ Read Master (DDR4): Read cached weights          │    │
+│  │ └─ Write Master (DDR4): Cache dequantized weights   │    │
+│  └───────────┬──────────────────┬──────────────────────┘    │
+└──────────────┼──────────────────┼───────────────────────────┘
                │                  │
           AXI4 Bus           AXI4 Bus
                │                  │
@@ -37,73 +37,29 @@ Scaling from 260K model (weights embedded in FPGA) to 7B model (weights in exter
                            └─────────────────┘
 ```
 
-### Required Code Changes
-
-#### **Modified Decoder** (`LLaMa2/Decoder/Decoder.hs`)
-```haskell
--- OLD signature:
-decoder :: DecoderParameters -> Signal dom Token -> ...
-
--- NEW signature:
-decoder 
-  :: AxiSlaveIn dom              -- eMMC interface
-  -> AxiSlaveIn dom              -- DDR4 interface
-  -> Signal dom Token -> ...
-  -> ( Signal dom Token
-     , AxiMasterOut dom          -- eMMC commands
-     , AxiMasterOut dom          -- DDR4 commands
-     , ...
-     )
-
--- Changes:
--- - Remove decoderConst (embedded weights)
--- - Add layer-at-a-time state machine
--- - Load layer N weights before processing
--- - Process layers sequentially (0→31)
-```
-
-#### **Top Entity Changes** (`LLaMa2/Top.hs`)
-```haskell
-topEntity
-  :: Clock System -> Reset System -> Enable System
-  -> Signal System Token          -- Input
-  -> ...
-  -> AxiSlaveIn System           -- NEW: eMMC interface
-  -> AxiSlaveIn System           -- NEW: DDR4 interface
-  -> ( Signal System Token       -- Output
-     , AxiMasterOut System       -- NEW: eMMC commands
-     , AxiMasterOut System       -- NEW: DDR4 commands
-     , ...
-     )
-
--- Add AXI ports to synthesis annotation
-```
-
 ### Implementation Steps
 
-#### Phase 1: AXI Primitives (2 weeks)
+#### Phase 1: AXI Primitives
 1. Define AXI types
 2. Implement simple read master (single transfer)
 3. Implement simple write master
 4. Test with simulation (fake AXI slave)
 
-#### Phase 2: Burst & Optimization (1 week)
+#### Phase 2: Burst & Optimization
 1. Add burst support (read multiple 64-byte chunks)
 2. Add write buffering
 3. Test throughput
 
-#### Phase 3: Weight Loading (2 weeks)
+#### Phase 3: Weight Loading
 1. Implement layer weight loader
 2. Add dequantization pipeline (I8E → FixedPoint)
 3. Add DDR4 caching logic
 
-#### Phase 4: Integration (2 weeks)
+#### Phase 4: Integration
 1. Modify decoder to use external weights
 2. Remove decoderConst
 3. Add layer-by-layer state machine
 4. Test with 7B model
-
-**Total: ~7 weeks**
 
 ### Key Concepts
 
