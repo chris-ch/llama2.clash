@@ -88,8 +88,7 @@ data BootLoaderState
 
 -- | Boot loader: Copy entire model from eMMC to DDR4
 -- Takes ~17.5 seconds for 7GB @ 400 MB/s
-bootWeightLoader
-  :: forall dom . HiddenClockResetEnable dom
+bootWeightLoader :: forall dom . HiddenClockResetEnable dom
   => AxiSlaveIn dom                     -- eMMC AXI slave
   -> AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom Bool                    -- Start boot
@@ -106,9 +105,9 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
   where
     state = register BootIdle nextState
 
-    -- Transfer in 64KB bursts (1024 transfers × 64 bytes)
-    burstSize = 1023 :: Unsigned 8  -- AXI len = N-1
-    burstBytes = 65536 :: Unsigned 32
+    -- Use 256-transfer bursts (matches AXI limit)
+    burstSize = 255 :: Unsigned 8  -- 256 transfers
+    burstBytes = 16384 :: Unsigned 32  -- 256 * 64 bytes
     currentBurst = register (0 :: Unsigned 32) nextBurst
     bytesTransferred = currentBurst * pure burstBytes
 
@@ -131,7 +130,7 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
 
     -- Track burst completion
     transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete = transfersInBurst .==. pure 1024
+    burstComplete = transfersInBurst .==. pure 256
 
     nextTransferCount = mux startRead
       0
@@ -194,8 +193,8 @@ layerWeightStreamer ddrSlave layerIdx startLoad =
     layerBaseAddr = calculateLayerBaseAddress <$> layerIdx
 
     -- Burst parameters
-    burstSize = 1023 :: Unsigned 8  -- 1024 transfers = 64KB
-    burstBytes = 65536 :: Unsigned 32
+    burstSize = 255 :: Unsigned 8  -- 256 transfers
+    burstBytes = 16384 :: Unsigned 32  -- 256 * 64 bytes
     totalBursts = (calculateLayerSizeBytes + burstBytes - 1) `div` burstBytes
 
     currentBurst = register (0 :: Unsigned 32) nextBurst
@@ -208,7 +207,7 @@ layerWeightStreamer ddrSlave layerIdx startLoad =
 
     -- Track completion
     transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete = transfersInBurst .==. pure 1024
+    burstComplete = transfersInBurst .==. pure 256
 
     nextTransferCount = mux startBurst
       0
@@ -309,7 +308,7 @@ weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigge
       bootWeightLoader emmcSlave ddrSlave startBoot
                        (pure emmcBaseAddr) (pure ddrBaseAddr)
     
-    startStream = (sysState .==. pure WSReady) .&&. loadTrigger .&&. (not <$> bypass)
+    startStream = (sysState .==. pure WSReady) .&&. loadTrigger
     (ddrMasterRuntime, weightStream, streamValid, streamComplete) =
       layerWeightStreamer ddrSlave layerRequest startStream
     

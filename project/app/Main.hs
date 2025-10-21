@@ -24,11 +24,12 @@ import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decode
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import LLaMa2.Types.Parameters (DecoderParameters)
-import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
+import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut (..))
 import LLaMa2.Memory.FakeAxiSlave (createFakeAxiSlave)
 import LLaMa2.Memory.SimAxiSlave (createSimAxiSlave)
 import qualified LLaMa2.Memory.FileBackedAxiSlave as FileAxi
 import qualified LLaMa2.Memory.SimAxiSlave as SimAxi
+import LLaMa2.Memory.FileBackedAxiSlave (ReadState)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -177,15 +178,16 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
 
     -- Scale simulation steps by 1000x
     simSteps = (stepCount + length promptTokens) * 1000
-    --simSteps = 25000  -- Just 25K cycles to test boot completes
+    --simSteps = 18000  -- Just 25K cycles to test boot completes
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
     (coreOutputsSignal, emmcMaster, ddrMaster, weightsReady, bootProgress,
-     introspection, emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount,
-     emmcArReady, ddrArReady
+     introspection, emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount
      ) = bundledOutputs decoder modelBinary inputSignals
 
+    emmcMasterRReadySampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rready emmcMaster)
+    
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
@@ -205,8 +207,6 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
     bootStateSampled = C.sampleN simSteps (Top.bootState introspection)
     emmcHandshakesSampled = C.sampleN simSteps emmcSlaveArHandshakeCount
     ddrHandshakesSampled = C.sampleN simSteps ddrSlaveArHandshakeCount
-    emmcArReadySampled = C.sampleN simSteps emmcArReady
-    ddrArReadySampled = C.sampleN simSteps ddrArReady
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -244,11 +244,10 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
             bootSt  = bootStateSampled !! cycleIdx
             emmcHS  = emmcHandshakesSampled !! cycleIdx
             ddrHS  = ddrHandshakesSampled !! cycleIdx
-            emmcArReady'  = ddrHandshakesSampled !! cycleIdx
-            ddrArReady'  = ddrHandshakesSampled !! cycleIdx
+            emmcMasterRReady' = emmcMasterRReadySampled !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s| %8s | %8s | %8s | %8s | %8s | %8s"
+            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s| %8s | %8s | %8s | %8s | %8s"
               cycleIdx
               li
               (show ps)
@@ -265,14 +264,60 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
               (show bootSt)
               (show emmcHS)
               (show ddrHS)
-              (show emmcArReady')
-              (show ddrArReady')
+              (show emmcMasterRReady')
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 
   mapM_ (printToken tokenizer) sampledTokens
   putStrLn ""
   pure (length sampledTokens)
+
+bundledOutputs :: DecoderParameters
+  -> BSL.ByteString
+  -> C.Signal C.System (Token, Bool, Temperature, Seed)
+  -> ( C.Signal C.System (Token, Bool)
+     , AxiMasterOut C.System
+     , AxiMasterOut C.System
+     , C.Signal C.System Bool
+     , C.Signal C.System (C.Unsigned 32)
+     , Top.DecoderIntrospection C.System
+     ,  C.Signal C.System ReadState
+     , C.Signal C.System ReadState
+     )
+bundledOutputs decoder modelBinary bundledInputs =
+  (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster
+  , weightsReady, bootProgress
+  , introspection
+  , emmcReadState, ddrReadState
+  )
+ where
+  (token, isValid, temperature, seed) = C.unbundle bundledInputs
+
+  bypass = C.pure True  -- Use real AXI with file data
+  powerOn = C.pure True
+
+  -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
+  (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
+    C.exposeClockResetEnable
+      (Top.topEntityWithAxi bypass emmcSlave ddrSlave powerOn token isValid temperature seed)
+      CS.systemClockGen
+      CS.resetGen
+      CS.enableGen
+
+  -- Use file-backed AXI slaves that serve real model data
+  -- For eMMC: serve the entire model file (used during boot to copy to DDR)
+  (emmcSlave, emmcReadState) = C.exposeClockResetEnable
+    (FileAxi.createFileBackedAxiSlave modelBinary emmcMaster)
+    CS.systemClockGen
+    CS.resetGen
+    CS.enableGen
+
+  -- For DDR: also serve from file (simulating that boot already copied data there)
+  (ddrSlave, ddrReadState) = C.exposeClockResetEnable
+    (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
+    CS.systemClockGen
+    CS.resetGen
+    CS.enableGen
 
 bundledOutputs' :: DecoderParameters
   -> BSL.ByteString
@@ -289,56 +334,6 @@ bundledOutputs' :: DecoderParameters
      , C.Signal C.System Bool
      )
 bundledOutputs' decoder modelBinary bundledInputs =
-  (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster
-  , weightsReady, bootProgress
-  , introspection
-  , emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount
-  , emmcArReady, ddrArReady
-  )
- where
-  (token, isValid, temperature, seed) = C.unbundle bundledInputs
-
-  bypass = C.pure False  -- Use real AXI with file data
-  powerOn = C.pure True
-
-  -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
-    C.exposeClockResetEnable
-      (Top.topEntityWithAxi bypass emmcSlave ddrSlave powerOn token isValid temperature seed)
-      CS.systemClockGen
-      CS.resetGen
-      CS.enableGen
-
-  -- Use file-backed AXI slaves that serve real model data
-  -- For eMMC: serve the entire model file (used during boot to copy to DDR)
-  (emmcSlave, emmcSlaveArHandshakeCount, emmcArReady) = C.exposeClockResetEnable
-    (FileAxi.createFileBackedAxiSlave modelBinary emmcMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
-
-  -- For DDR: also serve from file (simulating that boot already copied data there)
-  (ddrSlave, ddrSlaveArHandshakeCount, ddrArReady) = C.exposeClockResetEnable
-    (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
-
-bundledOutputs :: DecoderParameters
-  -> BSL.ByteString
-  -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> ( C.Signal C.System (Token, Bool)
-     , AxiMasterOut C.System
-     , AxiMasterOut C.System
-     , C.Signal C.System Bool
-     , C.Signal C.System (C.Unsigned 32)
-     , Top.DecoderIntrospection C.System
-     , C.Signal C.System (C.Unsigned 32)
-     , C.Signal C.System (C.Unsigned 32)
-     , C.Signal C.System Bool
-     , C.Signal C.System Bool
-     )
-bundledOutputs decoder modelBinary bundledInputs =
   (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster, weightsReady, bootProgress, introspection, pure 0, pure 0, pure False, pure False)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs

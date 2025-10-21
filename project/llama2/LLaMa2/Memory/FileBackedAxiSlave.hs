@@ -1,5 +1,5 @@
 module LLaMa2.Memory.FileBackedAxiSlave (
-  createFileBackedAxiSlave
+  createFileBackedAxiSlave, ReadState(..)
 ) where
 
 import Clash.Prelude
@@ -8,105 +8,86 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Vector.Unboxed as V
 import Data.Word (Word8)
 
--- State machine for handling read transactions
-data ReadState = RIdle | RBurst (Unsigned 32)
+-- State for read transactions  
+data ReadState = RIdle | RBursting (Unsigned 32)
   deriving (Generic, NFDataX, Show, Eq)
 
--- | File-backed AXI slave that serves real model weights
--- Reads from the actual model binary file
+-- | File-backed AXI slave
 createFileBackedAxiSlave 
   :: forall dom . HiddenClockResetEnable dom
-  => BSL.ByteString              -- Model file contents
+  => BSL.ByteString
   -> AxiMasterOut dom
-  -> (AxiSlaveIn dom, Signal dom (Unsigned 32), Signal dom Bool)
-createFileBackedAxiSlave fileContents masterOut = (slaveIn, arHandshakeCount, arReady)
+  -> (AxiSlaveIn dom, Signal dom ReadState)
+createFileBackedAxiSlave fileContents masterOut = (slaveIn, readState)
   where
-    -- Convert file to Vector for O(1) indexed access
+    -- Convert to Vector for fast access
     fileBytes = V.fromList (BSL.unpack fileContents)
+    fileLen = V.length fileBytes
     
     -- Helper to convert Word8 to BitVector 8
     word8ToBV :: Word8 -> BitVector 8
-    word8ToBV w = fromInteger (toInteger w)
+    word8ToBV = fromInteger . toInteger
     
+    -- Register master outputs to break combinational loop
+    arvalid_r = register False (arvalid masterOut)
+    ardata_r = register (AxiAR 0 0 0 0 0) (ardata masterOut)
+    rready_r = register False (rready masterOut)
+    
+    -- State machine
     readState = register RIdle nextReadState
     
-    -- Accept read address when idle
-    arReady = case_arready <$> readState
-      where
-        case_arready RIdle = True
-        case_arready _ = False
+    -- AR channel: accept when idle
+    arReady = (==) <$> readState <*> pure RIdle
+    arHandshake = arvalid_r .&&. arReady
     
-    arHandshake = arvalid masterOut .&&. arReady
-    arHandshakeCount = register (0 :: Unsigned 32) nextCount
-      where
-      nextCount = mux arHandshake (arHandshakeCount + 1) arHandshakeCount
-    -- Latch address and burst length when accepted
-    latched = regEn (0, 0) arHandshake 
-      ((\ar -> (araddr ar, fromIntegral (arlen ar) + 1)) <$> ardata masterOut)
-    (latchedAddr, burstLen) = unbundle latched
+    -- Latch address and burst length
+    latched_r = regEn (0, 0) arHandshake ((\ar -> (araddr ar, fromIntegral (arlen ar) + 1)) <$> ardata_r)
+    (latchedAddr, burstLen) = unbundle latched_r
     
-    -- Current transfer in burst
+    -- Transfer counter
     transferCount = register (0 :: Unsigned 32) nextTransferCount
     
-    -- Read actual file data based on address and transfer count
-    fileData :: Signal dom (BitVector 512)
+    -- State transitions
+    nextReadState = mux (readState .==. pure RIdle)
+      (mux arHandshake (pure (RBursting 0)) (pure RIdle))
+      (mux (isBursting <$> readState)
+        (mux (rready_r .&&. (transferCount + 1 .>=. burstLen))
+          (pure RIdle)  -- Burst complete
+          readState)    -- Stay in burst
+        readState)
+    
+    isBursting RIdle = False
+    isBursting (RBursting _) = True
+    
+    nextTransferCount = mux (readState .==. pure RIdle)
+      0
+      (mux rready_r
+        (transferCount + 1)
+        transferCount)
+    
+    -- R channel: generate data
+    rValid = isBursting <$> readState
+    
+    -- Read file data
     fileData = readFileChunk <$> latchedAddr <*> transferCount
       where
-        readFileChunk addr cnt = 
-          let offset = addr + (cnt * 64)  -- 64 bytes per transfer
-              -- Read 64 bytes from file starting at offset
-              bytes = map (readByte offset) (indicesI :: Vec 64 (Index 64))
-          in pack bytes
-        
-        -- Read a single byte from file, return 0 if out of bounds
-        readByte offset idx =
-          let pos = fromIntegral (offset + fromIntegral idx)
-          in if pos >= V.length fileBytes
-             then 0 :: BitVector 8
-             else word8ToBV (fileBytes V.! pos)
-
-    -- State transitions (same as SimAxiSlave)
-    nextReadState = case_nextState <$> readState <*> arHandshake 
-                      <*> rReady <*> transferCount <*> burstLen
-      where
-        case_nextState RIdle True _ _ _ = RBurst 0
-        case_nextState (RBurst _) _ True cnt len 
-          | cnt + 1 >= len = RIdle
-          | otherwise      = RBurst (cnt + 1)
-        case_nextState st _ _ _ _ = st
+        readFileChunk addr cnt =
+          let offset = fromIntegral (addr + (cnt * 64))
+              readByte idx = 
+                let pos = offset + idx
+                in if pos >= fileLen
+                   then 0 :: BitVector 8
+                   else word8ToBV (fileBytes V.! pos)
+          in pack (map readByte (iterateI (+1) (0 :: Int) :: Vec 64 Int))
     
-    nextTransferCount = case_nextCnt <$> readState <*> rReady <*> transferCount
-      where
-        case_nextCnt RIdle _ _ = 0
-        case_nextCnt (RBurst _) True cnt = cnt + 1
-        case_nextCnt _ _ cnt = cnt
+    rLast = ((transferCount + 1) .>=. burstLen) .&&. rValid
     
-    -- R channel
-    rValid = case_rvalid <$> readState
-      where
-        case_rvalid RIdle = False
-        case_rvalid (RBurst _) = True
+    rDataOut = (\d l -> AxiR d 0 l 0) <$> fileData <*> rLast
     
-    rReady = rready masterOut
-    
-    rLast = checkLast <$> readState <*> transferCount <*> burstLen
-      where
-        checkLast (RBurst _) cnt len = cnt + 1 >= len
-        checkLast _ _ _ = False
-    
-    rDataOut = mkAxiR <$> fileData <*> rLast
-      where
-        mkAxiR d l = AxiR 
-          { rdata = d
-          , rresp = 0
-          , rlast = l
-          , rid = 0
-          }
-    
-    -- Write channels (not used)
+    -- Write channels (unused)
     awReady = pure True
     wReady = pure True
-    bValid = register False (wvalid masterOut .&&. wReady)
+    bValid = pure False
     bData = pure (AxiB 0 0)
     
     slaveIn = AxiSlaveIn

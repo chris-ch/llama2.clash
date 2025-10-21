@@ -97,8 +97,17 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     prevLayer = register 0 layerIdx
     layerChanged = layerIdx ./=. prevLayer
     
+
+    -- TEMPORARY TEST: Force load layer 0 weights at cycle 1000
+    testTrigger = (sequenceNum .==. pure 1000)
+      where
+        sequenceNum = register (0 :: Unsigned 32) (sequenceNum + 1)
+
+    -- Use test trigger instead of layerChanged for load
+    loadTrigger = testTrigger  -- Instead of: layerChanged .&&. weightsReady
+
     -- Trigger load when layer changes AND system is ready
-    loadTrigger = layerChanged .&&. weightsReady
+    loadTrigger' = layerChanged .&&. weightsReady
     
     -- Instantiate the weight management system
     (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
