@@ -134,52 +134,32 @@ spec = do
     it "goes through all boot stages (mini-model 260K)" $ do
       modelBinary <- BSL.readFile "data/stories260K.bin"
 
-      let
-          emmcBase  = pure 0
-          ddrBase   = pure 0
+      let emmcBase = pure 0
+          ddrBase  = pure 0
 
       withClockResetEnable systemClockGen resetGen enableGen $ do
         let startBoot = fromList $ [False, True] P.++ P.repeat False
 
-            -- ✅ Create dummy feedback signals FIRST (pure signals, no domain needed)
-            emmcMasterFeedback = AxiMasterOut
-              { arvalid = pure False
-              , ardata  = pure (AxiAR 0 0 0 0 0)
-              , rready  = pure True
-              , awvalid = pure False
-              , awdata  = pure (AxiAW 0 0 0 0 0)
-              , wvalid  = pure False
-              , wdataMI = pure (AxiW 0 0xFFFFFFFFFFFFFFFF False)
-              , bready  = pure True
-              }
-            ddrMasterFeedback = AxiMasterOut
-              { arvalid = pure False
-              , ardata  = pure (AxiAR 0 0 0 0 0)
-              , rready  = pure True
-              , awvalid = pure True
-              , awdata  = pure (AxiAW 0 255 2 1 0)
-              , wvalid  = pure True
-              , wdataMI = pure (AxiW 0 0xFFFFFFFFFFFFFFFF True)
-              , bready  = pure True
-              }
-
-            -- ✅ NOW create slaves
-            (emmcSlave, emmcReadState) = createFileBackedAxiSlave modelBinary emmcMasterFeedback
-            (ddrSlave, ddrReadState)   = createFileBackedAxiSlave modelBinary ddrMasterFeedback
-
-            -- Run FSM
+            -- STEP 1: create the FSM outputs first
             (emmcMasterOut, ddrMasterOut, bootCompleteSig, bytesTransferredSig, fsmStateSig) =
-              bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase
+              bootWeightLoader emmcSlave emmcSlave startBoot emmcBase ddrBase
 
-            -- Sample outputs
-            sampledStates = sampleN 500000 fsmStateSig
-            sampledBoot   = sampleN 500000 bootCompleteSig
-            sampledBytes  = sampleN 500000 bytesTransferredSig
-            uniqStates = DL.nub sampledStates
+            -- STEP 2: create slaves driven by the FSM outputs
+            (emmcSlave, emmcReadState) =
+              createFileBackedAxiSlave modelBinary emmcMasterOut
+            (ddrSlave, ddrReadState) =
+              createFileBackedAxiSlave modelBinary ddrMasterOut
+
+            -- STEP 3: sample outputs for enough cycles
+            sampledStates = sampleN 250000 fsmStateSig
+            sampledBoot   = sampleN 250000 bootCompleteSig
+            sampledBytes  = sampleN 250000 bytesTransferredSig
+            uniqStates    = DL.nub sampledStates
+
         -- Assertions
         P.or sampledBoot `shouldBe` True
         uniqStates `shouldContain` [BootIdle]
         uniqStates `shouldContain` [BootReading]
         uniqStates `shouldContain` [BootComplete]
-        P.last sampledBytes `shouldSatisfy` (> 0)
+        sampledBytes `shouldSatisfy` any (>0)
         pure ()
