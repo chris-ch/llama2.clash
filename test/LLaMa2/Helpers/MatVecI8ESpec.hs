@@ -3,7 +3,9 @@ module LLaMa2.Helpers.MatVecI8ESpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..), matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor, parallel64RowMatrixMultiplier, parallel32RowProcessor)
+import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..), 
+  matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor,
+  parallel64RowMatrixMultiplier)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
@@ -106,64 +108,6 @@ spec = do
         all (<= maxBoundVal) outputInts `shouldBe` True
 
   describe "Row Processor" $ do
-    context "computes dot product for a subset of rows (parallel 32 version)" $ do
-      let maxCycles = 12
-
-          rowVector :: RowI8E 4
-          rowVector = (1 :> 2 :> 3 :> 4 :> Nil, 0)
-
-          columnVector :: Vec 4 FixedPoint
-          columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil
-
-          -- Input signals
-          row :: Signal System (RowI8E 4)
-          row = pure rowVector
-
-          resets = True : P.replicate (maxCycles - 1) False
-          reset :: Signal System Bool
-          reset = fromList resets
-
-          enables = [False] P.++ P.replicate 4 True P.++ P.replicate (maxCycles - 5) False
-          enable :: Signal dom Bool
-          enable = fromList enables
-
-          -- make sure to pad first cycle for reset warm-up
-          column :: Signal dom (Vec 4 FixedPoint)
-          column =
-            fromList $ P.replicate 5 columnVector
-              P.++ P.repeat (pure 0)
-
-          (outputComponent, rowDone) =
-            exposeClockResetEnable
-              parallel32RowProcessor
-              CS.systemClockGen
-              CS.resetGen
-              CS.enableGen
-              reset
-              enable
-              row
-              column
-
-          outs = P.take maxCycles $ sample outputComponent
-          dones = P.take maxCycles $ sample rowDone
-
-          doneIndices = DL.findIndices id dones
-
-      it "there should be only one completion" $ do
-        P.length doneIndices `shouldBe` 4
-      it "(test input) reset flags should match expected flags" $ do
-        let expectedResets = [True,False,False,False,False,False,False,False,False,False,False,False]
-        resets `shouldBe` expectedResets
-      it "(test input) enable flags should match expected flags" $ do
-        let expectedEnables = [False,True,True,True,True,False,False,False,False,False,False,False]
-        enables `shouldBe` expectedEnables
-      it "done flags should match expected flags" $ do
-        let expectedDones = [False,False,True,True,True,True,False,False,False,False,False,False]
-        dones `shouldBe` expectedDones
-      it "final output should match expected value" $ do
-        let expectedOuts = [0.0,0.0,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25]
-        outs `shouldBe` expectedOuts
-
     context "computes dot product for a subset of rows (parallel 64 version)" $ do
       let maxCycles = 12
 
