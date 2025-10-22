@@ -1,0 +1,275 @@
+===============================================================================
+QUICK REFERENCE CARD: Types and Key Functions
+===============================================================================
+
+KEY TYPE DEFINITIONS
+════════════════════
+
+-- Basic quantized weight types (already in your code)
+type Mantissa = Signed 8
+type Exponent = Signed 8
+type RowI8E n = (Vec n Mantissa, Exponent)
+type MatI8E rows cols = Vec rows (RowI8E cols)
+
+-- NEW: Weight address (Step 1)
+data WeightAddress = WeightAddress
+  { rowIndex    :: Index HeadDimension      -- 0..7 for 260K
+  , matrixType  :: WeightMatrixType         -- Q, K, or V
+  , headIndex   :: Unsigned 8               -- head number
+  } deriving (Generic, NFDataX)
+
+data WeightMatrixType = QMatrix | KMatrix | VMatrix
+  deriving (Generic, NFDataX, Enum, Bounded)
+
+-- NEW: Single head weight buffer (Step 2)
+data SingleHeadWeightBuffer = SingleHeadWeightBuffer
+  { wqBuf :: MatI8E HeadDimension ModelDimension
+  , wkBuf :: MatI8E HeadDimension ModelDimension
+  , wvBuf :: MatI8E HeadDimension ModelDimension
+  , loadedRows :: Unsigned 8
+  } deriving (Generic, NFDataX)
+
+-- NEW: Complete QKV buffer (Step 2)
+data QKVWeightBuffer = QKVWeightBuffer
+  { qHeadBuffers  :: Vec NumQueryHeads SingleHeadWeightBuffer
+  , kvHeadBuffers :: Vec NumKeyValueHeads SingleHeadWeightBuffer
+  , fullyLoaded   :: Bool
+  } deriving (Generic, NFDataX)
+
+
+KEY FUNCTION SIGNATURES
+════════════════════════
+
+-- STEP 1: Address Generator
+─────────────────────────────
+weightAddressGenerator ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool              -- ^ enable (streamValid)
+  -> Signal dom Bool              -- ^ reset (layer change)
+  -> ( Signal dom WeightAddress
+     , Signal dom Bool )          -- ^ allDone (128 rows done)
+
+
+-- STEP 2: Weight Buffer Controller
+────────────────────────────────────
+qkvWeightBufferController ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool                     -- ^ streamValid
+  -> Signal dom WeightAddress            -- ^ address
+  -> Signal dom (RowI8E ModelDimension)  -- ^ weight row
+  -> Signal dom Bool                     -- ^ allRowsReceived
+  -> Signal dom Bool                     -- ^ reset
+  -> Signal dom QKVWeightBuffer
+
+
+-- STEP 2: Weight Extraction Helpers
+─────────────────────────────────────
+extractQWeight :: QKVWeightBuffer 
+               -> Index NumQueryHeads 
+               -> MatI8E HeadDimension ModelDimension
+
+extractKWeight :: QKVWeightBuffer 
+               -> Index NumKeyValueHeads 
+               -> MatI8E HeadDimension ModelDimension
+
+extractVWeight :: QKVWeightBuffer 
+               -> Index NumKeyValueHeads 
+               -> MatI8E HeadDimension ModelDimension
+
+
+-- STEP 3: Modified Head Projectors
+────────────────────────────────────
+queryHeadProjectorWithRAM ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool                          -- ^ validIn
+  -> Signal dom Bool                          -- ^ readyIn
+  -> SingleHeadComponentQ                     -- ^ hardcoded weights
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM weights
+  -> Signal dom Bool                          -- ^ useRAM flag
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool
+     , Signal dom Bool )
+
+keyValueHeadProjectorWithRAM ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool                          -- ^ validIn
+  -> Signal dom Bool                          -- ^ readyIn
+  -> SingleHeadComponentQ                     -- ^ hardcoded weights
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM K weights
+  -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM V weights
+  -> Signal dom Bool                          -- ^ useRAM flag
+  -> ( Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom (Vec HeadDimension FixedPoint)
+     , Signal dom Bool
+     , Signal dom Bool )
+
+
+-- STEP 3: Main QKV Projector
+──────────────────────────────
+qkvProjectorWithRAM ::
+  HiddenClockResetEnable dom
+  => Signal dom Bool                          -- ^ validIn
+  -> Signal dom Bool                          -- ^ readyIn
+  -> MultiHeadAttentionComponentQ             -- ^ hardcoded weights
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom QKVWeightBuffer               -- ^ RAM weight buffer
+  -> Signal dom Bool                          -- ^ useRAM flag
+  -> ( Signal dom ( Vec NumQueryHeads (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+     , Signal dom Bool
+     , Signal dom Bool )
+
+
+SIGNAL FLOW SUMMARY
+═══════════════════
+
+Top Level (Decoder.hs)
+────────────────────────
+parsedWeights :: Signal dom (RowI8E ModelDimension)     [existing]
+streamValid   :: Signal dom Bool                         [existing]
+weightAddr    :: Signal dom WeightAddress                [NEW Step 1]
+qkvLoadDone   :: Signal dom Bool                         [NEW Step 1]
+weightBuffer  :: Signal dom QKVWeightBuffer              [NEW Step 2]
+useRAMWeights :: Signal dom Bool                         [NEW Step 2]
+
+Layer Stack (LayerStack.hs)
+─────────────────────────────
+weightBuffer  :: Signal dom QKVWeightBuffer              [pass through]
+useRAMWeights :: Signal dom Bool                         [pass through]
+
+Transformer Layer (TransformerLayer.hs)
+──────────────────────────────────────────
+weightBuffer  :: Signal dom QKVWeightBuffer              [pass through]
+useRAMWeights :: Signal dom Bool                         [pass through]
+
+MHA Stage (MultiHeadAttention.hs)
+────────────────────────────────────
+weightBuffer  :: Signal dom QKVWeightBuffer              [pass through]
+useRAMWeights :: Signal dom Bool                         [pass through]
+
+QKV Projection (QKVProjection.hs)
+────────────────────────────────────
+weightBuffer  :: Signal dom QKVWeightBuffer              [use here!]
+useRAMWeights :: Signal dom Bool                         [use here!]
+
+
+COMMON PATTERNS
+═══════════════
+
+Pattern 1: Weight Selection MUX
+─────────────────────────────────
+selectedWeights = mux useRAM 
+                     ramWeights 
+                     (pure hardcodedWeights)
+
+Pattern 2: Buffer Extraction  
+─────────────────────────────
+ramQWeights = extractQWeight <$> weightBuffer <*> pure headIdx
+
+Pattern 3: Conditional Update
+───────────────────────────────
+bufferState = regEn emptyBuffer (streamValid .||. reset) nextBuffer
+nextBuffer = mux reset (pure emptyBuffer) (updateFn <$> ...)
+
+
+SIZE CALCULATIONS (260K model)
+═══════════════════════════════
+
+Per Layer QKV Weights:
+- Q: 8 heads × 8 rows × 64 cols × 9 bits = 36,864 bits = 4,608 bytes
+- K: 4 heads × 8 rows × 64 cols × 9 bits = 18,432 bits = 2,304 bytes
+- V: 4 heads × 8 rows × 64 cols × 9 bits = 18,432 bits = 2,304 bytes
+- Total per layer: 73,728 bits = 9,216 bytes
+
+Streaming time (64 bytes/cycle):
+- Total rows: 128
+- Bytes per row: 64 + 1 = 65 (mantissas + exponent)
+- Total bytes: 128 × 65 = 8,320 bytes
+- Cycles needed: 128 (one row per cycle)
+
+
+DEBUG CHECKLIST
+═══════════════
+
+After Step 1:
+□ weightAddr.rowIndex increments from 0 to 7
+□ weightAddr.matrixType cycles Q→Q→...→K→K→...→V→V→...
+□ weightAddr.headIndex increments correctly
+□ qkvLoadDone goes True after 128 cycles
+
+After Step 2:
+□ wqBuf[headIdx] has 8 rows after first 8 cycles for that head
+□ All qHeadBuffers filled after 64 cycles
+□ All kvHeadBuffers filled after 128 cycles
+□ fullyLoaded flag goes True at cycle 128
+
+After Step 3:
+□ useRAM = False produces same outputs as before
+□ useRAM = True uses buffered weights
+□ Matrix multiplier accepts selected weights without type errors
+
+After Step 4:
+□ All modules compile without type errors
+□ Signals propagate through all layers
+
+After Step 5:
+□ Token outputs match expected values
+□ RAM weights produce correct inference results
+
+
+EXAMPLE INSTANTIATION (Decoder.hs)
+═══════════════════════════════════
+
+-- Step 1: Add addressing
+(weightAddr, qkvLoadDone) = 
+  weightAddressGenerator streamValid loadTrigger
+
+-- Step 2: Add buffering
+weightBuffer :: Signal dom QKVWeightBuffer
+weightBuffer = qkvWeightBufferController
+                 streamValid
+                 weightAddr
+                 parsedWeights
+                 qkvLoadDone
+                 layerChanged  -- reset signal
+
+-- Step 2: Extract use flag
+useRAMWeights :: Signal dom Bool
+useRAMWeights = fullyLoaded <$> weightBuffer
+
+-- Step 4: Pass to layers
+(nextLayerData, doneFlags) =
+  LayerStack.processLayers
+    processingState
+    layerIdx
+    layerInput
+    weightBuffer     -- NEW
+    useRAMWeights    -- NEW
+    (modelLayers params)
+
+
+GOTCHAS & TROUBLESHOOTING
+═════════════════════════
+
+Issue: Type mismatch with parallelRowMatrixMultiplier
+Solution: Ensure MatI8E has correct dimensions (HeadDimension × ModelDimension)
+
+Issue: Buffer doesn't accumulate
+Solution: Check that rowIndex, matrixType, headIndex match correctly
+
+Issue: useRAM flag never goes True
+Solution: Verify qkvLoadDone triggers and reset signal behaves correctly
+
+Issue: Wrong weights selected
+Solution: Print weightAddr to verify correct addressing sequence
+
+Issue: Outputs differ unexpectedly
+Solution: Set useRAM = False first to verify unchanged behavior
+
+===============================================================================

@@ -1,0 +1,100 @@
+-- Step 1: Add row addressing to weight streaming
+-- 
+-- This adds a simple counter that tracks:
+-- 1. Which row within the current matrix (0..HeadDimension-1)
+-- 2. Which matrix type (Q/K/V)
+-- 3. Which head number
+--
+-- Modify your LLaMa2.Memory.WeightLoader module to include this:
+
+module LLaMa2.Memory.WeightLoaderAddressing where
+
+import Clash.Prelude
+import LLaMa2.Types.ModelConfig 
+  ( ModelDimension, HeadDimension, NumQueryHeads, NumKeyValueHeads )
+
+-- | Address information for the weight being streamed
+data WeightAddress = WeightAddress
+  { rowIndex    :: Index HeadDimension      -- Which row (0..7 for 260K)
+  , matrixType  :: WeightMatrixType         -- Q, K, or V
+  , headIndex   :: Unsigned 8               -- Which head (0..7 for Q, 0..3 for K/V)
+  } deriving (Show, Generic, NFDataX, Eq)
+
+data WeightMatrixType = QMatrix | KMatrix | VMatrix
+  deriving (Show, Generic, NFDataX, Eq, Enum, Bounded)
+
+-- | Enhanced weight stream with addressing
+data WeightStreamData n = WeightStreamData
+  { weightRow  :: RowI8E n                  -- The actual weight row
+  , weightAddr :: WeightAddress             -- Where this row belongs
+  } deriving (Generic, NFDataX)
+
+-- ============================================================================
+-- Address Generator (add this to your weightManagementSystem)
+-- ============================================================================
+
+-- | Generate sequential addresses for QKV weight streaming
+-- This should be integrated into your weight loader FSM
+weightAddressGenerator :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom Bool                        -- ^ streamValid (counter enable)
+  -> Signal dom Bool                        -- ^ reset/restart (when switching layers)
+  -> ( Signal dom WeightAddress             -- ^ current address
+     , Signal dom Bool                      -- ^ allDone (all QKV weights streamed)
+     )
+weightAddressGenerator enable reset = (address, allDone)
+  where
+    -- Total rows needed for all QKV weights
+    numQRows = natToNum @NumQueryHeads * natToNum @HeadDimension
+    numKRows = natToNum @NumKeyValueHeads * natToNum @HeadDimension
+    numVRows = natToNum @NumKeyValueHeads * natToNum @HeadDimension
+    totalRows = numQRows + numKRows + numVRows
+
+    -- Linear counter for all rows
+    counter :: Signal dom (Unsigned 16)
+    counter = regEn 0 (enable .||. reset) $
+              mux reset 0 (counter + 1)
+    
+    -- Decode counter into structured address
+    address = decodeAddress <$> counter
+    allDone = counter .>=. pure totalRows
+
+    decodeAddress :: Unsigned 16 -> WeightAddress
+    decodeAddress cnt
+      -- Q matrices: rows 0..63 (8 heads × 8 rows)
+      | cnt < numQRows = WeightAddress
+          { rowIndex   = toEnum $ fromIntegral (cnt `mod` natToNum @HeadDimension)
+          , matrixType = QMatrix
+          , headIndex  = fromIntegral (cnt `div` natToNum @HeadDimension)
+          }
+      -- K matrices: rows 64..95 (4 heads × 8 rows)
+      | cnt < numQRows + numKRows = 
+          let kOffset = cnt - numQRows
+          in WeightAddress
+          { rowIndex   = toEnum $ fromIntegral (kOffset `mod` natToNum @HeadDimension)
+          , matrixType = KMatrix
+          , headIndex  = fromIntegral (kOffset `div` natToNum @HeadDimension)
+          }
+      -- V matrices: rows 96..127 (4 heads × 8 rows)
+      | otherwise = 
+          let vOffset = cnt - numQRows - numKRows
+          in WeightAddress
+          { rowIndex   = toEnum $ fromIntegral (vOffset `mod` natToNum @HeadDimension)
+          , matrixType = VMatrix
+          , headIndex  = fromIntegral (vOffset `div` natToNum @HeadDimension)
+          }
+
+-- ============================================================================
+-- USAGE in your weightManagementSystem
+-- ============================================================================
+
+{-
+Add this to your weightManagementSystem function:
+
+    (weightAddr, qkvLoadDone) = weightAddressGenerator streamValid loadTrigger
+    
+Then return it along with the weight stream:
+
+    return (..., weightAddr, qkvLoadDone, ...)
+
+-}

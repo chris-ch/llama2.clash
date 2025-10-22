@@ -1,0 +1,273 @@
+===============================================================================
+DATA FLOW DIAGRAM: Weight Loading and Usage
+===============================================================================
+
+PHASE 1: WEIGHT LOADING (happens during initialization)
+─────────────────────────────────────────────────────────
+
+┌─────────────────┐
+│  eMMC / DDR4    │  ← Raw weight data stored here
+│   (external)    │
+└────────┬────────┘
+         │ AXI protocol
+         ▼
+┌─────────────────────────┐
+│  weightManagementSystem │  ← Your existing code
+│  (WeightLoader.hs)      │
+└─────────┬───────────────┘
+          │
+          │ Outputs 3 signals:
+          │
+          ├─► weightStream :: Signal dom (BitVector 512)
+          │   (64 bytes = one row of Int8 values)
+          │
+          ├─► streamValid :: Signal dom Bool
+          │   (indicates weightStream has valid data)
+          │
+          └─► weightsReady :: Signal dom Bool
+              (boot complete, system operational)
+
+
+PHASE 2: WEIGHT PARSING (combinational, no state)
+─────────────────────────────────────────────────
+
+         weightStream
+              │
+              ▼
+      ┌───────────────┐
+      │ parseI8EChunk │  ← Your existing code
+      └───────┬───────┘
+              │
+              ▼
+         parsedWeights :: Signal dom (RowI8E ModelDimension)
+              │          (mantissas: Vec 64 Int8, exponent: Int8)
+              │
+
+
+PHASE 3: ADDRESS GENERATION (NEW - Step 1)
+────────────────────────────────────────────
+
+         streamValid ──────┐
+                           │
+         loadTrigger ──────┼──►┌─────────────────────────┐
+         (layer change)    │   │ weightAddressGenerator  │
+                           │   │  (NEW in Step 1)        │
+                           │   └──────────┬──────────────┘
+                           │              │
+                           │              ├─► weightAddr
+                           │              │   • rowIndex: 0..7
+                           │              │   • matrixType: Q/K/V
+                           │              │   • headIndex: 0..7
+                           │              │
+                           │              └─► qkvLoadDone
+                           │                  (True after 128 rows)
+
+
+PHASE 4: WEIGHT BUFFERING (NEW - Step 2)
+──────────────────────────────────────────
+
+         streamValid ──┐
+         weightAddr ───┼──┐
+         parsedWeights ┼──┼──┐
+         qkvLoadDone ──┼──┼──┼──┐
+         layerChanged ─┼──┼──┼──┼──► ┌──────────────────────────┐
+         (reset)       │  │  │  │    │ qkvWeightBufferController│
+                       │  │  │  │    │  (NEW in Step 2)         │
+                       │  │  │  │    └────────┬─────────────────┘
+                       │  │  │  │             │
+                       │  │  │  │             ▼
+                       │  │  │  │    weightBuffer :: QKVWeightBuffer
+                       │  │  │  │    ┌──────────────────────────┐
+                       │  │  │  │    │ Q heads: Vec 8 matrices  │
+                       │  │  │  │    │ K heads: Vec 4 matrices  │
+                       │  │  │  │    │ V heads: Vec 4 matrices  │
+                       │  │  │  │    │ fullyLoaded: Bool        │
+                       │  │  │  │    └──────────────────────────┘
+
+
+PHASE 5: WEIGHT EXTRACTION (NEW - Step 2 helpers)
+───────────────────────────────────────────────────
+
+                      weightBuffer
+                           │
+                           │
+         ┌─────────────────┼─────────────────┐
+         │                 │                 │
+         ▼                 ▼                 ▼
+   extractQWeight   extractKWeight   extractVWeight
+     (head idx)       (head idx)       (head idx)
+         │                 │                 │
+         ▼                 ▼                 ▼
+   MatI8E 8×64       MatI8E 8×64       MatI8E 8×64
+   (one Q matrix)    (one K matrix)    (one V matrix)
+
+
+PHASE 6: WEIGHT SELECTION (NEW - Step 3)
+──────────────────────────────────────────
+
+         ┌──────────┐           ┌──────────┐
+         │   RAM    │           │Hardcoded │
+         │ Weights  │           │ Weights  │
+         │(MatI8E)  │           │ (MatI8E) │
+         └─────┬────┘           └────┬─────┘
+               │                     │
+               │    useRAM           │
+               │  (Bool flag)        │
+               └──────┬──────────────┘
+                      │
+                      ▼
+                ┌──────────┐
+                │   MUX    │
+                └─────┬────┘
+                      │
+                      ▼
+              selectedWeights
+                      │
+                      ▼
+         parallelRowMatrixMultiplier
+                      │
+                      ▼
+                  (Q/K/V output)
+
+
+COMPLETE FLOW - TOP TO BOTTOM (showing all phases)
+═══════════════════════════════════════════════════
+
+        ┌──────────────────────────────────────────────┐
+        │           DECODER TOP LEVEL                  │
+        │  (LLaMa2.Decoder.Decoder)                    │
+        │                                              │
+        │  parsedWeights ────┬──► weightBuffer        │
+        │  streamValid ──────┤     (buffering)        │
+        │  weightAddr ───────┤                        │
+        │  qkvLoadDone ──────┘                        │
+        │                                              │
+        │  weightBuffer ─────┬──► useRAMWeights       │
+        │  (fullyLoaded) ────┘     (Bool flag)        │
+        └──────────┬───────────────────────────────────┘
+                   │
+                   │ Pass down:
+                   │ • weightBuffer
+                   │ • useRAMWeights
+                   ▼
+        ┌──────────────────────────────────────────────┐
+        │           LAYER STACK                        │
+        │  (LLaMa2.Decoder.LayerStack)                 │
+        │                                              │
+        │  For each layer:                             │
+        │    Pass weightBuffer + useRAMWeights         │
+        └──────────┬───────────────────────────────────┘
+                   │
+                   ▼
+        ┌──────────────────────────────────────────────┐
+        │        TRANSFORMER LAYER                     │
+        │  (LLaMa2.Layer.TransformerLayer)             │
+        │                                              │
+        │  Route to: multiHeadAttentionStage           │
+        └──────────┬───────────────────────────────────┘
+                   │
+                   ▼
+        ┌──────────────────────────────────────────────┐
+        │     MULTI-HEAD ATTENTION STAGE               │
+        │  (LLaMa2.Layer.Attention.MultiHeadAttention) │
+        │                                              │
+        │  Route to: qkvProjectionController           │
+        └──────────┬───────────────────────────────────┘
+                   │
+                   ▼
+        ┌──────────────────────────────────────────────┐
+        │        QKV PROJECTION                        │
+        │  (LLaMa2.Layer.Attention.QKVProjection)      │
+        │                                              │
+        │  For each head:                              │
+        │    • Extract weights from buffer             │
+        │    • MUX between RAM/hardcoded               │
+        │    • Use in matrix multiplication            │
+        └──────────────────────────────────────────────┘
+
+
+WEIGHT BUFFER MEMORY LAYOUT (example for 260K model)
+═════════════════════════════════════════════════════
+
+QKVWeightBuffer = {
+  
+  qHeadBuffers: [8 heads] = {
+    Head 0: { wqBuf: [ Row0, Row1, ..., Row7 ]  ← 8×64 MatI8E
+              wkBuf: unused
+              wvBuf: unused }
+    Head 1: { wqBuf: [ Row0, Row1, ..., Row7 ]
+              wkBuf: unused
+              wvBuf: unused }
+    ...
+    Head 7: { wqBuf: [ Row0, Row1, ..., Row7 ]
+              wkBuf: unused
+              wvBuf: unused }
+  }
+  
+  kvHeadBuffers: [4 heads] = {
+    Head 0: { wqBuf: unused
+              wkBuf: [ Row0, Row1, ..., Row7 ]  ← 8×64 MatI8E
+              wvBuf: [ Row0, Row1, ..., Row7 ]  ← 8×64 MatI8E }
+    Head 1: { wqBuf: unused
+              wkBuf: [ Row0, Row1, ..., Row7 ]
+              wvBuf: [ Row0, Row1, ..., Row7 ] }
+    ...
+    Head 3: { wqBuf: unused
+              wkBuf: [ Row0, Row1, ..., Row7 ]
+              wvBuf: [ Row0, Row1, ..., Row7 ] }
+  }
+  
+  fullyLoaded: False → True (after 128 rows received)
+}
+
+
+STREAMING SEQUENCE EXAMPLE
+═══════════════════════════
+
+Cycle  Row Data             Address                    Buffer Action
+─────  ──────────────────   ────────────────────────   ──────────────
+  0    [m0,m1,...,m63], e   row=0, Q, head=0          → qHeadBuffers[0].wqBuf[0]
+  1    [m0,m1,...,m63], e   row=1, Q, head=0          → qHeadBuffers[0].wqBuf[1]
+  2    [m0,m1,...,m63], e   row=2, Q, head=0          → qHeadBuffers[0].wqBuf[2]
+  ...
+  7    [m0,m1,...,m63], e   row=7, Q, head=0          → qHeadBuffers[0].wqBuf[7]
+  8    [m0,m1,...,m63], e   row=0, Q, head=1          → qHeadBuffers[1].wqBuf[0]
+  ...
+ 63    [m0,m1,...,m63], e   row=7, Q, head=7          → qHeadBuffers[7].wqBuf[7]
+ 64    [m0,m1,...,m63], e   row=0, K, head=0          → kvHeadBuffers[0].wkBuf[0]
+  ...
+ 95    [m0,m1,...,m63], e   row=7, K, head=3          → kvHeadBuffers[3].wkBuf[7]
+ 96    [m0,m1,...,m63], e   row=0, V, head=0          → kvHeadBuffers[0].wvBuf[0]
+  ...
+127    [m0,m1,...,m63], e   row=7, V, head=3          → kvHeadBuffers[3].wvBuf[7]
+128    (qkvLoadDone = True, fullyLoaded = True)
+
+
+KEY INSIGHT: TIMING
+═══════════════════
+
+The weight loading happens BEFORE computation:
+
+  Time  →
+  
+  |←─ Boot ─→|←─ Load Layer 0 ─→|←─ Compute Layer 0 ─→|
+  
+  weightsReady ═══════╗           ╔═════════════════════
+                      ╚═══════════╝
+                      
+  streamValid                 ╔════╗
+                              ╚════╝
+  
+  fullyLoaded                      ╔════════════════════
+                                   ╚════════════════════
+  
+  useRAMWeights = fullyLoaded ∧ weightsReady
+
+This means:
+1. Boot loader runs first (loads basic system weights)
+2. Layer 0 weights stream in (128 cycles)
+3. fullyLoaded goes True
+4. Computation begins with RAM weights
+5. When layer changes, repeat steps 2-4
+
+===============================================================================

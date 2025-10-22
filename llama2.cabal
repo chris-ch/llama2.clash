@@ -101,7 +101,9 @@ library
     , LLaMa2.Layer.Attention.KVCache
     , LLaMa2.Layer.Attention.MultiHeadAttention
     , LLaMa2.Layer.Attention.QKVProjection
+    , LLaMa2.Layer.Attention.QKVProjectionWithRAM
     , LLaMa2.Layer.Attention.RotaryEncoding
+    , LLaMa2.Layer.Attention.WeightBuffer
     , LLaMa2.Layer.FeedForward.FeedForwardNetwork
     , LLaMa2.Layer.FeedForward.Activation
     , LLaMa2.Layer.TransformerLayer
@@ -114,6 +116,7 @@ library
     , LLaMa2.Memory.FakeAxiSlave
     , LLaMa2.Memory.FileBackedAxiSlave
     , LLaMa2.Memory.SimAxiSlave
+    , LLaMa2.Memory.WeightLoaderAddressing
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization
     , LLaMa2.Numeric.Operations

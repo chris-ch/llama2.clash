@@ -1,0 +1,231 @@
+-- ============================================================================
+-- COMPLETE INTEGRATION GUIDE: RAM-Based Weight Loading for QKV
+-- ============================================================================
+--
+-- This guide shows ALL the changes needed to replace hardcoded weights
+-- with RAM-loaded weights, organized by module level from top to bottom.
+--
+-- ============================================================================
+
+-- ============================================================================
+-- LEVEL 1: Top-Level Decoder (LLaMa2.Decoder.Decoder)
+-- ============================================================================
+
+-- CHANGE 1.1: Add weight buffer instantiation
+-- Add after line with "parsedWeights = parseI8EChunk <$> weightStream"
+
+    -- NEW: Add addressing generator
+    (weightAddr, qkvLoadDone) = weightAddressGenerator streamValid loadTrigger
+
+    -- NEW: Instantiate weight buffer controller  
+    weightBuffer :: Signal dom QKVWeightBuffer
+    weightBuffer = qkvWeightBufferController 
+                      streamValid 
+                      weightAddr 
+                      parsedWeights
+                      qkvLoadDone
+                      (not <$> weightsReady)  -- reset when system resets
+
+    -- NEW: Extract "use RAM" flag (weights fully loaded)
+    useRAMWeights :: Signal dom Bool
+    useRAMWeights = fullyLoaded <$> weightBuffer
+
+-- CHANGE 1.2: Pass weight buffer down to layers
+-- Modify the call to LayerStack.processLayers:
+
+    (nextLayerData, doneFlags) =
+      LayerStack.processLayers
+        processingState
+        layerIdx
+        layerInput
+        weightBuffer        -- NEW: pass complete buffer (not just one row)
+        useRAMWeights       -- NEW: pass the switch flag
+        (modelLayers params)
+
+-- ============================================================================
+-- LEVEL 2: Layer Stack (LLaMa2.Decoder.LayerStack)
+-- ============================================================================
+
+-- CHANGE 2.1: Update processLayers signature
+processLayers :: forall dom .
+  HiddenClockResetEnable dom
+  => Signal dom ProcessingState
+  -> Signal dom (Index NumLayers)
+  -> Signal dom LayerData
+  -> Signal dom QKVWeightBuffer               -- CHANGED: now complete buffer
+  -> Signal dom Bool                          -- NEW: useRAM flag
+  -> Vec NumLayers TransformerLayerComponent
+  -> ( Signal dom LayerData
+     , Vec NumLayers (LayerDoneFlags dom)
+     )
+
+-- CHANGE 2.2: Update call to TransformerLayer.transformerLayer
+        ( layerDataOut
+          , writeDone
+          , attnDone
+          , qkvDone
+          , _layerDataAfterAttn
+          , qkvReady
+          , ffnDone
+          ) = TransformerLayer.transformerLayer
+            layerComponent
+            layerIdx
+            processingState
+            layerDataIn
+            weightBuffer        -- CHANGED: pass buffer
+            useRAM             -- NEW: pass flag
+
+-- ============================================================================
+-- LEVEL 3: Transformer Layer (LLaMa2.Layer.TransformerLayer)
+-- ============================================================================
+
+-- CHANGE 3.1: Update transformerLayer signature
+transformerLayer ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  TransformerLayerComponent ->
+  Index NumLayers ->
+  Signal dom ProcessingState ->
+  Signal dom LayerData ->
+  Signal dom QKVWeightBuffer ->              -- CHANGED: buffer instead of row
+  Signal dom Bool ->                         -- NEW: useRAM flag
+  ( Signal dom LayerData,
+    Signal dom Bool, -- writeDone
+    Signal dom Bool, -- attentionDone
+    Signal dom Bool, -- qkvDone
+    Signal dom LayerData, -- layerDataAfterAttention
+    Signal dom Bool, -- qkvInReady
+    Signal dom Bool -- ffnDone
+  )
+
+-- CHANGE 3.2: Update call to multiHeadAttentionStage
+    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) = 
+      multiHeadAttentionStage 
+        mha 
+        processingState 
+        layerIndex 
+        layerData 
+        weightBuffer        -- CHANGED: pass buffer
+        useRAM             -- NEW: pass flag
+
+-- ============================================================================
+-- LEVEL 4: MHA Stage (LLaMa2.Layer.Attention.MultiHeadAttention)
+-- ============================================================================
+
+-- CHANGE 4.1: Update multiHeadAttentionStage signature
+multiHeadAttentionStage ::
+  HiddenClockResetEnable dom =>
+  MultiHeadAttentionComponentQ ->
+  Signal dom ProcessingState ->
+  Index NumLayers ->
+  Signal dom LayerData ->
+  Signal dom QKVWeightBuffer ->              -- CHANGED
+  Signal dom Bool ->                         -- NEW: useRAM
+  ( Signal dom Bool,                         -- attentionDone
+    Signal dom (Vec ModelDimension FixedPoint), -- attentionOutput
+    Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),     -- Q
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),  -- K
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),  -- V
+    Signal dom Bool,                         -- qkvInReady
+    Signal dom Bool,                         -- writeDone
+    Signal dom Bool                          -- qkvDone
+  )
+
+-- CHANGE 4.2: Update call to qkvProjectionController
+    ((q, k, v), qkvValidOut, qkvInReady) =
+      QKVProjection.qkvProjectionControllerWithRAM  -- CHANGED: use new version
+        isStage1
+        isStage2
+        xIn
+        mhaQ
+        processingState
+        weightBuffer        -- CHANGED: pass buffer
+        useRAM             -- NEW: pass flag
+
+-- ============================================================================
+-- LEVEL 5: QKV Projection (LLaMa2.Layer.Attention.QKVProjection)
+-- ============================================================================
+
+-- CHANGE 5: Replace entire module with QKVProjectionWithRAM.hs (from Step 3)
+-- This includes:
+-- - queryHeadProjectorWithRAM
+-- - keyValueHeadProjectorWithRAM  
+-- - qkvProjectorWithRAM
+-- - qkvProjectionControllerWithRAM
+
+-- ============================================================================
+-- MODULE DEPENDENCIES (need to add these)
+-- ============================================================================
+
+-- NEW MODULE 1: LLaMa2.Memory.WeightLoaderAddressing
+--   - Contains: WeightAddress, WeightMatrixType, weightAddressGenerator
+--   - Location: WeightLoaderAddressing.hs (from Step 1)
+
+-- NEW MODULE 2: LLaMa2.Layer.Attention.WeightBuffer
+--   - Contains: QKVWeightBuffer, qkvWeightBufferController
+--   - Contains: extractQWeight, extractKWeight, extractVWeight
+--   - Location: WeightBuffer.hs (from Step 2)
+
+-- ============================================================================
+-- TESTING STRATEGY
+-- ============================================================================
+
+-- TEST PHASE 1: Buffer Accumulation
+--   1. Add introspection signal: Signal dom QKVWeightBuffer
+--   2. Verify rows accumulate correctly in simulation
+--   3. Check fullyLoaded flag goes high after 128 rows (for 260K model)
+
+-- TEST PHASE 2: Weight Selection
+--   1. Keep useRAM = False, verify old behavior unchanged
+--   2. Set useRAM = True, verify new weights are used
+--   3. Compare outputs between hardcoded and RAM weights
+
+-- TEST PHASE 3: Layer Changes
+--   1. Verify buffer resets when layer changes
+--   2. Verify new weights load for new layer
+--   3. Check computation uses correct weights per layer
+
+-- ============================================================================
+-- MINIMAL FIRST TEST (Simplest possible)
+-- ============================================================================
+
+-- To test just the weight buffer without changing computation:
+
+-- 1. Add ONLY the weight buffer to Decoder.hs:
+    weightBuffer = qkvWeightBufferController streamValid weightAddr parsedWeights qkvLoadDone reset
+
+-- 2. Add ONLY introspection (don't change any computation yet):
+    introspection = DecoderIntrospection {
+      ...,
+      weightBufferState = weightBuffer,  -- NEW: observe buffer
+      useRAMFlag = fullyLoaded <$> weightBuffer  -- NEW: observe flag
+    }
+
+-- 3. In testbench, check that:
+    - After 128 cycles with streamValid=True, buffer has all weights
+    - fullyLoaded flag becomes True
+    - Weights match expected values from file
+
+-- This tests the infrastructure WITHOUT changing computation behavior yet!
+
+-- ============================================================================
+-- INCREMENTAL ROLLOUT
+-- ============================================================================
+
+-- Option A: One Head at a Time
+--   Start by using RAM weights ONLY for Q head 0
+--   Keep all other heads using hardcoded weights
+--   Gradually enable more heads
+
+-- Option B: One Layer at a Time  
+--   Start by using RAM weights ONLY for layer 0
+--   Keep all other layers using hardcoded weights
+--   Gradually enable more layers
+
+-- Option C: All or Nothing (riskier but simpler)
+--   Switch all QKV weights to RAM simultaneously
+--   Easier to manage but harder to debug
+
+-- Recommendation: Start with Option C but add bypass signal:
+    useRAMWeights = bypass ? False : (fullyLoaded <$> weightBuffer)
+--   This lets you toggle between old/new behavior for testing

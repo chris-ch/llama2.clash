@@ -1,0 +1,243 @@
+===============================================================================
+ACTIONABLE STEP-BY-STEP PLAN: RAM Weight Integration
+===============================================================================
+
+Here's EXACTLY what to do, in order, with testable milestones:
+
+===============================================================================
+STEP 1: Add Row Addressing (1-2 hours)
+===============================================================================
+
+WHAT: Make the weight stream self-describing by adding row addresses.
+
+WHERE: Modify your weightManagementSystem in LLaMa2.Memory.WeightLoader
+
+ACTION:
+  1. Copy the weightAddressGenerator function from WeightLoaderAddressing.hs
+  2. Add it to your WeightLoader module
+  3. Instantiate it after your weight streaming logic:
+     
+     (weightAddr, qkvLoadDone) = weightAddressGenerator streamValid loadTrigger
+     
+  4. Return these new signals from weightManagementSystem
+
+NEW SIGNALS RETURNED:
+  - weightAddr :: Signal dom WeightAddress
+  - qkvLoadDone :: Signal dom Bool
+
+TEST:
+  - Print weightAddr values in simulation
+  - Verify it counts: (row 0, Q, head 0), (row 1, Q, head 0), ...
+  - Verify qkvLoadDone goes True after 128 rows (260K model)
+
+VALIDATION: ✓ When you see addresses increment correctly in simulation
+
+===============================================================================
+STEP 2: Add Weight Buffer (2-3 hours)  
+===============================================================================
+
+WHAT: Create a register that accumulates incoming weight rows into matrices.
+
+WHERE: Create new module LLaMa2.Layer.Attention.WeightBuffer
+
+ACTION:
+  1. Create the new file with contents from WeightBuffer.hs
+  2. In your Decoder.hs, import it
+  3. Instantiate the buffer controller:
+  
+     weightBuffer :: Signal dom QKVWeightBuffer
+     weightBuffer = qkvWeightBufferController 
+                       streamValid 
+                       weightAddr 
+                       parsedWeights
+                       qkvLoadDone
+                       layerChanged  -- reset on layer change
+
+  4. Add introspection to see buffer state:
+  
+     introspection = DecoderIntrospection {
+       ...,
+       weightBufState = weightBuffer
+     }
+
+TEST:
+  - Run simulation for 128+ cycles with streamValid = True
+  - Inspect weightBuffer state
+  - Verify wqBuf for head 0 contains 8 rows after 8 cycles
+  - Verify fullyLoaded flag goes True after all rows received
+
+VALIDATION: ✓ When buffer accumulates all 128 weight rows correctly
+
+===============================================================================
+STEP 3: Modify QKV Projector (3-4 hours)
+===============================================================================
+
+WHAT: Change QKVProjection to accept and use buffered RAM weights.
+
+WHERE: LLaMa2.Layer.Attention.QKVProjection
+
+ACTION:
+  1. Backup your current QKVProjection.hs file
+  2. Copy functions from QKVProjectionWithRAM.hs
+  3. Update signatures to accept:
+     - Signal dom QKVWeightBuffer (instead of Signal dom (RowI8E n))
+     - Signal dom Bool (useRAM flag)
+  4. Modify queryHeadProjector to use queryHeadProjectorWithRAM
+  5. Modify keyValueHeadProjector to use keyValueHeadProjectorWithRAM
+
+BEFORE (current):
+  parallelRowMatrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
+
+AFTER (with RAM weights):
+  selectedWeights = mux useRAM ramWeights (pure (wqHeadQ headComp))
+  parallelRowMatrixMultiplier validIn (pure True) selectedWeights xHatSig
+
+TEST:
+  - Set useRAM = pure False → should behave identically to old code
+  - Set useRAM = pure True → should use RAM weights
+  - Compare outputs between the two modes
+
+VALIDATION: ✓ When useRAM=False produces same results as before
+
+===============================================================================
+STEP 4: Thread Signals Through Layers (1-2 hours)
+===============================================================================
+
+WHAT: Pass weightBuffer and useRAM through the layer hierarchy.
+
+WHERE: Multiple files in calling chain
+
+ACTION:
+  1. Update LayerStack.processLayers signature (add weightBuffer, useRAM params)
+  2. Update TransformerLayer.transformerLayer signature  
+  3. Update MultiHeadAttention.multiHeadAttentionStage signature
+  4. Update all call sites to pass these new parameters
+
+FOLLOW THE CHAIN:
+  Decoder.hs 
+    → LayerStack.processLayers 
+      → TransformerLayer.transformerLayer
+        → MultiHeadAttention.multiHeadAttentionStage
+          → QKVProjection.qkvProjectionController
+
+See INTEGRATION_GUIDE.txt for exact changes at each level.
+
+VALIDATION: ✓ When code compiles without type errors
+
+===============================================================================
+STEP 5: End-to-End Integration Test (2-3 hours)
+===============================================================================
+
+WHAT: Connect everything and test the complete flow.
+
+WHERE: Top-level testbench
+
+ACTION:
+  1. Set bypass = False (enable weight loading)
+  2. Let weights load from eMMC/DDR
+  3. Monitor weightBuffer.fullyLoaded flag
+  4. Once loaded, enable token processing
+  5. Compare output tokens with:
+     - Original hardcoded weights
+     - Python reference implementation
+
+TEST SCENARIOS:
+  A. useRAM = False → Should match original behavior exactly
+  B. useRAM = True + same weights → Should match (validates loading)
+  C. useRAM = True + different weights → Should differ (validates selection)
+
+VALIDATION: ✓ When RAM-loaded weights produce expected inference results
+
+===============================================================================
+CURRENT STATUS CHECK
+===============================================================================
+
+Based on your uploaded file, you currently have:
+  ✓ Weight streaming infrastructure (parsedWeights, streamValid)
+  ✓ Top-level plumbing to layers
+  ✗ Row addressing - NOT IMPLEMENTED
+  ✗ Weight buffering - NOT IMPLEMENTED  
+  ✗ QKV projector modifications - NOT IMPLEMENTED
+
+RECOMMENDED NEXT ACTION:
+  → Start with STEP 1 (Add Row Addressing)
+  → It's ~50 lines of code
+  → Gives you observable progress immediately
+  → Can be tested independently
+
+===============================================================================
+FILES CREATED FOR YOU
+===============================================================================
+
+1. WeightLoaderAddressing.hs
+   - Contains weightAddressGenerator
+   - Use in STEP 1
+
+2. WeightBuffer.hs
+   - Contains QKVWeightBuffer and controller
+   - Use in STEP 2
+
+3. QKVProjectionWithRAM.hs
+   - Contains modified projectors with weight selection
+   - Use in STEP 3
+
+4. INTEGRATION_GUIDE.txt
+   - Detailed changes needed at each module level
+   - Use in STEP 4
+
+5. THIS FILE
+   - Action plan
+   - Follow sequentially
+
+===============================================================================
+ESTIMATED TIME TO COMPLETE
+===============================================================================
+
+Conservative estimate: 10-15 hours total
+  - Step 1: 1-2 hours
+  - Step 2: 2-3 hours  
+  - Step 3: 3-4 hours
+  - Step 4: 1-2 hours
+  - Step 5: 2-3 hours
+  - Debugging: 1-2 hours
+
+Aggressive estimate: 6-8 hours if everything goes smoothly
+
+===============================================================================
+QUESTIONS TO ASK IF STUCK
+===============================================================================
+
+After Step 1:
+  "I added weightAddressGenerator but the addresses don't increment. Why?"
+  "The qkvLoadDone flag never goes True. What's wrong?"
+
+After Step 2:
+  "The buffer doesn't accumulate rows. What am I missing?"
+  "How do I inspect the buffer contents in simulation?"
+
+After Step 3:
+  "The code compiles but parallelRowMatrixMultiplier complains about types."
+  "How do I verify the weights are being used correctly?"
+
+After Step 4:
+  "I get type mismatches when passing weightBuffer. Help?"
+
+After Step 5:
+  "The outputs differ between RAM and hardcoded weights. How do I debug?"
+
+===============================================================================
+START HERE
+===============================================================================
+
+Your immediate next step:
+
+1. Open LLaMa2/Memory/WeightLoader.hs
+2. Copy the weightAddressGenerator function from WeightLoaderAddressing.hs
+3. Add this line in weightManagementSystem:
+   (weightAddr, qkvLoadDone) = weightAddressGenerator streamValid loadTrigger
+4. Return these signals from the function
+5. Run a simulation and print weightAddr values
+
+That's it. Do this ONE thing first. Once it works, move to Step 2.
+
+Good luck! 🚀

@@ -1,0 +1,337 @@
+===============================================================================
+SUMMARY: Complete Solution for RAM-Based Weight Loading
+===============================================================================
+
+WHAT YOU ASKED
+══════════════
+"I need to use parsedWeights (RowI8E ModelDimension) in the computation 
+instead of hardcoded mhaQ data. Help me continue iteratively."
+
+WHAT YOU GET
+════════════
+A complete, testable solution in 5 incremental steps that:
+1. ✓ Adds row addressing to identify incoming weights
+2. ✓ Buffers streaming weights into complete matrices
+3. ✓ Modifies QKV projectors to use buffered RAM weights
+4. ✓ Threads signals through the layer hierarchy
+5. ✓ Integrates and tests end-to-end
+
+CURRENT STATE (from your uploaded file)
+═══════════════════════════════════════
+You have:
+  ✓ Weight streaming (parsedWeights, streamValid)
+  ✓ Top-level infrastructure (Decoder.hs)
+  ✓ Layer plumbing (passing signals down)
+  
+You need:
+  ✗ Row addressing (which row/matrix/head is this?)
+  ✗ Weight buffering (accumulate rows into matrices)
+  ✗ Weight selection (use RAM instead of hardcoded)
+  ✗ Integration (connect everything)
+
+FILES CREATED FOR YOU
+═════════════════════
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. WeightLoaderAddressing.hs                                    │
+│    - weightAddressGenerator function                            │
+│    - WeightAddress and WeightMatrixType types                   │
+│    - Use in Step 1                                              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. WeightBuffer.hs                                              │
+│    - QKVWeightBuffer and SingleHeadWeightBuffer types           │
+│    - qkvWeightBufferController function                         │
+│    - extractQWeight, extractKWeight, extractVWeight helpers     │
+│    - Use in Step 2                                              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. QKVProjectionWithRAM.hs                                      │
+│    - Modified queryHeadProjector with weight selection          │
+│    - Modified keyValueHeadProjector with weight selection       │
+│    - qkvProjectorWithRAM main function                          │
+│    - Use in Step 3                                              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 4. INTEGRATION_GUIDE.txt                                        │
+│    - Detailed changes needed at each module level              │
+│    - Exact line-by-line modifications                          │
+│    - Use in Step 4                                              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 5. ACTION_PLAN.txt                                              │
+│    - Step-by-step implementation plan                           │
+│    - Time estimates                                             │
+│    - Validation checkpoints                                     │
+│    - Read this first!                                           │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 6. DATA_FLOW_DIAGRAM.txt                                        │
+│    - Visual ASCII diagrams of data flow                         │
+│    - Shows how all pieces fit together                          │
+│    - Reference when confused                                    │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 7. QUICK_REFERENCE.txt                                          │
+│    - All type signatures in one place                           │
+│    - Common patterns                                            │
+│    - Debug checklist                                            │
+│    - Keep this open while coding                                │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ 8. THIS FILE (SUMMARY.txt)                                      │
+│    - Overview of everything                                     │
+│    - Where to start                                             │
+└─────────────────────────────────────────────────────────────────┘
+
+
+THE 5 STEPS (at a glance)
+═══════════════════════════
+
+Step 1: Add Row Addressing (1-2 hours)
+───────────────────────────────────────
+WHERE: LLaMa2.Memory.WeightLoader
+WHAT:  Add weightAddressGenerator to make weights self-describing
+OUTPUT: weightAddr, qkvLoadDone signals
+TEST:  Print addresses, verify they count correctly
+
+Step 2: Add Weight Buffering (2-3 hours)
+────────────────────────────────────────
+WHERE: Create LLaMa2.Layer.Attention.WeightBuffer
+WHAT:  Accumulate streaming rows into complete matrices
+OUTPUT: weightBuffer signal with all QKV matrices
+TEST:  Inspect buffer, verify it fills after 128 cycles
+
+Step 3: Modify QKV Projector (3-4 hours)
+────────────────────────────────────────
+WHERE: LLaMa2.Layer.Attention.QKVProjection  
+WHAT:  Add weight selection (MUX between RAM/hardcoded)
+OUTPUT: Modified projectors that accept weightBuffer
+TEST:  Compare outputs with useRAM=True vs False
+
+Step 4: Thread Signals (1-2 hours)
+──────────────────────────────────
+WHERE: LayerStack, TransformerLayer, MultiHeadAttention
+WHAT:  Pass weightBuffer and useRAM through layers
+OUTPUT: Type-correct signal propagation
+TEST:  Code compiles without errors
+
+Step 5: Integration Test (2-3 hours)
+────────────────────────────────────
+WHERE: Top-level testbench
+WHAT:  End-to-end testing with real weights
+OUTPUT: Correct token generation
+TEST:  Match Python reference implementation
+
+
+RECOMMENDED READING ORDER
+══════════════════════════
+
+1. THIS FILE (you are here) - get the big picture
+2. ACTION_PLAN.txt - understand the step-by-step plan
+3. DATA_FLOW_DIAGRAM.txt - see how data flows
+4. QUICK_REFERENCE.txt - bookmark for coding
+5. Start implementing Step 1
+6. Refer to other files as needed
+
+
+YOUR IMMEDIATE NEXT ACTIONS
+════════════════════════════
+
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 1: Read ACTION_PLAN.txt (5 minutes)                  │
+│           Understand the full roadmap                        │
+└──────────────────────────────────────────────────────────────┘
+                            ↓
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 2: Look at DATA_FLOW_DIAGRAM.txt (5 minutes)         │
+│           Visualize how everything connects                  │
+└──────────────────────────────────────────────────────────────┘
+                            ↓
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 3: Open WeightLoaderAddressing.hs (2 minutes)        │
+│           Review the weightAddressGenerator function         │
+└──────────────────────────────────────────────────────────────┘
+                            ↓
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 4: Open your LLaMa2/Memory/WeightLoader.hs           │
+│           Copy weightAddressGenerator into it                │
+│           Add: (addr, done) = weightAddressGenerator ...     │
+│           Return these from weightManagementSystem           │
+│           (30-60 minutes)                                    │
+└──────────────────────────────────────────────────────────────┘
+                            ↓
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 5: Test in simulation                                 │
+│           Print weightAddr values                            │
+│           Verify addresses count correctly                   │
+│           (15-30 minutes)                                    │
+└──────────────────────────────────────────────────────────────┘
+                            ↓
+┌──────────────────────────────────────────────────────────────┐
+│ ACTION 6: Continue to Step 2                                 │
+│           Follow ACTION_PLAN.txt                             │
+└──────────────────────────────────────────────────────────────┘
+
+
+KEY CONCEPTS TO UNDERSTAND
+═══════════════════════════
+
+Concept 1: Weight Streaming
+────────────────────────────
+Weights arrive ONE ROW AT A TIME from RAM:
+  Cycle 0: Row 0 of Q matrix, head 0
+  Cycle 1: Row 1 of Q matrix, head 0
+  ...
+  Cycle 127: Row 7 of V matrix, head 3
+  
+This is different from having all weights available at once.
+
+Concept 2: Addressing
+─────────────────────
+Each row needs metadata:
+  - Which row number? (0..7)
+  - Which matrix? (Q/K/V)
+  - Which head? (0..7 or 0..3)
+  
+The weightAddressGenerator creates this metadata.
+
+Concept 3: Buffering
+────────────────────
+Can't use weights until ALL rows are loaded.
+The buffer accumulates rows until complete (128 cycles).
+Once complete, fullyLoaded = True.
+
+Concept 4: Weight Selection
+───────────────────────────
+parallelRowMatrixMultiplier needs a complete MatI8E.
+We MUX between:
+  - Hardcoded weights (safe, always available)
+  - RAM weights (from buffer, only when fullyLoaded)
+
+Concept 5: Timing
+─────────────────
+Load → Buffer → Use:
+  1. Weights stream in (128 cycles)
+  2. Buffer accumulates (registers)
+  3. fullyLoaded goes True
+  4. Computation uses RAM weights
+
+
+ARCHITECTURE OVERVIEW
+═════════════════════
+
+         RAM (External)
+              │
+              ├─► Weight Management System
+              │   (existing code)
+              │
+              ├─► Parse I8E Chunk
+              │   (existing code)
+              │
+  [YOU ARE HERE - need to add:]
+              │
+              ├─► Address Generator ◄─── Step 1
+              │   (which row/matrix/head?)
+              │
+              ├─► Weight Buffer ◄─────── Step 2
+              │   (accumulate rows)
+              │
+              ├─► QKV Projector ◄─────── Step 3
+              │   (use buffered weights)
+              │
+              ├─► Layer Hierarchy ◄───── Step 4
+              │   (pass signals through)
+              │
+              └─► Integration Test ◄──── Step 5
+                  (validate end-to-end)
+
+
+ESTIMATION
+══════════
+
+Optimistic: 6-8 hours total (everything goes smoothly)
+Realistic:  10-15 hours total (some debugging needed)
+Pessimistic: 20+ hours (major issues discovered)
+
+Most likely: ~12 hours over 2-3 coding sessions
+
+
+WHY THIS APPROACH WORKS
+════════════════════════
+
+✓ Incremental - test after each step
+✓ Testable - clear validation criteria
+✓ Reversible - can always set useRAM=False to go back
+✓ Minimal - changes only what's necessary
+✓ Complete - addresses all aspects of the problem
+
+
+WHAT COULD GO WRONG
+════════════════════
+
+Issue: "I don't understand the types"
+→ Solution: Read QUICK_REFERENCE.txt carefully
+
+Issue: "The code doesn't compile"
+→ Solution: Check signatures match QUICK_REFERENCE.txt
+
+Issue: "I'm stuck on Step X"
+→ Solution: Re-read ACTION_PLAN.txt for that step
+
+Issue: "The weights don't load correctly"
+→ Solution: Check DATA_FLOW_DIAGRAM.txt for data path
+
+Issue: "Outputs are wrong"
+→ Solution: Test with useRAM=False first
+
+Issue: "I need help"
+→ Solution: Ask specific questions about which step
+
+
+SUCCESS CRITERIA
+════════════════
+
+After completing all steps, you should have:
+
+□ Weights stream from RAM with addressing
+□ Buffer accumulates all 128 rows correctly
+□ fullyLoaded flag goes True at right time
+□ QKV projectors accept RAM weights
+□ useRAM=False produces unchanged behavior
+□ useRAM=True uses RAM weights correctly
+□ Token outputs match expected values
+□ System works for all layers
+
+
+GETTING STARTED
+═══════════════
+
+Right now, open these two files side-by-side:
+
+1. ACTION_PLAN.txt (follow this step-by-step)
+2. QUICK_REFERENCE.txt (reference while coding)
+
+Then start with Step 1 in ACTION_PLAN.txt.
+
+Good luck! You've got this! 🚀
+
+
+QUESTIONS?
+══════════
+
+If you get stuck, come back and ask:
+- "I'm on Step X and having trouble with Y"
+- "This code doesn't compile: [paste error]"
+- "The output doesn't match: [describe issue]"
+
+I can help debug specific problems at each step.
+
+===============================================================================
