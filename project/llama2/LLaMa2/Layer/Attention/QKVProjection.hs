@@ -15,11 +15,12 @@ import LLaMa2.Types.ModelConfig
 
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
-import LLaMa2.Numeric.Operations (matrixMultiplier)
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Types.LayerData (ProcessingState (..))
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..), SingleHeadComponentQ (..))
+import LLaMa2.Numeric.Quantization (RowI8E)
 
 qkvProjector :: forall dom .
   HiddenClockResetEnable dom
@@ -28,14 +29,15 @@ qkvProjector :: forall dom .
   -> MultiHeadAttentionComponentQ
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom (RowI8E ModelDimension)
+  -> Signal dom Bool
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool            -- ^ validOut (all heads done)
      , Signal dom Bool            -- ^ readyOut (can accept)
      )
-qkvProjector validIn readyIn mhaQ seqPosSig xSig =
-  (qkvOut, allValid, allReady)
+qkvProjector validIn readyIn mhaQ seqPosSig xSig parsedWeights streamValid = (qkvOut, allValid, allReady)
   where
     xNorm = rmsNormFwFix <$> xSig <*> pure (rmsAttF mhaQ)
 
@@ -73,18 +75,23 @@ qkvProjectionController ::
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
-  -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
+  -> Signal dom (RowI8E ModelDimension)
+  -> Signal dom Bool ->                      
+  ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                 , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                 , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
   , Signal dom Bool
   , Signal dom Bool )
-qkvProjectionController inValid outReady input mhaQ psSig = (result, validOut, inReady)
+qkvProjectionController inValid outReady input mhaQ psSig parsedWeights streamValid = 
+  (result, validOut, inReady)
  where
   (enable, validOut, inReady) = processingControllerFSM inValid outReady matVecValid
   (result, matVecValid, _ready) =
     qkvProjector enable (pure True) mhaQ
                (sequencePosition <$> psSig)
                input
+               parsedWeights
+               streamValid
 
 queryHeadProjector :: forall dom .
   HiddenClockResetEnable dom
@@ -102,7 +109,7 @@ queryHeadProjector validIn readyIn headComp stepCountSig xHatSig =
   where
     -- Matrix multiply with handshaking
     (qOut, qValidOut, qReadyOut) =
-      matrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
+      parallelRowMatrixMultiplier validIn (pure True) (wqHeadQ headComp) xHatSig
 
     -- Apply rotary encoding (combinational, but gated by valid)
     qRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> qOut
@@ -129,11 +136,11 @@ keyValueHeadProjector validIn readyIn headComp stepCountSig xHatSig =
   where
     -- K matrix multiply
     (kOut, kValidOut, kReadyOut) =
-      matrixMultiplier validIn (pure True) (wkHeadQ headComp) xHatSig
+      parallelRowMatrixMultiplier validIn (pure True) (wkHeadQ headComp) xHatSig
 
     -- V matrix multiply (runs in parallel with K)
     (vOut, vValidOut, vReadyOut) =
-      matrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
+      parallelRowMatrixMultiplier validIn (pure True) (wvHeadQ headComp) xHatSig
 
     -- Apply rotary to K
     kRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> kOut

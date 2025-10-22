@@ -20,6 +20,7 @@ import LLaMa2.Types.ModelConfig
   )
 import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
+import LLaMa2.Numeric.Quantization (RowI8E)
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -44,6 +45,8 @@ transformerLayer ::
   Index NumLayers ->
   Signal dom ProcessingState ->
   Signal dom LayerData ->
+  Signal dom (RowI8E ModelDimension) ->  -- parsed weights
+  Signal dom Bool ->                     -- stream valid
   ( Signal dom LayerData,
     Signal dom Bool, -- writeDone
     Signal dom Bool, -- attentionDone
@@ -52,7 +55,7 @@ transformerLayer ::
     Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
-transformerLayer layer layerIndex processingState layerData =
+transformerLayer layer layerIndex processingState layerData parsedWeights streamValid =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -64,7 +67,9 @@ transformerLayer layer layerIndex processingState layerData =
   where
     mha = multiHeadAttention layer
     ffn = feedforwardNetwork layer
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) = multiHeadAttentionStage mha processingState layerIndex layerData
+    -- Pass weights to attention stage
+    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) = 
+      multiHeadAttentionStage mha processingState layerIndex layerData parsedWeights streamValid
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
         <*> layerData

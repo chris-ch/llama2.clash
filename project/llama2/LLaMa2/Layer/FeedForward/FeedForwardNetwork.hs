@@ -8,7 +8,7 @@ import LLaMa2.Types.ModelConfig
     ( ModelDimension, ModelDimension, HiddenDimension )
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 
-import LLaMa2.Numeric.Operations (parallel32RowMatrixMultiplier)
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
 import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ (..))
 
@@ -70,19 +70,19 @@ feedForwardCore validIn readyIn ffn xHat =
     gateValidIn = state .==. pure FFNGate
     gateReadyIn = pure True  -- Always ready to accept multiplier result
     (gateRaw, gateValidOut, _gateReadyOut) =
-      parallel32RowMatrixMultiplier gateValidIn gateReadyIn (fW1Q ffn) xHatLatched
+      parallelRowMatrixMultiplier gateValidIn gateReadyIn (fW1Q ffn) xHatLatched
 
     -- W3 (up) computation  
     upValidIn = state .==. pure FFNUp
     upReadyIn = pure True
     (upRaw, upValidOut, _upReadyOut) =
-      parallel32RowMatrixMultiplier upValidIn upReadyIn (fW3Q ffn) xHatLatched
+      parallelRowMatrixMultiplier upValidIn upReadyIn (fW3Q ffn) xHatLatched
 
     -- W2 (down) computation
     downValidIn = state .==. pure FFNDown
     downReadyIn = pure True
     (downRaw, downValidOut, _downReadyOut) =
-      parallel32RowMatrixMultiplier downValidIn downReadyIn (fW2Q ffn) gateUpLatched
+      parallelRowMatrixMultiplier downValidIn downReadyIn (fW2Q ffn) gateUpLatched
 
     -- State transitions with explicit conditions
     nextState =

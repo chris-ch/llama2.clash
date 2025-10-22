@@ -11,6 +11,7 @@ import LLaMa2.Types.ModelConfig  (NumLayers, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.Parameters (TransformerLayerComponent)
+import LLaMa2.Numeric.Quantization (RowI8E)
 
 -- | Type alias for layer completion flags
 -- (writeDone, attnDone, qkvDone, qkvReady, ffnDone)
@@ -18,17 +19,18 @@ type LayerDoneFlags dom = (Signal dom Bool, Signal dom Bool, Signal dom Bool, Si
 
 -- | Process input through all transformer layers sequentially
 -- Only the layer indicated by currentLayerIdx performs active computation
-processLayers
-  :: forall dom
-   . HiddenClockResetEnable dom
+processLayers :: forall dom .
+  HiddenClockResetEnable dom
   => Signal dom ProcessingState              -- ^ Current processing state
   -> Signal dom (Index NumLayers)            -- ^ Active layer index
   -> Signal dom LayerData                    -- ^ Input layer data
+  -> Signal dom (RowI8E ModelDimension)      -- ^ parsed weights
+  -> Signal dom Bool                         -- ^ stream valid
   -> Vec NumLayers TransformerLayerComponent -- ^ All layer parameters
   -> ( Signal dom LayerData                  -- ^ Output layer data
      , Vec NumLayers (LayerDoneFlags dom)    -- ^ Completion flags per layer
      )
-processLayers processingState currentLayerIdx inputLayerData layers =
+processLayers processingState currentLayerIdx inputLayerData parsedWeights streamValid layers =
   (finalLayerData, doneFlagsVec)
   where
     -- Process each layer, accumulating layer data and collecting flags
@@ -52,14 +54,16 @@ processLayers processingState currentLayerIdx inputLayerData layers =
           , writeDone
           , attnDone
           , qkvDone
-          , _layerDataAfterAttn  -- Not used in accumulation
+          , _layerDataAfterAttn
           , qkvReady
           , ffnDone
-          ) = TransformerLayer.transformerLayer 
-                layerComponent 
-                layerIdx 
-                processingState
-                layerDataIn
+          ) = TransformerLayer.transformerLayer
+            layerComponent
+            layerIdx
+            processingState
+            layerDataIn
+            parsedWeights
+            streamValid
         
         -- Only update layer data when this layer is active
         selectedData = mux isActive layerDataOut layerDataIn

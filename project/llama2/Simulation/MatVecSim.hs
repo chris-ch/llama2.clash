@@ -1,6 +1,5 @@
 module Simulation.MatVecSim
-  ( matrixVectorMult
-  , matrixMultiplierStub
+  ( matrixMultiplierStub
   ) where
 
 import Clash.Prelude
@@ -71,9 +70,6 @@ matrixMultiplierStub validIn readyIn rowsQ vecIn = (outVec, validOut, readyOut)
                          (mux (state .==. pure Processing .&&. delayCounter .<. delayMax)
                               (delayCounter + 1)
                               delayCounter)
-
-  -- Latch input vector when accepted
-  latchedVec = regEn (repeat 0) acceptInput vecIn
 
   -- Compute result (combinational, but latched)
   outVec = regEn (repeat 0) (state .==. pure Processing .&&. delayCounter .==. delayMax) resultComb

@@ -3,7 +3,7 @@ module LLaMa2.Helpers.MatVecI8ESpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.Operations (accumulator, cyclicalCounter, singleRowProcessor, MultiplierState (..), matrixMultiplierStateMachine, matrixMultiplier, cyclicalCounter32)
+import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..), matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor, parallel64RowMatrixMultiplier, parallel32RowProcessor)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
@@ -15,7 +15,7 @@ import qualified Prelude as P
 
 spec :: Spec
 spec = do
-  describe "accumulator" $ do
+  describe "Accumulator" $ do
     context "correctly accumulates, holds, and resets" $ do
       let maxCycles = 10
           -- each reset is a warm-up period
@@ -58,53 +58,55 @@ spec = do
       it "output stream as expected" $ do
         P.all (\(o, e) -> abs (o - e) < tolerance) (P.zip outputs expected) `shouldBe` True
 
-  describe "columnComponentCounter" $ do
+  describe "Cyclical Counter 64" $ do
     context "correctly increments, resets, and holds the counter" $ do
       let maxCycles = 11
           resetStream = [True, False, False, False, True, False, False, True, False, False, False]
           enableStream = [False, True, True, True, False, True, False, True, True, True, False]
-          expected = [0, 0, 1, 2, 3, 0, 1, 1, 0, 1, 2]
+          expected = [0, 0, 64, 128, 192, 0, 64, 64, 0, 64, 128] -- Increment by 64 when enabled
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           counter =
             exposeClockResetEnable
-              cyclicalCounter
+              cyclicalCounter64
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
               reset
               enable
-          outputs = P.take maxCycles $ sample counter :: [Index 4]
+          outputs = P.take maxCycles $ sample counter :: [Index 256]
           outputInts = P.map fromEnum outputs
       it "output stream as expected" $ do
         outputInts `shouldBe` expected
-        let maxBoundVal = fromEnum (maxBound :: Index 4)
+      it "does not exceed max value" $ do
+        let maxBoundVal = fromEnum (maxBound :: Index 256)
         all (<= maxBoundVal) outputInts `shouldBe` True
 
-    context "ignores enable when reset" $ do
+    context "ignores enable when reset is active" $ do
       let maxCycles = 11
-          resetStream = [True, False, False, False, True, False, False, True, False, False, False]
-          enableStream = [True, True, True, True, True, True, False, True, True, True, False]
-          expected = [0, 0, 1, 2, 3, 0, 1, 1, 0, 1, 2]
+          resetStream = [True, False, True, False, True, False, True, False, True, False, False]
+          enableStream = [True, True, True, True, True, True, True, True, True, True, True]
+          expected = [0, 0, 64, 0, 64, 0, 64, 0, 64, 0, 64] -- Reset overrides enable
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           counter =
             exposeClockResetEnable
-              cyclicalCounter
+              cyclicalCounter64
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
               reset
               enable
-          outputs = P.take maxCycles $ sample counter :: [Index 4]
+          outputs = P.take maxCycles $ sample counter :: [Index 256]
           outputInts = P.map fromEnum outputs
       it "output stream as expected" $ do
         outputInts `shouldBe` expected
-        let maxBoundVal = fromEnum (maxBound :: Index 4)
+      it "does not exceed max value" $ do
+        let maxBoundVal = fromEnum (maxBound :: Index 256)
         all (<= maxBoundVal) outputInts `shouldBe` True
 
-  describe "singleRowProcessor" $ do
-    context "computes dot product for a single row" $ do
+  describe "Row Processor" $ do
+    context "computes dot product for a subset of rows (parallel 32 version)" $ do
       let maxCycles = 12
 
           rowVector :: RowI8E 4
@@ -113,32 +115,27 @@ spec = do
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil
 
-          expected = 3.25 :: FixedPoint
-          tolerance = 0.01
-
           -- Input signals
           row :: Signal System (RowI8E 4)
           row = pure rowVector
 
+          resets = True : P.replicate (maxCycles - 1) False
           reset :: Signal System Bool
-          reset = fromList (True : P.replicate (maxCycles - 1) False)
+          reset = fromList resets
 
+          enables = [False] P.++ P.replicate 4 True P.++ P.replicate (maxCycles - 5) False
           enable :: Signal dom Bool
-          enable =
-            fromList
-              $ [False]
-              P.++ DL.replicate 4 True
-              P.++ DL.repeat False
+          enable = fromList enables
 
           -- make sure to pad first cycle for reset warm-up
           column :: Signal dom (Vec 4 FixedPoint)
           column =
-            fromList $ DL.replicate 5 columnVector
-              P.++ DL.repeat (pure 0)
+            fromList $ P.replicate 5 columnVector
+              P.++ P.repeat (pure 0)
 
           (outputComponent, rowDone) =
             exposeClockResetEnable
-              singleRowProcessor
+              parallel32RowProcessor
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -151,12 +148,79 @@ spec = do
           dones = P.take maxCycles $ sample rowDone
 
           doneIndices = DL.findIndices id dones
-          finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
 
       it "there should be only one completion" $ do
-        P.length doneIndices `shouldBe` 1
+        P.length doneIndices `shouldBe` 4
+      it "(test input) reset flags should match expected flags" $ do
+        let expectedResets = [True,False,False,False,False,False,False,False,False,False,False,False]
+        resets `shouldBe` expectedResets
+      it "(test input) enable flags should match expected flags" $ do
+        let expectedEnables = [False,True,True,True,True,False,False,False,False,False,False,False]
+        enables `shouldBe` expectedEnables
+      it "done flags should match expected flags" $ do
+        let expectedDones = [False,False,True,True,True,True,False,False,False,False,False,False]
+        dones `shouldBe` expectedDones
       it "final output should match expected value" $ do
-        abs (finalOut - expected) < tolerance `shouldBe` True
+        let expectedOuts = [0.0,0.0,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25]
+        outs `shouldBe` expectedOuts
+
+    context "computes dot product for a subset of rows (parallel 64 version)" $ do
+      let maxCycles = 12
+
+          rowVector :: RowI8E 4
+          rowVector = (1 :> 2 :> 3 :> 4 :> Nil, 0)
+
+          columnVector :: Vec 4 FixedPoint
+          columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil
+
+          -- Input signals
+          row :: Signal System (RowI8E 4)
+          row = pure rowVector
+
+          resets = True : P.replicate (maxCycles - 1) False
+          reset :: Signal System Bool
+          reset = fromList resets
+
+          enables = [False] P.++ P.replicate 4 True P.++ P.replicate (maxCycles - 5) False
+          enable :: Signal dom Bool
+          enable = fromList enables
+
+          -- make sure to pad first cycle for reset warm-up
+          column :: Signal dom (Vec 4 FixedPoint)
+          column =
+            fromList $ DL.replicate 5 columnVector
+              P.++ DL.repeat (pure 0)
+
+          (outputComponent, rowDone) =
+            exposeClockResetEnable
+              parallel64RowProcessor
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              reset
+              enable
+              row
+              column
+
+          outs = P.take maxCycles $ sample outputComponent
+          dones = P.take maxCycles $ sample rowDone
+
+          doneIndices = DL.findIndices id dones
+
+      it "there should be only one completion" $ do
+        P.length doneIndices `shouldBe` 4
+      it "(test input) reset flags should match expected flags" $ do
+        let expectedResets = [True,False,False,False,False,False,False,False,False,False,False,False]
+        resets `shouldBe` expectedResets
+      it "(test input) enable flags should match expected flags" $ do
+        let expectedEnables = [False,True,True,True,True,False,False,False,False,False,False,False]
+        enables `shouldBe` expectedEnables
+      it "done flags should match expected flags" $ do
+        let expectedDones = [False,False,True,True,True,True,False,False,False,False,False,False]
+        dones `shouldBe` expectedDones
+      it "final output should match expected value" $ do
+        let expectedOuts = [0.0,0.0,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25]
+        outs `shouldBe` expectedOuts
 
     context "computes dot products for two rows sequentially" $ do
       let maxCycles = 12
@@ -167,28 +231,9 @@ spec = do
           rowVector2 = (2 :> 3 :> 4 :> 5 :> Nil, 0) -- Second row: [2, 3, 4, 5], exponent 0
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil -- Column: [1.0, 0.5, 0.25, 0.125]
-          expectedOutsPattern =
-            [ 0.0, -- Cycle 0: reset
-              0.0, -- Cycle 1: start first row
-              1.0, -- Cycle 2: 1*1.0
-              2.0, -- Cycle 3: +2*0.5
-              2.75, -- Cycle 4: +3*0.25
-              3.25, -- Cycle 5: +4*0.125 (first row done)
-              0.0, -- Cycle 6: reset before second row
-              2.0, -- Cycle 7: start second row +2*1.0
-              3.5, -- Cycle 8: +3*0.5
-              4.5, -- Cycle 9: +4*0.25
-              5.125, -- Cycle 10: + 5*0.125 (done)
-              5.125 -- Cycle 11: still done
-            ] ::
-              [FixedPoint]
           -- Expected dot products
-          -- First row: 1*1.0 + 2*0.5 + 3*0.25 + 4*0.125 = 1.0 + 1.0 + 0.75 + 0.5 = 3.25
-          expected1 = 3.25 :: FixedPoint
-          -- Second row: 2*1.0 + 3*0.5 + 4*0.25 + 5*0.125 = 2.0 + 1.5 + 1.0 + 0.625 = 5.125
-          expected2 = 5.125 :: FixedPoint
-
-          tolerance = 0.01
+          expectedOutsPattern =
+            [ 0.0,0.0,3.25,3.25,3.25,3.25,0.0,5.125,5.125,5.125,5.125,5.125 ] :: [FixedPoint]
 
           -- Input signals
           -- Process first row for 4 cycles, gap with reset, then second row for 4 cycles
@@ -235,7 +280,7 @@ spec = do
 
           (outputComponent, rowDone) =
             exposeClockResetEnable
-              singleRowProcessor
+              parallel64RowProcessor
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -250,20 +295,13 @@ spec = do
           -- Find cycles where rowDone is True
           doneIndices = DL.findIndices id dones
 
-          -- Extract outputs at done cycles
-          finalOuts = [outs P.!! i | i <- doneIndices]
-
       it "matches expected output" $ do
         outs `shouldBe` expectedOutsPattern
-      it "has 2 completions" $ do
-        P.length doneIndices `shouldBe` 2 -- Expect two row completions
-      it "first result matches" $ do
-        abs (DL.head finalOuts - expected1) < tolerance `shouldBe` True -- First row result
-      it "second result matches" $ do
-        abs (finalOuts P.!! 1 - expected2) < tolerance `shouldBe` True -- Second row result
-      it "completions happen on cycles 5 and 10" $ do
-        DL.head doneIndices `shouldBe` 5
-        doneIndices P.!! 1 `shouldBe` 10
+      it "has enough completions" $ do
+        P.length doneIndices `shouldBe` 8
+      it "completions happen on expected cycles" $ do
+        DL.head doneIndices `shouldBe` 2
+        doneIndices P.!! 1 `shouldBe` 3
 
     context "computes dot product for a 3-column row" $ do
       let maxCycles = 7
@@ -282,7 +320,7 @@ spec = do
           column = fromList $ pure 0 : pure 0 : P.replicate maxCycles columnVector -- padding with zero before enable
           (outputComponent, rowDone) =
             exposeClockResetEnable
-              singleRowProcessor
+              parallel64RowProcessor
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -294,13 +332,15 @@ spec = do
           dones = P.take maxCycles $ sample rowDone
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
-      it "completes after 3 columns (cycle 5)" $ do
-        doneIndices `shouldBe` [5]
+      it "completes at expected cycle" $ do
+        doneIndices `shouldBe` [3,4,5]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
-        let expectedOuts = [0.0, 0.0, 0.0, 1.0, 5.0, 14.0, 14.0]
-        P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip (P.take maxCycles outs) expectedOuts) `shouldBe` True
+        let
+          expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
+          actualOutputs = P.take maxCycles outs
+        P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip actualOutputs expectedOuts) `shouldBe` True
 
     context "computes dot product for a 3-column row, independently from components before enable" $ do
       let maxCycles = 7
@@ -320,7 +360,7 @@ spec = do
           
           (outputComponent, rowDone) =
             exposeClockResetEnable
-              singleRowProcessor
+              parallel64RowProcessor
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -333,11 +373,11 @@ spec = do
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
       it "completes after 3 columns (cycle 5)" $ do
-        doneIndices `shouldBe` [5]
+        doneIndices `shouldBe` [3,4,5]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
-        let expectedOuts = [0.0, 0.0, 0.0, 1.0, 5.0, 14.0, 14.0]
+        let expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip (P.take maxCycles outs) expectedOuts) `shouldBe` True
 
   describe "matrixMultiplierStateMachine" $ do
@@ -742,7 +782,7 @@ spec = do
 
           (outputVec, validOut, readyOut) =
             exposeClockResetEnable
-              matrixMultiplier
+              parallel64RowMatrixMultiplier
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -779,40 +819,16 @@ spec = do
           then readyOuts P.!! (completionCycle + 1) `shouldBe` True
           else True `shouldBe` False -- can't test if at end of sampled cycles
 
-  describe "cyclicalCounter32" $ do
-    context "increments by 32, clamps at maxBound, and resets correctly (size = 64)" $ do
-      let maxCycles = 10
-          resetStream = [True, False, False, False, True, False, False, True, False, False]
-          enableStream = [False, True, True, True, False, True, True, False, True, True]
-          expected = [0, 0, 32, 63, 63, 0, 32, 63, 0, 32] :: [Int]
-          reset = fromList resetStream :: Signal System Bool
-          enable = fromList enableStream :: Signal System Bool
-          counter =
-            exposeClockResetEnable
-              cyclicalCounter32
-              CS.systemClockGen
-              CS.resetGen
-              CS.enableGen
-              reset
-              enable
-          outputs = P.take maxCycles $ sample counter :: [Index 64]
-          outputInts = P.map fromEnum outputs
-          maxBoundVal = fromEnum (maxBound :: Index 64)
-      it "output stream matches expected sequence" $ do
-        outputInts `shouldBe` expected
-      it "never exceeds maxBound (63)" $ do
-        all (<= maxBoundVal) outputInts `shouldBe` True
-
     context "handles reset overriding enable (size = 64)" $ do
       let maxCycles = 10
           resetStream = [True, False, False, True, False, False, True, False, False, False]
           enableStream = [True, True, True, True, True, True, True, True, True, True]
-          expected = [0, 0, 32, 63, 0, 32, 63, 0, 32, 63] :: [Int]
+          expected = [0,0,63,63,0,63,63,0,63,63] :: [Int]
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           counter =
             exposeClockResetEnable
-              cyclicalCounter32
+              cyclicalCounter64
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -830,12 +846,12 @@ spec = do
       let maxCycles = 10
           resetStream = [True, False, False, False, False, True, False, False, False, False]
           enableStream = [False, True, False, True, False, False, True, False, True, False]
-          expected = [0, 0, 32, 32, 63, 63, 0, 32, 32, 63] :: [Int]
+          expected = [0,0,63,63,63,63,0,63,63,63] :: [Int]
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           counter =
             exposeClockResetEnable
-              cyclicalCounter32
+              cyclicalCounter64
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
@@ -853,12 +869,12 @@ spec = do
       let maxCycles = 10
           resetStream = [True, False, False, False, False, True, False, False, False, False]
           enableStream = [False, True, True, True, True, False, True, True, True, True]
-          expected = [0, 0, 32, 64, 96, 127, 0, 32, 64, 96] :: [Int]
+          expected = [0,0,64,127,127,127,0,64,127,127] :: [Int]
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           counter =
             exposeClockResetEnable
-              cyclicalCounter32
+              cyclicalCounter64
               CS.systemClockGen
               CS.resetGen
               CS.enableGen

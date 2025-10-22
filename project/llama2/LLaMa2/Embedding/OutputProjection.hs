@@ -4,7 +4,7 @@ module LLaMa2.Embedding.OutputProjection
 import Clash.Prelude
 
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
-import LLaMa2.Numeric.Operations (parallel32RowMatrixMultiplier)
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Types.Parameters (DecoderParameters (..), EmbeddingComponentQ (..))
 import LLaMa2.Types.ModelConfig  (ModelDimension, VocabularySize)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -28,7 +28,7 @@ logitsProjector validIn readyIn decoder tokenVecSig =
 
     -- Sequential matrix multiply (tied embeddings as classifier)
     (logitsOut, validOut, readyOut) =
-      parallel32RowMatrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
+      parallelRowMatrixMultiplier validIn readyIn (vocabularyQ emb) tokenWithRms
 
 -- | Simplified output projection wrapper
 outputProjection

@@ -9,8 +9,8 @@ import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, NumQueryHeads, HeadD
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
-import LLaMa2.Numeric.Quantization (MatI8E)
-import LLaMa2.Numeric.Operations (matrixMultiplier)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 
 multiHeadAttentionStage :: forall dom.
@@ -19,6 +19,8 @@ multiHeadAttentionStage :: forall dom.
   Signal dom ProcessingState ->
   Index NumLayers ->
   Signal dom LayerData ->
+  Signal dom (RowI8E ModelDimension) ->  -- parsed weights
+  Signal dom Bool ->                     -- stream valid
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -28,7 +30,8 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDone, xAfterAttn, q, k ,v, qkvInReady, writeDone, qkvDone)
+multiHeadAttentionStage mha processingState layerIndex layerData parsedWeights streamValid = 
+  (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
     -- === Multi-Head Attention (MHA) Stages ===
     -- Stage1: QKV Projection
@@ -57,6 +60,8 @@ multiHeadAttentionStage mha processingState layerIndex layerData = (attentionDon
         input
         mha
         processingState
+        parsedWeights
+        streamValid
     (q, k, v) = unbundle qkvProjected
     -- Stage2/3: KV Cache and Attention
     initHeadOutputs = repeat (pure (repeat 0))
@@ -186,7 +191,7 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
 
     -- Connect to matrix multiplier
     (woResult, woValidOut, woReadyOut) =
-      matrixMultiplier woValidIn internalReady woMatrix latchedVector
+      parallelRowMatrixMultiplier woValidIn internalReady woMatrix latchedVector
 
     -- === Output latch and valid signal ===
     projOut :: Signal dom (Vec ModelDimension FixedPoint)

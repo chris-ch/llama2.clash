@@ -160,8 +160,14 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
                    <*> embeddedVector
 
     (nextLayerData, doneFlags) = 
-      LayerStack.processLayers processingState layerIdx layerInput (modelLayers params)
-    
+      LayerStack.processLayers 
+        processingState 
+        layerIdx 
+        layerInput 
+        parsedWeights      -- NEW: pass parsed weights
+        streamValid        -- NEW: pass validity flag
+        (modelLayers params)
+        
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone
     attnDoneThisLayer  = LayerStack.getCurrentLayerFlag layerIdx attnDone
