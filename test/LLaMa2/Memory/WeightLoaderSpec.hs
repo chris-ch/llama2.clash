@@ -87,8 +87,8 @@ spec = do
             withClockResetEnable systemClockGen resetGen enableGen $
               bootWeightLoader mockAxiSlave mockAxiSlave startBoot emmcBase ddrBase
 
-          states = sampleN 242169 state
-          done   = sampleN 242169 bootComplete
+          states = sampleN 242_169 state
+          done   = sampleN 242_169 bootComplete
 
       states `shouldContain` [BootIdle, BootReading]
       P.or done `shouldBe` True
@@ -98,7 +98,7 @@ spec = do
           (_, _, bootComplete, _, _) =
             withClockResetEnable systemClockGen resetGen enableGen $
               bootWeightLoader slowSlave mockAxiSlave (pure True) (pure 0) (pure 0)
-          done = sampleN 242214 bootComplete
+          done = sampleN 242_214 bootComplete
       done `shouldContain` [True]
 
   describe "parseI8EChunk" $
@@ -151,9 +151,9 @@ spec = do
               createFileBackedAxiSlave modelBinary ddrMasterOut
 
             -- STEP 3: sample outputs for enough cycles
-            sampledStates = sampleN 250000 fsmStateSig
-            sampledBoot   = sampleN 250000 bootCompleteSig
-            sampledBytes  = sampleN 250000 bytesTransferredSig
+            sampledStates = sampleN 250_000 fsmStateSig
+            sampledBoot   = sampleN 250_000 bootCompleteSig
+            sampledBytes  = sampleN 250_000 bytesTransferredSig
             uniqStates    = DL.nub sampledStates
 
         -- Assertions
