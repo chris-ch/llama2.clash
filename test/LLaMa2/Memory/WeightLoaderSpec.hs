@@ -6,6 +6,8 @@ import LLaMa2.Memory.AXI
 import qualified Prelude as P
 import LLaMa2.Numeric.Types (Mantissa)
 import qualified Data.List as DL
+import LLaMa2.Memory.FileBackedAxiSlave (createFileBackedAxiSlave)
+import qualified Data.ByteString.Lazy as BSL
 
 -- ============================================================================
 -- MOCKS
@@ -50,33 +52,6 @@ bootWeightLoaderFast emmcSlave ddrSlave startBoot emmcBase ddrBase =
 
     bootComplete' = bootComplete .||. fakeComplete
 
-bootWeightLoaderDebug :: forall dom .
-  HiddenClockResetEnable dom
-  => AxiSlaveIn dom
-  -> AxiSlaveIn dom
-  -> Signal dom Bool
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (Unsigned 32)
-  -> ( AxiMasterOut dom
-     , AxiMasterOut dom
-     , Signal dom Bool
-     , Signal dom (Unsigned 32)   -- bytesTransferred
-     , Signal dom BootLoaderState
-     , Signal dom (Unsigned 32)   -- transfersInBurst (debug)
-     )
-bootWeightLoaderDebug emmc ddr start emmcBase ddrBase =
-  (emmcOut, ddrOut, done, bytes, state, transfers)
- where
-  -- Run the real loader
-  (emmcOut, ddrOut, done, bytes, state) =
-    bootWeightLoader emmc ddr start emmcBase ddrBase
-
-  -- Recompute this in test from the same state machine logic
-  -- (non-intrusive: just reconstructs what the FSM would track)
-  transfers = register 0 $
-    mux (state ./=. pure BootReading) 0 $
-    mux (rvalid mockAxiSlave) (transfers + 1) transfers
-
 -- ============================================================================
 -- SPEC
 -- ============================================================================
@@ -103,22 +78,6 @@ spec = do
 
       states `shouldContain` [BootIdle, BootReading]
       P.or done `shouldBe` True
-
-    it "shows boot progress" $ do
-      let startBoot = fromList $ [False, True] P.++ P.repeat False
-          emmcBase  = pure 0
-          ddrBase   = pure 0
-          (_, _, _bootComplete, bytes, state, transfers) =
-            withClockResetEnable systemClockGen resetGen enableGen $
-              bootWeightLoaderDebug mockAxiSlave mockAxiSlave startBoot emmcBase ddrBase
-
-          states = sampleN 2000 state
-          bytesS = sampleN 2000 bytes
-          trans  = sampleN 2000 transfers
-
-      putStrLn $ "States: " <> show (P.take 10 (DL.nub states))
-      putStrLn $ "Last bytesTransferred: " <> show (P.last bytesS)
-      putStrLn $ "Last transfersInBurst: " <> show (P.last trans)
 
     it "transitions from BootIdle → BootReading → BootComplete (real, mini model 260K)" $ do
       let startBoot = fromList $ [False, True] P.++ P.repeat False
@@ -170,3 +129,57 @@ spec = do
         P.all (== WSReady) stateS `shouldBe` True
       it "no boot reading" $ do
         bootS `shouldSatisfy` P.notElem BootReading
+
+  describe "bootWeightLoader with file-backed AXI" $ do
+    it "goes through all boot stages (mini-model 260K)" $ do
+      modelBinary <- BSL.readFile "data/stories260K.bin"
+
+      let
+          emmcBase  = pure 0
+          ddrBase   = pure 0
+
+      withClockResetEnable systemClockGen resetGen enableGen $ do
+        let startBoot = fromList $ [False, True] P.++ P.repeat False
+
+            -- ✅ Create dummy feedback signals FIRST (pure signals, no domain needed)
+            emmcMasterFeedback = AxiMasterOut
+              { arvalid = pure False
+              , ardata  = pure (AxiAR 0 0 0 0 0)
+              , rready  = pure True
+              , awvalid = pure False
+              , awdata  = pure (AxiAW 0 0 0 0 0)
+              , wvalid  = pure False
+              , wdataMI = pure (AxiW 0 0xFFFFFFFFFFFFFFFF False)
+              , bready  = pure True
+              }
+            ddrMasterFeedback = AxiMasterOut
+              { arvalid = pure False
+              , ardata  = pure (AxiAR 0 0 0 0 0)
+              , rready  = pure True
+              , awvalid = pure True
+              , awdata  = pure (AxiAW 0 255 2 1 0)
+              , wvalid  = pure True
+              , wdataMI = pure (AxiW 0 0xFFFFFFFFFFFFFFFF True)
+              , bready  = pure True
+              }
+
+            -- ✅ NOW create slaves
+            (emmcSlave, emmcReadState) = createFileBackedAxiSlave modelBinary emmcMasterFeedback
+            (ddrSlave, ddrReadState)   = createFileBackedAxiSlave modelBinary ddrMasterFeedback
+
+            -- Run FSM
+            (emmcMasterOut, ddrMasterOut, bootCompleteSig, bytesTransferredSig, fsmStateSig) =
+              bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase
+
+            -- Sample outputs
+            sampledStates = sampleN 500000 fsmStateSig
+            sampledBoot   = sampleN 500000 bootCompleteSig
+            sampledBytes  = sampleN 500000 bytesTransferredSig
+            uniqStates = DL.nub sampledStates
+        -- Assertions
+        P.or sampledBoot `shouldBe` True
+        uniqStates `shouldContain` [BootIdle]
+        uniqStates `shouldContain` [BootReading]
+        uniqStates `shouldContain` [BootComplete]
+        P.last sampledBytes `shouldSatisfy` (> 0)
+        pure ()
