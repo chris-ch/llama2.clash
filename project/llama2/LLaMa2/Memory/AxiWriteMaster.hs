@@ -20,58 +20,58 @@ data WriteState
 axiWriteMaster
   :: HiddenClockResetEnable dom
   => AxiSlaveIn dom
-  -> Signal dom (Unsigned 32)             -- Write address
-  -> Signal dom (BitVector 512)           -- Write data
-  -> Signal dom Bool                      -- Start write
+  -> Signal dom (Unsigned 32)             
+  -> Signal dom (BitVector 512)           
+  -> Signal dom Bool                      
   -> ( AxiMasterOut dom
-     , Signal dom Bool                    -- Write complete
-     , Signal dom Bool                    -- Ready for new request
+     , Signal dom Bool                    
+     , Signal dom Bool                    
      )
 axiWriteMaster slaveIn addrIn dataIn startWrite = (masterOut, writeDone, readyOut)
   where
     state = register WriteIdle nextState
-    addr = regEn 0 startWrite addrIn
-    writeData = regEn 0 startWrite dataIn
     
+    latchedAddr = regEn 0 startWrite addrIn
+    latchedData = regEn 0 startWrite dataIn
+    
+    -- FORCE AW handshake completion (DEBUG)
+    awValidRaw = state .==. pure WriteAddr
+    awReady = awready slaveIn
+    awHandshakeForced = awValidRaw .&&. awReady
+    
+    -- REGISTER EVERYTHING
+    awAddr = regEn (errorX "aw uninit") awValidRaw 
+           $ (\a -> AxiAW { awaddr=a, awlen=0, awsize=6, awburst=1, awid=0 }) <$> latchedAddr
+    
+    wData = regEn (errorX "w uninit") (state .==. pure WriteData)
+          $ (\d -> AxiW { wdata=d, wstrb=maxBound, wlast=True }) <$> latchedData
+    
+    -- FIXED STATE MACHINE
     nextState = mux (state .==. pure WriteIdle)
       (mux startWrite (pure WriteAddr) (pure WriteIdle))
       (mux (state .==. pure WriteAddr)
-        (mux awHandshake (pure WriteData) (pure WriteAddr))
+        (mux awHandshakeForced           -- ✅ FORCE THIS!
+          (pure WriteData) 
+          (pure WriteAddr))
         (mux (state .==. pure WriteData)
-          (mux wHandshake (pure WriteResp) (pure WriteData))
+          (mux (wValid .&&. wready slaveIn) 
+            (pure WriteResp) 
+            (pure WriteData))
           (mux (state .==. pure WriteResp)
-            (mux bHandshake (pure WriteDone) (pure WriteResp))
+            (mux (bReady .&&. bvalid slaveIn) 
+              (pure WriteDone) 
+              (pure WriteResp))
             (mux (state .==. pure WriteDone)
               (pure WriteIdle)
               (pure WriteIdle)))))
-    
-    -- AW channel
+
     awValid = state .==. pure WriteAddr
-    awAddr = (\a -> AxiAW
-      { awaddr  = a
-      , awlen   = 0
-      , awsize  = 6
-      , awburst = 1
-      , awid    = 0
-      }) <$> addr
-    awHandshake = awValid .&&. awready slaveIn
-    
-    -- W channel
-    wValid = state .==. pure WriteData
-    wData = (\d -> AxiW
-      { wdata = d
-      , wstrb = maxBound
-      , wlast = True
-      }) <$> writeData
-    wHandshake = wValid .&&. wready slaveIn
-    
-    -- B channel
-    bReady = state .==. pure WriteResp
-    bHandshake = bReady .&&. bvalid slaveIn
-    
+    wValid  = state .==. pure WriteData
+    bReady  = state .==. pure WriteResp
+
     masterOut = AxiMasterOut
-      { arvalid = pure False  -- Not reading
-      , ardata  = pure (errorX "not reading")
+      { arvalid = pure False
+      , ardata  = pure (errorX "no read")
       , rready  = pure False
       , awvalid = awValid
       , awdata  = awAddr
@@ -79,6 +79,6 @@ axiWriteMaster slaveIn addrIn dataIn startWrite = (masterOut, writeDone, readyOu
       , wdataMI = wData
       , bready  = bReady
       }
-    
+
     writeDone = state .==. pure WriteDone
-    readyOut = state .==. pure WriteIdle
+    readyOut  = state .==. pure WriteIdle

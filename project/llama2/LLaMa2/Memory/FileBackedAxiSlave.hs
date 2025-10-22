@@ -9,7 +9,7 @@ import qualified Data.Vector.Unboxed as V
 import Data.Word (Word8)
 
 -- State for read transactions  
-data ReadState = RIdle | RBursting (Unsigned 32)
+data ReadState = RIdle | RBursting
   deriving (Generic, NFDataX, Show, Eq)
 
 -- | File-backed AXI slave
@@ -47,17 +47,17 @@ createFileBackedAxiSlave fileContents masterOut = (slaveIn, readState)
     -- Transfer counter
     transferCount = register (0 :: Unsigned 32) nextTransferCount
     
-    -- State transitions
+    -- State transition:
     nextReadState = mux (readState .==. pure RIdle)
-      (mux arHandshake (pure (RBursting 0)) (pure RIdle))
-      (mux (isBursting <$> readState)
-        (mux (rready_r .&&. (transferCount + 1 .>=. burstLen))
-          (pure RIdle)  -- Burst complete
-          readState)    -- Stay in burst
-        readState)
+        (mux arHandshake (pure RBursting) (pure RIdle))  -- No counter
+        (mux (isBursting <$> readState)
+            (mux (rready_r .&&. (transferCount + 1 .>=. burstLen))
+                (pure RIdle)
+                (pure RBursting))  -- Just stay in RBursting
+            readState)
     
     isBursting RIdle = False
-    isBursting (RBursting _) = True
+    isBursting RBursting = True
     
     nextTransferCount = mux (readState .==. pure RIdle)
       0

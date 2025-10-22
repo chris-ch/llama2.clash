@@ -113,9 +113,7 @@ library
     , LLaMa2.Memory.AXI
     , LLaMa2.Memory.AxiReadMaster
     , LLaMa2.Memory.AxiWriteMaster
-    , LLaMa2.Memory.FakeAxiSlave
     , LLaMa2.Memory.FileBackedAxiSlave
-    , LLaMa2.Memory.SimAxiSlave
     , LLaMa2.Memory.WeightLoaderAddressing
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization
@@ -163,8 +161,11 @@ test-suite llama2-test
       LLaMa2.Layer.Attention.MultiHeadAttentionSpec
       LLaMa2.Layer.FeedForward.FeedForwardNetworkSpec
       LLaMa2.Layer.TransformerLayerSpec
-      LLaMa2.Helpers.MatVecI8ESpec 
+      LLaMa2.Helpers.MatVecI8ESpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Memory.AxiReadMasterSpec
+      LLaMa2.Memory.AxiWriteMasterSpec
+      LLaMa2.Memory.WeightLoaderSpec
   hs-source-dirs:
       test
   build-depends:

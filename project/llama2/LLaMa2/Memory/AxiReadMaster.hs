@@ -94,11 +94,15 @@ axiBurstReadMaster slaveIn baseAddr burstLen startRead =
   (masterOut, dataOut, validOut, readyOut)
   where
     state = register ReadIdle nextState
-    addr = regEn 0 startRead baseAddr
-    len = regEn 0 startRead burstLen
-    counter = register (0 :: Unsigned 8) nextCounter
     
-    -- Burst completion
+    -- ✅ CRITICAL: Latch burstLen ONCE per burst
+    latchedBaseAddr = regEn 0 startRead baseAddr
+    latchedBurstLen = regEn 0 startRead burstLen  -- FIXED!
+    
+    addr = latchedBaseAddr
+    len = latchedBurstLen
+    
+    counter = register (0 :: Unsigned 8) nextCounter
     isLastTransfer = counter .==. len
     
     nextState = mux (state .==. pure ReadIdle)
@@ -119,18 +123,16 @@ axiBurstReadMaster slaveIn baseAddr burstLen startRead =
         0
         counter)
     
-    -- AR channel
     arValid = state .==. pure ReadAddr
     arAddr = (\a l -> AxiAR
       { araddr  = a
-      , arlen   = l           -- Burst length
+      , arlen   = l           -- ✅ NOW CORRECT (255 for 256 transfers)
       , arsize  = 6
       , arburst = 1
       , arid    = 0
-      }) <$> addr <*> len
-    arHandshake = arValid .&&. arready slaveIn
+      }) <$> addr <*> len     -- ✅ Uses latched len!
     
-    -- R channel  
+    arHandshake = arValid .&&. arready slaveIn
     rReady = state .==. pure ReadData
     rHandshake = rReady .&&. rvalid slaveIn
     

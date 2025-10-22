@@ -16,7 +16,7 @@ import LLaMa2.Types.Parameters
   )
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint, Exponent, Mantissa)
-import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
+import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster, axiReadMaster)
 import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.AXI
 

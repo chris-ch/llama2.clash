@@ -24,11 +24,8 @@ import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decode
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import LLaMa2.Types.Parameters (DecoderParameters)
-import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut (..))
-import LLaMa2.Memory.FakeAxiSlave (createFakeAxiSlave)
-import LLaMa2.Memory.SimAxiSlave (createSimAxiSlave)
+import LLaMa2.Memory.AXI (AxiSlaveIn (..), AxiMasterOut (..))
 import qualified LLaMa2.Memory.FileBackedAxiSlave as FileAxi
-import qualified LLaMa2.Memory.SimAxiSlave as SimAxi
 import LLaMa2.Memory.FileBackedAxiSlave (ReadState)
 
 --------------------------------------------------------------------------------
@@ -178,16 +175,21 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
 
     -- Scale simulation steps by 1000x
     simSteps = (stepCount + length promptTokens) * 1000
-    --simSteps = 18000  -- Just 25K cycles to test boot completes
+    --simSteps = 25000  -- Just 25K cycles to test boot completes
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, emmcMaster, ddrMaster, weightsReady, bootProgress,
+    (coreOutputsSignal, emmcMaster, emmcSlave, ddrMaster, ddrSlave, weightsReady, bootProgress,
      introspection, emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount
      ) = bundledOutputs decoder modelBinary inputSignals
 
     emmcMasterRReadySampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rready emmcMaster)
-    
+    emmcRValidSampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rvalid emmcSlave)
+    -- Sample DDR write signals
+    ddrWValidSampled = C.sampleN simSteps (wvalid ddrMaster)
+    ddrWReadySampled = C.sampleN simSteps (wready ddrSlave)
+    ddrBValidSampled = C.sampleN simSteps (bvalid ddrSlave)
+
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
@@ -201,7 +203,7 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
     weightsReadySampled = C.sampleN simSteps weightsReady
     weightValidSampled = C.sampleN simSteps (Top.weightStreamValid introspection)
     weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
-    bootProgressSampled = C.sampleN simSteps (Top.bootProgressBytes introspection)
+    bootProgressSampled = C.sampleN simSteps bootProgress --(Top.bootProgressBytes introspection)
     layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
     sysStateSampled = C.sampleN simSteps (Top.sysState introspection)
     bootStateSampled = C.sampleN simSteps (Top.bootState introspection)
@@ -225,29 +227,36 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Ready | FFNDone  | WeightsRdy | WgtValid | LayerChange | WgtSample | Boot   | Token ID | Token"
+  putStrLn $ "\nCycle | Layer | Stage              | Boot  | Ready    "
+    ++ "| FFNDone  | WeightsRdy | WgtValid | LayerChange | WgtSample | Token ID | Token"
+    ++ "| SYS State | Boot State | EMMC Handshaking | DDR Handshaking | EMMC Master RReady| EMMC Slave RValid | ddrWValid | ddrWReady| ddrBValid"
   putStrLn "--------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, tok) = do
-        let li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
-            ps     = processingStage (statesSampled !! cycleIdx)
-            rdy    = readiesSampled !! cycleIdx
-            ffn    = ffnDonesSampled !! cycleIdx
-            wRdy   = weightsReadySampled !! cycleIdx
-            wValid = weightValidSampled !! cycleIdx
-            wSample = weightSampleSampled !! cycleIdx
-            boot   = bootProgressSampled !! cycleIdx
-            layChg = layerChangeSampled !! cycleIdx
-            token  = coreOutputs !! cycleIdx
-            sysSt  = sysStateSampled !! cycleIdx
-            bootSt  = bootStateSampled !! cycleIdx
-            emmcHS  = emmcHandshakesSampled !! cycleIdx
-            ddrHS  = ddrHandshakesSampled !! cycleIdx
-            emmcMasterRReady' = emmcMasterRReadySampled !! cycleIdx
+        let 
+          li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
+          ps     = processingStage (statesSampled !! cycleIdx)
+          rdy    = readiesSampled !! cycleIdx
+          ffn    = ffnDonesSampled !! cycleIdx
+          wRdy   = weightsReadySampled !! cycleIdx
+          wValid = weightValidSampled !! cycleIdx
+          wSample = weightSampleSampled !! cycleIdx
+          boot   = bootProgressSampled !! cycleIdx
+          layChg = layerChangeSampled !! cycleIdx
+          token  = coreOutputs !! cycleIdx
+          sysSt  = sysStateSampled !! cycleIdx
+          bootSt  = bootStateSampled !! cycleIdx
+          emmcHS  = emmcHandshakesSampled !! cycleIdx
+          ddrHS  = ddrHandshakesSampled !! cycleIdx
+          emmcMasterRReady' = emmcMasterRReadySampled !! cycleIdx
+          emmcRValidSampled' = emmcRValidSampled !! cycleIdx
+          ddrWValid = ddrWValidSampled !! cycleIdx
+          ddrWReady = ddrWReadySampled !! cycleIdx
+          ddrBValid = ddrBValidSampled !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s| %8s | %8s | %8s | %8s | %8s"
+            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s| %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s"
               cycleIdx
               li
               (show ps)
@@ -265,6 +274,10 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
               (show emmcHS)
               (show ddrHS)
               (show emmcMasterRReady')
+              (show emmcRValidSampled')
+              (show ddrWValid)
+              (show ddrWReady)
+              (show ddrBValid)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 
@@ -277,15 +290,17 @@ bundledOutputs :: DecoderParameters
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
      , AxiMasterOut C.System
+     , AxiSlaveIn C.System
      , AxiMasterOut C.System
+     , AxiSlaveIn C.System
      , C.Signal C.System Bool
      , C.Signal C.System (C.Unsigned 32)
      , Top.DecoderIntrospection C.System
-     ,  C.Signal C.System ReadState
+     , C.Signal C.System ReadState
      , C.Signal C.System ReadState
      )
 bundledOutputs decoder modelBinary bundledInputs =
-  (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster
+  (C.bundle (tokenOut, validOut), emmcMaster, emmcSlave, ddrMaster, ddrSlave
   , weightsReady, bootProgress
   , introspection
   , emmcReadState, ddrReadState
@@ -315,51 +330,6 @@ bundledOutputs decoder modelBinary bundledInputs =
   -- For DDR: also serve from file (simulating that boot already copied data there)
   (ddrSlave, ddrReadState) = C.exposeClockResetEnable
     (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
-
-bundledOutputs' :: DecoderParameters
-  -> BSL.ByteString
-  -> C.Signal C.System (Token, Bool, Temperature, Seed)
-  -> ( C.Signal C.System (Token, Bool)
-     , AxiMasterOut C.System
-     , AxiMasterOut C.System
-     , C.Signal C.System Bool
-     , C.Signal C.System (C.Unsigned 32)
-     , Top.DecoderIntrospection C.System
-     , C.Signal C.System (C.Unsigned 32)
-     , C.Signal C.System (C.Unsigned 32)
-     , C.Signal C.System Bool
-     , C.Signal C.System Bool
-     )
-bundledOutputs' decoder modelBinary bundledInputs =
-  (C.bundle (tokenOut, validOut), emmcMaster, ddrMaster, weightsReady, bootProgress, introspection, pure 0, pure 0, pure False, pure False)
- where
-  (token, isValid, temperature, seed) = C.unbundle bundledInputs
-  
-  bypass = C.pure True  -- CHANGED: Set to False to test real AXI
-  powerOn = C.pure True
-  
-  -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
-    C.exposeClockResetEnable
-      (Top.topEntityWithAxi bypass emmcSlave ddrSlave powerOn token isValid temperature seed)
-      CS.systemClockGen
-      CS.resetGen
-      CS.enableGen
-  
-  -- Use file-backed AXI slaves that serve real model data
-  -- For eMMC: serve the entire model file (used during boot to copy to DDR)
-  emmcSlave = C.exposeClockResetEnable
-    (SimAxi.createSimAxiSlave emmcMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
-
-  -- For DDR: also serve from file (simulating that boot already copied data there)
-  ddrSlave = C.exposeClockResetEnable
-    (SimAxi.createSimAxiSlave ddrMaster)
     CS.systemClockGen
     CS.resetGen
     CS.enableGen
