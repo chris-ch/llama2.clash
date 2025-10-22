@@ -175,7 +175,7 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
 
     -- Scale simulation steps by 1000x
     simSteps = (stepCount + length promptTokens) * 1000
-    --simSteps = 25000  -- Just 25K cycles to test boot completes
+    --simSteps = 250_000  -- Just 250K cycles to test boot completes
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
