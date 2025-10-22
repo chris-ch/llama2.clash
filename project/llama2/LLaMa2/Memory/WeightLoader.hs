@@ -1,5 +1,13 @@
 module LLaMa2.Memory.WeightLoader 
-(bootWeightLoader, calculateLayerBaseAddress, layerWeightStreamer, parseI8EChunk, weightManagementSystem, WeightSystemState(..), BootLoaderState(..))
+ (
+  bootWeightLoader,
+  calculateModelSizeBytes,
+  calculateLayerSizeBytes,
+  calculateLayerBaseAddress,
+  layerWeightStreamer,
+  parseI8EChunk,
+  weightManagementSystem,
+  WeightSystemState(..), BootLoaderState(..))
     
     where
 
@@ -98,7 +106,7 @@ bootWeightLoader :: forall dom . HiddenClockResetEnable dom
      , AxiMasterOut dom                 -- DDR4 AXI master
      , Signal dom Bool                  -- Boot complete
      , Signal dom (Unsigned 32)         -- Bytes transferred
-     , Signal dom BootLoaderState 
+     , Signal dom BootLoaderState
      )
 bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
   (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state)
@@ -110,7 +118,7 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
     burstBytes = 16384 :: Unsigned 32  -- 256 * 64 bytes
     currentBurst = register (0 :: Unsigned 32) nextBurst
     bytesTransferred = currentBurst * pure burstBytes
-
+    
     -- Total model size
     totalBursts = (calculateModelSizeBytes + burstBytes - 1) `div` burstBytes
 
@@ -132,11 +140,11 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
     transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
     burstComplete = transfersInBurst .==. pure 256
 
-    nextTransferCount = mux startRead
-      0
-      (mux readValid
-        (transfersInBurst + 1)
-        transfersInBurst)
+    -- Only reset counter when a new burst starts (e.g. after burstComplete)
+    nextTransferCount =
+      mux (state ./=. pure BootReading) 0 $
+      mux burstComplete 0 $
+      mux readValid (transfersInBurst + 1) transfersInBurst
 
     -- All transfers done?
     allComplete = currentBurst .>=. pure totalBursts
@@ -292,10 +300,6 @@ weightManagementSystem
 weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigger =
   (emmcMaster, ddrMaster, weightStream, streamValid, systemReady, bootProgress, sysState, bootState)
   where
-    -- When bypassed, immediately mark as ready
-    systemReady' = mux bypass 
-      (pure True)                       -- Bypass: always ready
-      (sysState .==. pure WSReady)     -- Normal: wait for boot
     systemReady = sysState .==. pure WSReady
 
     sysState = register WSBoot nextSysState
