@@ -37,7 +37,7 @@ i8eRowAssembler beatData beatValid = (rowOutS, rowValidS)
     rowSzI :: Int
     rowSzI = natToNum @n + 1
 
-    rowSz :: Unsigned 8
+    rowSz :: Unsigned 16
     rowSz = fromInteger (toInteger rowSzI)
 
     initBuf :: BufBytes n
@@ -45,7 +45,7 @@ i8eRowAssembler beatData beatValid = (rowOutS, rowValidS)
 
     -- Register state
     bufS   :: Signal dom (BufBytes n)
-    cntS   :: Signal dom (Unsigned 8)
+    cntS   :: Signal dom (Unsigned 16)
     bufS = register initBuf bufNext
     cntS = register 0       cntNext
 
@@ -57,9 +57,9 @@ i8eRowAssembler beatData beatValid = (rowOutS, rowValidS)
     -- We fold the 64 incoming bytes, filling the buffer; once we reach rowSz,
     -- we produce a row and stop consuming extra bytes this cycle.
     stepOnce ::
-         (BufBytes n, Unsigned 8, Maybe (RowI8E n))
+         (BufBytes n, Unsigned 16, Maybe (RowI8E n))
       -> BitVector 8
-      -> (BufBytes n, Unsigned 8, Maybe (RowI8E n))
+      -> (BufBytes n, Unsigned 16, Maybe (RowI8E n))
     stepOnce st@(_, _, Just _) _ = st  -- already produced one row; ignore rest this cycle
     stepOnce (buf, cnt, Nothing) b =
       let -- write byte 'b' at position 'cnt'

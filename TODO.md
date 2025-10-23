@@ -299,3 +299,14 @@ Estimated effort: 2-3 weeks to implement + test
 ✅ Form factor good (fits with RPi)
 ✅ No impossible optimizations claimed
 ```
+
+# In the short-term
+
+- We now have QKV loaded from DDR, buffered, and used in projection (RAM path), with a robust row assembler. Tokens are correct with useRAMEnable=True.
+- We must replace every remaining constant weight/table with a DDR-driven, buffered (or on-demand) source.
+- What still uses hardcoded params:
+  1) Multi-head attention WO matrices mWoQ (MatI8E ModelDimension HeadDimension).
+  2) RMS vectors: rmsAttF (attention) and fRMSFfnF (FFN).
+  3) FFN matrices: fW1Q, fW2Q, fW3Q.
+  4) Input embeddings: vocabularyQ.
+  5) Rotary tables: freqCosF/freqSinF.
