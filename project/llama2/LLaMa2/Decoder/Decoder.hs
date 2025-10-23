@@ -109,25 +109,39 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     -- WEIGHT MANAGEMENT SYSTEM
     -- ========================================================================
 
-    -- Detect layer changes to trigger weight streaming
+    -- 0) POLICIES
+    -- Auto-trigger a (re)load at:
+    --   - first cycle after reset
+    --   - any change of the active layer index
+    -- This keeps streaming layer-at-a-time without manual cycle hacks.
+    firstCycle :: Signal dom Bool
+    firstCycle = register True (pure False)
+
+    -- We’ll compute layerIdx below (mutual recursion is fine in Haskell).
     prevLayer = register 0 layerIdx
     layerChanged = layerIdx ./=. prevLayer
 
-    -- Use test trigger instead of layerChanged for load
-    loadTrigger = layerChanged .&&. weightsReady
+    loadTrigger :: Signal dom Bool
+    loadTrigger = firstCycle .||. layerChanged
 
-    -- Instantiate the weight management system
+    -- NOTE: We keep RAM disabled by default so tokens match baseline.
+    -- Flip 'useRAMEnable' to (pure True) when you want to turn RAM on.
+    useRAMEnable :: Signal dom Bool
+    useRAMEnable = pure False
+
+    -- 1) Instantiate the weight management system (bypass=True skips boot, but DOES stream)
     (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
       weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger
 
+    -- 2) Parse incoming 512-bit chunks to I8E rows
     parsedWeights :: Signal dom (RowI8E ModelDimension)
     parsedWeights = parseI8EChunk <$> weightStream
 
-    -- Step 1: addressing for each incoming row
+    -- 3) Addressing (Step 1)
     (weightAddrSig, qkvLoadDoneSig) =
       weightAddressGenerator streamValid loadTrigger
 
-    -- Step 2: instantiate the weight buffer
+    -- 4) Buffering (Step 2)
     weightBuffer :: Signal dom QKVWeightBuffer
     weightBuffer =
       qkvWeightBufferController
@@ -135,18 +149,18 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
         weightAddrSig
         parsedWeights
         qkvLoadDoneSig
-        loadTrigger  -- reset the buffer when a new layer load starts
+        loadTrigger  -- clear on layer change (or first cycle)
 
+    -- 5) Use-RAM switch (disabled by default to preserve baseline tokens)
     useRAMWeights :: Signal dom Bool
-    useRAMWeights = fullyLoaded <$> weightBuffer
+    useRAMWeights = (fullyLoaded <$> weightBuffer) .&&. useRAMEnable
 
-    -- Extract first mantissa for debugging
+    -- Extract first mantissa for debugging (unchanged)
     (mantissas, _exponent) = unbundle parsedWeights
-
     firstMantissa :: Signal dom Mantissa
     firstMantissa = fmap (bitCoerce . head) mantissas
 
-    -- Gate input token until weights are ready (important!)
+    -- Gate input token until weights are ready (unchanged)
     gatedTokenValid = inputTokenValid .&&. weightsReady
 
     -- ========================================================================
