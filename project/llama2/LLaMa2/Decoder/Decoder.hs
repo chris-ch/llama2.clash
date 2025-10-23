@@ -29,6 +29,7 @@ import qualified LLaMa2.Sampling.Sampler as Sampler
 import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
 import LLaMa2.Memory.WeightLoader (weightManagementSystem, parseI8EChunk, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Memory.I8EStreamParser (i8eRowAssembler)
 
 -- Step 1 addressing
 import LLaMa2.Memory.WeightLoaderAddressing
@@ -133,34 +134,38 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
       weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger
 
-    -- 2) Parse incoming 512-bit chunks to I8E rows
+    -- 2) Parse incoming 512-bit beats into I8E rows (streaming assembler)
     parsedWeights :: Signal dom (RowI8E ModelDimension)
-    parsedWeights = parseI8EChunk <$> weightStream
+    rowValid      :: Signal dom Bool
+    (parsedWeights, rowValid) = i8eRowAssembler weightStream streamValid
 
+    -- Hold last good row so consumers never see X when rowValid=False
+    parsedWeightsHold :: Signal dom (RowI8E ModelDimension)
+    parsedWeightsHold = regEn (repeat 0, 0) rowValid parsedWeights
+    
     -- 3) Addressing (Step 1)
     (weightAddrSig, qkvLoadDoneSig) =
-      weightAddressGenerator streamValid loadTrigger
+      weightAddressGenerator rowValid loadTrigger
 
     -- 4) Buffering (Step 2)
-    weightBuffer :: Signal dom QKVWeightBuffer
     weightBuffer =
       qkvWeightBufferController
-        streamValid
+        rowValid
         weightAddrSig
-        parsedWeights
+        parsedWeightsHold
         qkvLoadDoneSig
-        loadTrigger  -- clear on layer change (or first cycle)
+        loadTrigger
 
     -- 5) Use-RAM switch (disabled by default to preserve baseline tokens)
     useRAMWeights :: Signal dom Bool
     useRAMWeights = (fullyLoaded <$> weightBuffer) .&&. useRAMEnable
 
-    -- Extract first mantissa for debugging (unchanged)
-    (mantissas, _exponent) = unbundle parsedWeights
+    -- Extract first mantissa for debugging
+    (mantissasH, _exponentH) = unbundle parsedWeightsHold
     firstMantissa :: Signal dom Mantissa
-    firstMantissa = fmap (bitCoerce . head) mantissas
+    firstMantissa = fmap (bitCoerce . head) mantissasH
 
-    -- Gate input token until weights are ready (unchanged)
+    -- Gate input token until weights are ready
     gatedTokenValid = inputTokenValid .&&. weightsReady
 
     -- ========================================================================
@@ -202,8 +207,8 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
         processingState
         layerIdx
         layerInput
-        parsedWeights
-        streamValid
+        weightBuffer          -- NEW: RAM buffer
+        useRAMWeights         -- NEW: flag
         (modelLayers params)
 
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags

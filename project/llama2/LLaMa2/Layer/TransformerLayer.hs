@@ -20,7 +20,7 @@ import LLaMa2.Types.ModelConfig
   )
 import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
-import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..))
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -45,8 +45,8 @@ transformerLayer ::
   Index NumLayers ->
   Signal dom ProcessingState ->
   Signal dom LayerData ->
-  Signal dom (RowI8E ModelDimension) ->  -- parsed weights
-  Signal dom Bool ->                     -- stream valid
+  Signal dom QKVWeightBuffer ->              -- NEW: full RAM buffer
+  Signal dom Bool ->                         -- NEW: useRAM flag
   ( Signal dom LayerData,
     Signal dom Bool, -- writeDone
     Signal dom Bool, -- attentionDone
@@ -55,7 +55,7 @@ transformerLayer ::
     Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
-transformerLayer layer layerIndex processingState layerData parsedWeights streamValid =
+transformerLayer layer layerIndex processingState layerData weightBuffer useRAM =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -67,17 +67,20 @@ transformerLayer layer layerIndex processingState layerData parsedWeights stream
   where
     mha = multiHeadAttention layer
     ffn = feedforwardNetwork layer
-    -- Pass weights to attention stage
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) = 
-      multiHeadAttentionStage mha processingState layerIndex layerData parsedWeights streamValid
+
+    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
+      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
+
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
         <*> layerData
         <*> xAfterAttn
         <*> attentionDone
-    baseNextLayerData = updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
-    -- === Stage4: Feedforward Network (FFN) ===
+    baseNextLayerData =
+      updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
+
+    -- Stage 4 FFN
     isStage4ThisLayer =
       ( \ps ->
           processingStage ps
@@ -104,7 +107,7 @@ transformerLayer layer layerIndex processingState layerData parsedWeights stream
             | otherwise -> False
       )
         <$> processingState
-    (ffnOutput, ffnValidOut, ffnInReady) =
+    (ffnOutput, ffnValidOut, _ffnInReady) =
       ffnController
         isStage4ThisLayer
         ffnOutReady

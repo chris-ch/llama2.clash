@@ -114,6 +114,7 @@ library
     , LLaMa2.Memory.AxiReadMaster
     , LLaMa2.Memory.AxiWriteMaster
     , LLaMa2.Memory.FileBackedAxiSlave
+    , LLaMa2.Memory.I8EStreamParser
     , LLaMa2.Memory.WeightLoaderAddressing
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization

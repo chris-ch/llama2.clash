@@ -11,7 +11,7 @@ import LLaMa2.Types.ModelConfig  (NumLayers, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.Parameters (TransformerLayerComponent)
-import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..))
 
 -- | Type alias for layer completion flags
 -- (writeDone, attnDone, qkvDone, qkvReady, ffnDone)
@@ -24,32 +24,27 @@ processLayers :: forall dom .
   => Signal dom ProcessingState              -- ^ Current processing state
   -> Signal dom (Index NumLayers)            -- ^ Active layer index
   -> Signal dom LayerData                    -- ^ Input layer data
-  -> Signal dom (RowI8E ModelDimension)      -- ^ parsed weights
-  -> Signal dom Bool                         -- ^ stream valid
+  -> Signal dom QKVWeightBuffer              -- ^ NEW: complete RAM buffer
+  -> Signal dom Bool                         -- ^ NEW: useRAM flag
   -> Vec NumLayers TransformerLayerComponent -- ^ All layer parameters
   -> ( Signal dom LayerData                  -- ^ Output layer data
      , Vec NumLayers (LayerDoneFlags dom)    -- ^ Completion flags per layer
      )
-processLayers processingState currentLayerIdx inputLayerData parsedWeights streamValid layers =
+processLayers processingState currentLayerIdx inputLayerData weightBuffer useRAM layers =
   (finalLayerData, doneFlagsVec)
   where
-    -- Process each layer, accumulating layer data and collecting flags
-    (finalLayerData, layerResults) = 
+    (finalLayerData, layerResults) =
       mapAccumL processOneLayer inputLayerData (imap (,) layers)
-    
-    -- Extract done flags from results
+
     doneFlagsVec = fmap (\(flags, _, _) -> flags) layerResults
-    
-    -- Process a single layer
-    processOneLayer :: Signal dom LayerData 
+
+    processOneLayer :: Signal dom LayerData
                     -> (Index NumLayers, TransformerLayerComponent)
                     -> (Signal dom LayerData, (LayerDoneFlags dom, Signal dom Bool, Signal dom Bool))
     processOneLayer layerDataIn (layerIdx, layerComponent) =
       let
-        -- Determine if this layer is active
         isActive = currentLayerIdx .==. pure layerIdx
-        
-        -- Process the layer
+
         ( layerDataOut
           , writeDone
           , attnDone
@@ -58,23 +53,19 @@ processLayers processingState currentLayerIdx inputLayerData parsedWeights strea
           , qkvReady
           , ffnDone
           ) = TransformerLayer.transformerLayer
-            layerComponent
-            layerIdx
-            processingState
-            layerDataIn
-            parsedWeights
-            streamValid
-        
-        -- Only update layer data when this layer is active
+                layerComponent
+                layerIdx
+                processingState
+                layerDataIn
+                weightBuffer        -- NEW
+                useRAM              -- NEW
+
         selectedData = mux isActive layerDataOut layerDataIn
-        
-        -- Package done flags
+
         doneFlags = (writeDone, attnDone, qkvDone, qkvReady, ffnDone)
-        
-        -- validOut and readyIn for protocol (currently unused)
+
         validOut = ffnDone
         readyIn = pure True
-        
       in (selectedData, (doneFlags, validOut, readyIn))
 
 -- | Extract completion flag for the currently active layer
