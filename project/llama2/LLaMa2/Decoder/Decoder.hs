@@ -27,7 +27,7 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack (processLayers, getCurr
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
-import LLaMa2.Memory.WeightLoader (weightManagementSystem, parseI8EChunk, WeightSystemState, BootLoaderState)
+import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Memory.I8EStreamParser (i8eRowAssembler)
 
