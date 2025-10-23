@@ -15,7 +15,7 @@ import LLaMa2.Types.LayerData
 import LLaMa2.Types.Parameters (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension
-  , NumQueryHeads, NumKeyValueHeads, HeadDimension
+  , NumQueryHeads, NumKeyValueHeads, HeadDimension, HiddenDimension
   )
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
@@ -29,19 +29,13 @@ import qualified LLaMa2.Sampling.Sampler as Sampler
 import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
 import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
-import LLaMa2.Memory.I8EStreamParser (i8eRowAssembler)
 
--- Step 1 addressing
-import LLaMa2.Memory.WeightLoaderAddressing
-  ( WeightAddress(..)
-  , weightAddressGenerator
-  )
-
--- Step 2: RAM weight buffer
 import LLaMa2.Layer.Attention.WeightBuffer
-  ( QKVWeightBuffer(..)
-  , qkvWeightBufferController
-  )
+  ( QKVWeightBuffer(..), qkvWeightBufferController )
+import LLaMa2.Memory.WeightLoaderAddressingExtended
+  ( LayerSeg(..), LayerAddress(..), layerAddressGenerator )
+import LLaMa2.Memory.WeightLoaderAddressing (WeightAddress (..), WeightMatrixType (..))
+import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 
 -- ============================================================================
 -- Initial State
@@ -61,7 +55,6 @@ initialLayerData = LayerData
 -- Introspection
 -- ============================================================================
 
--- | Introspection signals for runtime visibility
 data DecoderIntrospection dom = DecoderIntrospection
   { state               :: Signal dom ProcessingState
   , layerIndex          :: Signal dom (Index NumLayers)
@@ -74,8 +67,6 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerChangeDetected :: Signal dom Bool
   , sysState            :: Signal dom WeightSystemState
   , bootState           :: Signal dom BootLoaderState
-  , weightAddrDebug     :: Signal dom WeightAddress
-  , qkvLoadDonePulse    :: Signal dom Bool
   , weightBufferState   :: Signal dom QKVWeightBuffer
   , useRAMFlag          :: Signal dom Bool
   } deriving (Generic, NFDataX)
@@ -88,7 +79,7 @@ decoder :: forall dom
    . HiddenClockResetEnable dom
   => Signal dom Bool                     -- ^ bypass weight loading (for simulation)
   -> AxiSlaveIn dom                      -- ^ eMMC interface
-  -> AxiSlaveIn dom                      -- ^ DDR4 interface  
+  -> AxiSlaveIn dom                      -- ^ DDR4 interface
   -> Signal dom Bool                     -- ^ Power on / boot trigger
   -> DecoderParameters
   -> Signal dom Token
@@ -107,65 +98,109 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
   (outputToken, readyPulse, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection)
   where
     -- ========================================================================
-    -- WEIGHT MANAGEMENT SYSTEM
+    -- WEIGHT MANAGEMENT SYSTEM (extended, robust)
     -- ========================================================================
 
-    -- 0) POLICIES
-    -- Auto-trigger a (re)load at:
-    --   - first cycle after reset
-    --   - any change of the active layer index
-    -- This keeps streaming layer-at-a-time without manual cycle hacks.
+    -- Policies
     firstCycle :: Signal dom Bool
     firstCycle = register True (pure False)
-
-    -- We’ll compute layerIdx below (mutual recursion is fine in Haskell).
-    prevLayer = register 0 layerIdx
+    prevLayer  = register 0 layerIdx
     layerChanged = layerIdx ./=. prevLayer
-
     loadTrigger :: Signal dom Bool
     loadTrigger = firstCycle .||. layerChanged
 
-    -- NOTE: We keep RAM disabled by default so tokens match baseline.
-    -- Flip 'useRAMEnable' to (pure True) when you want to turn RAM on.
-    useRAMEnable :: Signal dom Bool
-    useRAMEnable = pure True
+    -- 1) Extended address generator seeded (we’ll rewire with real rowDoneExt)
+    rowDoneExt_seed = pure False
+    (layerAddrSig_seed, _layerAllDone_seed) =
+      layerAddressGenerator rowDoneExt_seed loadTrigger
 
-    -- 1) Instantiate the weight management system (bypass=True skips boot, but DOES stream)
-    (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
-      weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger
+    segSig_seed = seg <$> layerAddrSig_seed
 
-    -- 2) Parse incoming 512-bit beats into I8E rows (streaming assembler)
-    parsedWeights :: Signal dom (RowI8E ModelDimension)
-    rowValid      :: Signal dom Bool
-    (parsedWeights, rowValid) = i8eRowAssembler weightStream streamValid
+    -- 2) Weight manager (stub sinkReady=True)
+    sinkReady_stub = pure True
+    ( _emmcMaster_stub
+     , _ddrMaster_stub
+     , weightStream_stub
+     , beatValid_stub
+     , _weightsReady_stub
+     , _bootProgress_stub
+     , _sysState_stub
+     , _bootState_stub
+     ) = weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady_stub
 
-    -- Hold last good row so consumers never see X when rowValid=False
+    -- 3) Dynamic rower (segment-aware, backpressured)
+    mdSNat  = SNat @ModelDimension
+    hdSNat  = SNat @HeadDimension
+    hidSNat = SNat @HiddenDimension
+    (mdRowOut, mdRowValid, rowDoneExt, sinkReady) =
+      dynamicRower mdSNat hdSNat hidSNat weightStream_stub beatValid_stub segSig_seed
+
+    -- 4) Recreate address generator with real rowDoneExt
+    (layerAddrSigR, _layerAllDoneR) =
+      layerAddressGenerator rowDoneExt loadTrigger
+
+    -- 5) Re-instantiate weight manager with real sinkReady (backpressured path)
+    ( emmcMasterR
+     , ddrMasterR
+     , weightStreamR
+     , beatValidR
+     , weightsReadyR
+     , bootProgressR
+     , sysStateR
+     , bootStateR
+     ) = weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
+
+    -- Bind the “real” path to the names returned to Top
+    emmcMaster   = emmcMasterR
+    ddrMaster    = ddrMasterR
+    weightsReady = weightsReadyR
+    bootProgress = bootProgressR
+    sysState     = sysStateR
+    bootState    = bootStateR
+
+    -- 6) Hold last good MD row for safe sampling
     parsedWeightsHold :: Signal dom (RowI8E ModelDimension)
-    parsedWeightsHold = regEn (repeat 0, 0) rowValid parsedWeights
-    
-    -- 3) Addressing (Step 1)
-    (weightAddrSig, qkvLoadDoneSig) =
-      weightAddressGenerator rowValid loadTrigger
+    parsedWeightsHold = regEn (repeat 0, 0) mdRowValid mdRowOut
 
-    -- 4) Buffering (Step 2)
+    -- 7) Q/K/V buffering with MD rows only (map extended address to legacy Q/K/V)
+    weightBuffer :: Signal dom QKVWeightBuffer
     weightBuffer =
       qkvWeightBufferController
-        rowValid
-        weightAddrSig
+        mdRowValid
+        (mapToOldWeightAddr <$> layerAddrSigR)
         parsedWeightsHold
-        qkvLoadDoneSig
+        (qkvDonePulse <$> layerAddrSigR <*> mdRowValid)
         loadTrigger
 
-    -- 5) Use-RAM switch (disabled by default to preserve baseline tokens)
-    useRAMWeights :: Signal dom Bool
-    useRAMWeights = (fullyLoaded <$> weightBuffer) .&&. useRAMEnable
+    mapToOldWeightAddr :: LayerAddress -> WeightAddress
+    mapToOldWeightAddr la =
+      case seg la of
+        SegQ -> WeightAddress { rowIndex = rowIx la, matrixType = QMatrix, headIndex = resize (headIx la) }
+        SegK -> WeightAddress { rowIndex = rowIx la, matrixType = KMatrix, headIndex = resize (headIx la) }
+        SegV -> WeightAddress { rowIndex = rowIx la, matrixType = VMatrix, headIndex = resize (headIx la) }
+        _    -> WeightAddress { rowIndex = 0, matrixType = QMatrix, headIndex = 0 }
 
-    -- Extract first mantissa for debugging
+    qkvDonePulse :: LayerAddress -> Bool -> Bool
+    qkvDonePulse la vld =
+      vld && seg la == SegV
+          && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
+          && rowIx la  == maxBound
+
+    -- 8) Use-RAM switch: latched once QKV has completed
+    useRAMEnable :: Signal dom Bool
+    useRAMEnable = pure False
+    useRAMLatched =
+      let next = mux loadTrigger (pure False)
+                 (useRAMLatched .||. (qkvDonePulse <$> layerAddrSigR <*> mdRowValid))
+      in register False next
+    useRAMWeights :: Signal dom Bool
+    useRAMWeights = useRAMEnable .&&. useRAMLatched
+
+    -- 9) Token gating; safe debug sample
     (mantissasH, _exponentH) = unbundle parsedWeightsHold
     firstMantissa :: Signal dom Mantissa
     firstMantissa = fmap (bitCoerce . head) mantissasH
 
-    -- Gate input token until weights are ready
     gatedTokenValid = inputTokenValid .&&. weightsReady
 
     -- ========================================================================
@@ -194,7 +229,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     embeddedVector = InputEmbedding.inputEmbedding (modelEmbedding params) outputToken
 
     -- ========================================================================
-    -- LAYER STACK PROCESSING (unchanged for Step 2)
+    -- LAYER STACK PROCESSING
     -- ========================================================================
 
     layerInput :: Signal dom LayerData
@@ -207,8 +242,8 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
         processingState
         layerIdx
         layerInput
-        weightBuffer          -- NEW: RAM buffer
-        useRAMWeights         -- NEW: flag
+        weightBuffer
+        useRAMWeights
         (modelLayers params)
 
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
@@ -245,14 +280,12 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
       , ready               = readyPulse
       , attnDone            = attnDoneThisLayer
       , ffnDone             = ffnDoneThisLayer
-      , weightStreamValid   = streamValid
+      , weightStreamValid   = beatValidR
       , parsedWeightSample  = firstMantissa
       , bootProgressBytes   = bootProgress
       , layerChangeDetected = layerChanged
       , sysState            = sysState
       , bootState           = bootState
-      , weightAddrDebug     = weightAddrSig
-      , qkvLoadDonePulse    = qkvLoadDoneSig
       , weightBufferState   = weightBuffer
       , useRAMFlag          = useRAMWeights
       }

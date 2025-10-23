@@ -3,14 +3,11 @@ module Main (main) where
 
 import Prelude
 
-import qualified Data.Binary.Get as BG
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.List as DL
 import qualified Options.Applicative as OA
 import qualified Clash.Prelude as C
-import qualified Clash.Signal as CS
-import qualified Parser
 
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -23,7 +20,6 @@ import qualified LLaMa2.Top as Top ( DecoderIntrospection (..), topEntityWithAxi
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
-import LLaMa2.Types.Parameters (DecoderParameters)
 import LLaMa2.Memory.AXI (AxiSlaveIn (..), AxiMasterOut (..))
 import qualified LLaMa2.Memory.FileBackedAxiSlave as FileAxi
 import LLaMa2.Memory.FileBackedAxiSlave (ReadState)
@@ -45,8 +41,6 @@ runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSee
   currentTime <- getPOSIXTime
   let
     randomSeed = fromIntegral $ fromMaybe (round currentTime) maybeSeed
-    parseLLaMa2 = BG.runGet Parser.parseLLaMa2ConfigFile
-    transformerConfig = parseLLaMa2 modelBinary
     tokenizer = T.buildTokenizer tokenizerBinary (C.natToNum @VocabularySize)
 
   initialTokens <- case maybePrompt of
@@ -76,7 +70,6 @@ runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSee
 
   countTokens <-
     generateTokensSimAutoregressive
-      transformerConfig
       tokenizer
       modelBinary
       stepCount
@@ -148,15 +141,14 @@ type DecoderInputState = (Token, [Token], Bool)
 
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
-  :: DecoderParameters
-  -> T.Tokenizer
+  :: T.Tokenizer
   -> BSL.ByteString
   -> Int             -- ^ Number of tokens to generate
   -> [Token]         -- ^ Prompt tokens
   -> Float
   -> Seed
   -> IO Int
-generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTokens temperature seed = do
+generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens temperature seed = do
   putStrLn $ "✅ Prompt: " ++ show promptTokens
   hFlush stdout
 
@@ -181,7 +173,7 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
 
     (coreOutputsSignal, emmcMaster, emmcSlave, ddrMaster, ddrSlave, weightsReady, bootProgress,
      introspection, emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount
-     ) = bundledOutputs decoder modelBinary inputSignals
+     ) = bundledOutputs modelBinary inputSignals
 
     emmcMasterRReadySampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rready emmcMaster)
     emmcRValidSampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rvalid emmcSlave)
@@ -299,8 +291,7 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
 --
 -- The 'bypassBoot' signal skips the boot sequence entirely, causing the system to
 -- assume DDR is already loaded and ready. Useful for fast functional simulation.
-bundledOutputs :: DecoderParameters
-  -> BSL.ByteString
+bundledOutputs :: BSL.ByteString
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
      , AxiMasterOut C.System
@@ -313,7 +304,7 @@ bundledOutputs :: DecoderParameters
      , C.Signal C.System ReadState
      , C.Signal C.System ReadState
      )
-bundledOutputs decoder modelBinary bundledInputs =
+bundledOutputs modelBinary bundledInputs =
   (C.bundle (tokenOut, validOut), emmcMaster, emmcSlave, ddrMaster, ddrSlave
   , weightsReady, bootProgress
   , introspection
@@ -329,21 +320,21 @@ bundledOutputs decoder modelBinary bundledInputs =
   (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
     C.exposeClockResetEnable
       (Top.topEntityWithAxi bypassBoot emmcSlave ddrSlave powerOn token isValid temperature seed)
-      CS.systemClockGen
-      CS.resetGen
-      CS.enableGen
+      C.systemClockGen
+      C.resetGen
+      C.enableGen
 
   -- Use file-backed AXI slaves that serve real model data
   -- For eMMC: serve the entire model file (used during boot to copy to DDR)
   (emmcSlave, emmcReadState) = C.exposeClockResetEnable
     (FileAxi.createFileBackedAxiSlave modelBinary emmcMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
+    C.systemClockGen
+    C.resetGen
+    C.enableGen
 
   -- For DDR: also serve from file (simulating that boot already copied data there)
   (ddrSlave, ddrReadState) = C.exposeClockResetEnable
     (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
-    CS.systemClockGen
-    CS.resetGen
-    CS.enableGen
+    C.systemClockGen
+    C.resetGen
+    C.enableGen

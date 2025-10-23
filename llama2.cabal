@@ -98,6 +98,7 @@ library
     , LLaMa2.Embedding.OutputProjection
     , LLaMa2.Layer.Attention.AttentionHead
     , LLaMa2.Layer.Attention.FSM
+    , LLaMa2.Layer.Attention.LayerWeightBuffer
     , LLaMa2.Layer.Attention.KVCache
     , LLaMa2.Layer.Attention.MultiHeadAttention
     , LLaMa2.Layer.Attention.QKVProjection
@@ -112,10 +113,13 @@ library
     , LLaMa2.Memory.WeightLoader
     , LLaMa2.Memory.AXI
     , LLaMa2.Memory.AxiReadMaster
+    , LLaMa2.Memory.AxiReadMasterReady
     , LLaMa2.Memory.AxiWriteMaster
     , LLaMa2.Memory.FileBackedAxiSlave
+    , LLaMa2.Memory.I8EDynamicRower
     , LLaMa2.Memory.I8EStreamParser
     , LLaMa2.Memory.WeightLoaderAddressing
+    , LLaMa2.Memory.WeightLoaderAddressingExtended
     , LLaMa2.Numeric.FixedPoint
     , LLaMa2.Numeric.Quantization
     , LLaMa2.Numeric.Operations
