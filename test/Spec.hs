@@ -4,6 +4,7 @@ import Clash.Prelude
 
 import Test.Hspec
 import qualified LLaMa2.Layer.Attention.AttentionHeadSpec (spec)
+import qualified LLaMa2.Layer.Attention.LayerWeightBufferSpec (spec)
 import qualified LLaMa2.Layer.Attention.MultiHeadAttentionSpec (spec)
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetworkSpec  (spec)
 import qualified LLaMa2.Layer.TransformerLayerSpec (spec)
@@ -24,3 +25,4 @@ main = hspec $ do
   LLaMa2.Memory.AxiReadMasterSpec.spec
   LLaMa2.Memory.AxiWriteMasterSpec.spec
   LLaMa2.Memory.WeightLoaderSpec.spec
+  LLaMa2.Layer.Attention.LayerWeightBufferSpec.spec

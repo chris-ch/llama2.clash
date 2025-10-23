@@ -31,14 +31,13 @@ spec = do
       let headOut = makeSimpleHeadOutput
           headOutputs = fromList $ DL.repeat headOut :: Signal System (Vec HeadDimension FixedPoint)
           headDones = fromList $ DL.repeat False :: Signal System Bool
-          (_, validOutsSig, readyOutsSig) =
+          (_, validOutsSig, _readyOutsSig) =
             exposeClockResetEnable
               (singleHeadController headDones headOutputs makeSimpleWOMatrix)
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
           validOuts = DL.take 5 $ sample @System validOutsSig
-          readyOuts = DL.take 5 $ sample @System readyOutsSig
       all P.not validOuts `shouldBe` True
     it "headDones signal is well-defined" $ do
       let headDonesList = DL.take 15 $ DL.replicate 10 False P.++ DL.repeat True
