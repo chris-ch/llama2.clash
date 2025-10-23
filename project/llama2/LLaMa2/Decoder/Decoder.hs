@@ -127,7 +127,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     -- NOTE: We keep RAM disabled by default so tokens match baseline.
     -- Flip 'useRAMEnable' to (pure True) when you want to turn RAM on.
     useRAMEnable :: Signal dom Bool
-    useRAMEnable = pure False
+    useRAMEnable = pure True
 
     -- 1) Instantiate the weight management system (bypass=True skips boot, but DOES stream)
     (emmcMaster, ddrMaster, weightStream, streamValid, weightsReady, bootProgress, sysState, bootState) =
