@@ -285,6 +285,20 @@ generateTokensSimAutoregressive decoder tokenizer modelBinary stepCount promptTo
   putStrLn ""
   pure (length sampledTokens)
 
+-- | Boot and DDR simulation overview
+-- 
+-- During boot, the system copies model weights from the eMMC (AXI slave)
+-- into DDR (AXI slave) using the weight loader. Once boot completes, all
+-- parameters reside in DDR, and the decoder streams weights directly from
+-- there for inference.
+--
+-- In simulation, both eMMC and DDR are modeled using 'FileAxi.createFileBackedAxiSlave',
+-- which serves data directly from the same model binary. This means no actual
+-- data movement occurs; the eMMC→DDR copy is functionally simulated through AXI
+-- transactions backed by an in-memory ByteString.
+--
+-- The 'bypassBoot' signal skips the boot sequence entirely, causing the system to
+-- assume DDR is already loaded and ready. Useful for fast functional simulation.
 bundledOutputs :: DecoderParameters
   -> BSL.ByteString
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
@@ -308,13 +322,13 @@ bundledOutputs decoder modelBinary bundledInputs =
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
 
-  bypass = C.pure True  -- Use real AXI with file data
+  bypassBoot = C.pure True
   powerOn = C.pure True
 
   -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
   (tokenOut, validOut, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection) =
     C.exposeClockResetEnable
-      (Top.topEntityWithAxi bypass emmcSlave ddrSlave powerOn token isValid temperature seed)
+      (Top.topEntityWithAxi bypassBoot emmcSlave ddrSlave powerOn token isValid temperature seed)
       CS.systemClockGen
       CS.resetGen
       CS.enableGen
