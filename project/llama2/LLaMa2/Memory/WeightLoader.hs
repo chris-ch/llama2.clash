@@ -13,18 +13,9 @@ module LLaMa2.Memory.WeightLoader
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
-import LLaMa2.Types.Parameters
-  ( TransformerLayerComponent(..)
-  , DecoderParameters(..)
-  , MultiHeadAttentionComponentQ(..)
-  , FeedForwardNetworkComponentQ(..)
-  , SingleHeadComponentQ(..)
-  , RotaryEncodingComponentF(..)
-  , EmbeddingComponentQ(..)
-  )
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
-import LLaMa2.Numeric.Types (FixedPoint, Exponent, Mantissa)
-import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster, axiReadMaster)
+import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Numeric.Types (Exponent, Mantissa)
+import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.AXI
 
@@ -279,10 +270,25 @@ data WeightSystemState
 
 -- | Complete weight management system
 -- Find the weightManagementSystem function and ADD a bypass parameter:
+-- Select between two AXI master records (record-of-signals) using a Signal Bool
+selectAxiMasterOut
+  :: Signal dom Bool         -- ^ sel=True => pick 'a', otherwise 'b'
+  -> AxiMasterOut dom        -- ^ a
+  -> AxiMasterOut dom        -- ^ b
+  -> AxiMasterOut dom
+selectAxiMasterOut sel a b = AxiMasterOut
+  { arvalid = mux sel (arvalid a) (arvalid b)
+  , ardata  = mux sel (ardata  a) (ardata  b)
+  , rready  = mux sel (rready  a) (rready  b)
+  , awvalid = mux sel (awvalid a) (awvalid b)
+  , awdata  = mux sel (awdata  a) (awdata  b)
+  , wvalid  = mux sel (wvalid  a) (wvalid  b)
+  , wdataMI = mux sel (wdataMI a) (wdataMI b)
+  , bready  = mux sel (bready  a) (bready  b)
+  }
 
-weightManagementSystem
-  :: forall dom . HiddenClockResetEnable dom
-  => Signal dom Bool                    -- NEW: bypass (skip boot for simulation)
+weightManagementSystem :: forall dom . HiddenClockResetEnable dom
+  => Signal dom Bool                    -- bypass (skip boot in sim, but DO stream)
   -> AxiSlaveIn dom                     -- eMMC AXI slave
   -> AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom Bool                    -- Power on / start boot
@@ -295,45 +301,56 @@ weightManagementSystem
      , Signal dom Bool                  -- System ready
      , Signal dom (Unsigned 32)         -- Boot progress (bytes)
      , Signal dom WeightSystemState     -- expose state
-     , Signal dom BootLoaderState  -- boot state
+     , Signal dom BootLoaderState       -- boot state
      )
 weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigger =
-  (emmcMaster, ddrMaster, weightStream, streamValid, systemReady, bootProgress, sysState, bootState)
+  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut, bootProgress, sysState, bootState)
   where
-    systemReady = sysState .==. pure WSReady
-
     sysState = register WSBoot nextSysState
-    
+
+    -- Address bases
     emmcBaseAddr = 0 :: Unsigned 32
-    ddrBaseAddr = 0 :: Unsigned 32
-    
+    ddrBaseAddr  = 0 :: Unsigned 32
+
+    -- Boot: eMMC -> DDR copy (disabled when bypass=True)
     startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypass)
-    (emmcMaster, ddrMasterBoot, bootDone, bootProgress, bootState) =
+    (emmcMasterBoot, ddrMasterBoot, bootDone, bootProgress, bootState) =
       bootWeightLoader emmcSlave ddrSlave startBoot
                        (pure emmcBaseAddr) (pure ddrBaseAddr)
-    
+
+    -- Runtime streaming (DDR -> fabric)
     startStream = (sysState .==. pure WSReady) .&&. loadTrigger
     (ddrMasterRuntime, weightStream, streamValid, streamComplete) =
       layerWeightStreamer ddrSlave layerRequest startStream
-    
-    isBoot = sysState .==. pure WSBoot
-    ddrMaster = AxiMasterOut
-      { arvalid = mux bypass (pure False) (mux isBoot (arvalid ddrMasterBoot) (arvalid ddrMasterRuntime))
-      , ardata  = mux bypass (pure (errorX "bypass")) (mux isBoot (ardata ddrMasterBoot) (ardata ddrMasterRuntime))
-      , rready  = mux bypass (pure False) (mux isBoot (rready ddrMasterBoot) (rready ddrMasterRuntime))
-      , awvalid = mux bypass (pure False) (mux isBoot (awvalid ddrMasterBoot) (awvalid ddrMasterRuntime))
-      , awdata  = mux bypass (pure (errorX "bypass")) (mux isBoot (awdata ddrMasterBoot) (awdata ddrMasterRuntime))
-      , wvalid  = mux bypass (pure False) (mux isBoot (wvalid ddrMasterBoot) (wvalid ddrMasterRuntime))
-      , wdataMI = mux bypass (pure (errorX "bypass")) (mux isBoot (wdataMI ddrMasterBoot) (wdataMI ddrMasterRuntime))
-      , bready  = mux bypass (pure False) (mux isBoot (bready ddrMasterBoot) (bready ddrMasterRuntime))
+
+    -- An idle/zeroed AXI master for eMMC when bypassing boot
+    emmcIdle = AxiMasterOut
+      { arvalid = pure False, ardata  = pure (errorX "emmc bypass")
+      , rready  = pure False
+      , awvalid = pure False, awdata  = pure (errorX "emmc bypass")
+      , wvalid  = pure False, wdataMI = pure (errorX "emmc bypass")
+      , bready  = pure False
       }
-    
-    nextSysState = mux bypass
-      (pure WSReady)  -- Bypass: skip directly to ready
-      (mux (sysState .==. pure WSBoot)
-        (mux bootDone (pure WSReady) (pure WSBoot))
-        (mux (sysState .==. pure WSReady)
-          (mux startStream (pure WSStreaming) (pure WSReady))
-          (mux (sysState .==. pure WSStreaming)
-            (mux streamComplete (pure WSReady) (pure WSStreaming))
-            sysState)))
+
+    -- eMMC master: pick idle when bypass=True, else boot master
+    emmcMaster = selectAxiMasterOut bypass emmcIdle emmcMasterBoot
+
+    -- DDR master: pick BOOT path only when NOT bypassing AND in WSBoot; otherwise Runtime
+    isBoot  = sysState .==. pure WSBoot
+    useBoot = (not <$> bypass) .&&. isBoot
+    ddrMaster = selectAxiMasterOut useBoot ddrMasterBoot ddrMasterRuntime
+
+    -- State machine (bypass => ready immediately; else WSBoot -> WSReady -> WSStreaming ...)
+    nextSysState =
+      mux bypass
+        (pure WSReady)
+        (mux (sysState .==. pure WSBoot)
+             (mux bootDone (pure WSReady) (pure WSBoot))
+             (mux (sysState .==. pure WSReady)
+                  (mux startStream (pure WSStreaming) (pure WSReady))
+                  (mux (sysState .==. pure WSStreaming)
+                       (mux streamComplete (pure WSReady) (pure WSStreaming))
+                       sysState)))
+
+    -- Report "ready" correctly (honor bypass)
+    systemReadyOut = mux bypass (pure True) (sysState .==. pure WSReady)

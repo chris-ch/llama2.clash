@@ -73,10 +73,8 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerChangeDetected :: Signal dom Bool
   , sysState            :: Signal dom WeightSystemState
   , bootState           :: Signal dom BootLoaderState
-  -- Step 1
   , weightAddrDebug     :: Signal dom WeightAddress
   , qkvLoadDonePulse    :: Signal dom Bool
-  -- Step 2
   , weightBufferState   :: Signal dom QKVWeightBuffer
   , useRAMFlag          :: Signal dom Bool
   } deriving (Generic, NFDataX)
@@ -236,6 +234,6 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
       , bootState           = bootState
       , weightAddrDebug     = weightAddrSig
       , qkvLoadDonePulse    = qkvLoadDoneSig
-      , weightBufferState   = weightBuffer         -- Step 2
-      , useRAMFlag          = useRAMWeights        -- Step 2
+      , weightBufferState   = weightBuffer
+      , useRAMFlag          = useRAMWeights
       }
