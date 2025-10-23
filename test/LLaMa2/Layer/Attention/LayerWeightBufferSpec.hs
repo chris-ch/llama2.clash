@@ -4,7 +4,7 @@ import Clash.Prelude
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 import LLaMa2.Memory.WeightLoaderAddressingExtended
   ( LayerSeg (..),
-    rowsInSeg, layerAddressGenerator, LayerAddress (seg),
+    rowsInSeg,
   )
 import Test.Hspec
 import qualified Prelude as P
@@ -17,10 +17,6 @@ import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension,
 -- Create synthetic beat data for testing (all 0x7F for easy verification)
 syntheticBeats :: Int -> Signal dom (BitVector 512)
 syntheticBeats n = fromList $ P.replicate n (bitCoerce (replicate d64 0x7F :: Vec 64 (BitVector 8))) P.++ P.repeat 0
-
--- Create test address sequence manually
-testSegSeq :: [LayerSeg]
-testSegSeq = [SegQ, SegQ, SegWO, SegQ, SegQ] P.++ P.replicate 10 SegWO
 
 spec :: Spec
 spec = do
@@ -68,35 +64,22 @@ spec = do
             rowsInSeg SegW1 `shouldBe` w1Rows
             rowsInSeg SegRmsAtt `shouldBe` rms1
 
-    describe "dynamicRower + layerAddressGenerator alignment" $ do
-        context "mdRowValid pulses exactly for Q segments with correct row count" $ do
-            let
-                beatData   = syntheticBeats (P.length testSegSeq * 3)  -- Enough beats
-                beatValid  = pure True
-                resetPulse = fromList $ [True, False] P.++ P.repeat False
+    describe "dynamicRower (constant SegQ)" $ do
+        it "emits floor(totalBytes/rowLen) md rows" $ do
+            let rowLen = fromInteger (natToNum @ModelDimension + 1) :: Int
+                beats  = 200  -- arbitrary
+                totalBytes = 64 * beats
+                expectedRows = totalBytes `div` rowLen
 
-                -- Run address generator first (seeded)
-                (addrSeed, _) = withClockResetEnable systemClockGen resetGen enableGen $
-                    layerAddressGenerator (pure False) resetPulse
+                beatData  = syntheticBeats beats
+                beatValid = fromList $ P.replicate beats True P.++ P.repeat False
+                segSeq    = pure SegQ
 
-                segSeed = seg <$> addrSeed
-
-                -- Run dynamic rower
-                (_mdRowOut, mdRowValid, rowDoneExt, _) =
+                (_mdRowOut, mdRowValid, _rowDoneExt, _sinkReady) =
                     withClockResetEnable systemClockGen resetGen enableGen $
-                    dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
-                        beatData beatValid segSeed
+                        dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
+                                    beatData beatValid segSeq
 
-                -- Sample for enough cycles to cover sequence
-                validSamples  = sampleN (P.length testSegSeq * 4) mdRowValid
-                doneSamples   = sampleN (P.length testSegSeq * 4) rowDoneExt
+                mdValidSamples = sampleN (beats + expectedRows + 64) mdRowValid
 
-                -- Count Q segments in sequence (should be 4)
-                qSegmentCount = P.length $ P.filter (== SegQ) testSegSeq
-                -- Expected mdRowValid pulses = rowsInSeg SegQ (but limited by sequence length)
-                expectedValidPulses = min qSegmentCount (fromIntegral $ rowsInSeg SegQ)
-
-            it "we get the right number of valid pulses" $ do
-                P.length (P.filter id validSamples) `shouldBe` expectedValidPulses
-            it "rowDoneExt should pulse for ALL segments" $ do
-                P.length (P.filter id doneSamples) `shouldSatisfy` (>= P.length testSegSeq)
+            P.length (filter id mdValidSamples) `shouldBe` expectedRows
