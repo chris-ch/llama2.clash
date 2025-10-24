@@ -127,9 +127,8 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
           && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
           && rowIx la  == maxBound
 
-    layerEnable =
-      let next = mux loadTrigger (pure False) (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
-      in register False next
+    layerEnable :: Signal dom Bool
+    layerEnable = mux loadTrigger (pure False) (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
 
     -- Token gating and sampling
     (mantissasH, _expH) = unbundle parsedWeightsHold
