@@ -22,9 +22,8 @@ import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
 import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
 
-import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..), qkvWeightBufferController)
-import LLaMa2.Memory.WeightLoaderAddressing (WeightAddress (..), WeightMatrixType (..))
-import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddressGenerator)
+import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..), qkvWeightBufferController)
+import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddressGenerator, WeightAddress (..), WeightMatrixType (..))
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 
 -- Initial state
@@ -51,7 +50,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerChangeDetected :: Signal dom Bool
   , sysState            :: Signal dom WeightSystemState
   , bootState           :: Signal dom BootLoaderState
-  , weightBufferState   :: Signal dom QKVWeightBuffer
+  , weightBufferState   :: Signal dom QKVProjectionWeightBuffer
   } deriving (Generic, NFDataX)
 
 decoder :: forall dom. HiddenClockResetEnable dom
@@ -105,7 +104,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
     parsedWeightsHold = regEn (repeat 0, 0) mdRowValid mdRowOut
 
     -- Q/K/V buffering (map extended → legacy address; ignore when not Q/K/V)
-    weightBuffer :: Signal dom QKVWeightBuffer
+    weightBuffer :: Signal dom QKVProjectionWeightBuffer
     weightBuffer =
       qkvWeightBufferController
         mdRowValid

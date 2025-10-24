@@ -1,6 +1,8 @@
 module LLaMa2.Memory.LayerAddressing
   ( LayerSeg(..)
   , LayerAddress(..)
+  , WeightMatrixType(..)
+  , WeightAddress(..)
   , layerAddressGenerator
   , rowsInSeg
   ) where
@@ -13,6 +15,20 @@ import LLaMa2.Types.ModelConfig
   , NumQueryHeads
   , NumKeyValueHeads
   )
+
+-- Q/K/V discriminator for streamed rows
+data WeightMatrixType = QMatrix | KMatrix | VMatrix
+  deriving (Generic, NFDataX, Show, Eq, Enum, Bounded)
+
+-- Self-describing row address
+-- rowIndex: 0..(HeadDimension-1)
+-- matrixType: Q, K, or V
+-- headIndex: head number (fits in 8 bits for our supported configs)
+data WeightAddress = WeightAddress
+  { rowIndex   :: Index HeadDimension
+  , matrixType :: WeightMatrixType
+  , headIndex  :: Unsigned 8
+  } deriving (Generic, NFDataX, Show, Eq)
 
 -- Segment order MUST match on-disk layout:
 -- rmsAtt -> Q -> K -> V -> WO -> rmsFfn -> W1 -> W2 -> W3

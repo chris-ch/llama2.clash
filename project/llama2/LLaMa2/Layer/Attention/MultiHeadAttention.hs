@@ -12,7 +12,7 @@ import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
-import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..))
+import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
@@ -20,7 +20,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom ProcessingState ->
   Index NumLayers ->
   Signal dom LayerData ->
-  Signal dom QKVWeightBuffer ->
+  Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),

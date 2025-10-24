@@ -18,8 +18,8 @@ import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
 import LLaMa2.Types.LayerData (ProcessingState(..))
-import LLaMa2.Layer.Attention.WeightBuffer
-  ( QKVWeightBuffer(..)
+import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
+  ( QKVProjectionWeightBuffer(..)
   , extractQWeight, extractKWeight, extractVWeight
   )
 -- Reuse the proven row core and control FSM
@@ -155,7 +155,7 @@ qkvProjector :: forall dom.
   -> MultiHeadAttentionComponentQ             -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> Signal dom QKVWeightBuffer               -- ^ RAM weight buffer
+  -> Signal dom QKVProjectionWeightBuffer               -- ^ RAM weight buffer
   -> Signal dom Bool                          -- ^ enable (fully loaded)
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
@@ -221,7 +221,7 @@ qkvProjectionController ::
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
-  -> Signal dom QKVWeightBuffer                 -- ^ RAM weights
+  -> Signal dom QKVProjectionWeightBuffer                 -- ^ RAM weights
   -> Signal dom Bool                            -- ^ useRAM
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)

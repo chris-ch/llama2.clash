@@ -20,7 +20,7 @@ import LLaMa2.Types.ModelConfig
   )
 import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
-import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..))
+import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -45,7 +45,7 @@ transformerLayer ::
    -> Index NumLayers
    -> Signal dom ProcessingState
    -> Signal dom LayerData
-   -> Signal dom QKVWeightBuffer             -- full RAM buffer
+   -> Signal dom QKVProjectionWeightBuffer             -- full RAM buffer
    -> Signal dom Bool                        --
    -> ( Signal dom LayerData,
     Signal dom Bool, -- writeDone

@@ -1,6 +1,6 @@
-module LLaMa2.Layer.Attention.WeightBuffer
+module LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
   ( SingleHeadWeightBuffer(..)
-  , QKVWeightBuffer(..)
+  , QKVProjectionWeightBuffer(..)
   , qkvWeightBufferController
   , extractQWeight
   , extractKWeight
@@ -15,10 +15,7 @@ import LLaMa2.Types.ModelConfig
   , NumKeyValueHeads
   )
 import LLaMa2.Numeric.Quantization (RowI8E, MatI8E)
-import LLaMa2.Memory.WeightLoaderAddressing
-  ( WeightAddress(..)
-  , WeightMatrixType(..)
-  )
+import LLaMa2.Memory.LayerAddressing (WeightAddress (..), WeightMatrixType (..))
 
 -- Buffer for one head: holds its Q/K/V matrices (per-row I8E)
 data SingleHeadWeightBuffer = SingleHeadWeightBuffer
@@ -37,14 +34,14 @@ emptyHeadBuffer = SingleHeadWeightBuffer
   }
 
 -- Full Q/K/V buffer across all heads
-data QKVWeightBuffer = QKVWeightBuffer
+data QKVProjectionWeightBuffer = QKVProjectionWeightBuffer
   { qHeadBuffers  :: Vec NumQueryHeads     SingleHeadWeightBuffer
   , kvHeadBuffers :: Vec NumKeyValueHeads  SingleHeadWeightBuffer
   , fullyLoaded   :: Bool
   } deriving (Generic, NFDataX)
 
-emptyQKVBuffer :: QKVWeightBuffer
-emptyQKVBuffer = QKVWeightBuffer
+emptyQKVBuffer :: QKVProjectionWeightBuffer
+emptyQKVBuffer = QKVProjectionWeightBuffer
   { qHeadBuffers  = repeat emptyHeadBuffer
   , kvHeadBuffers = repeat emptyHeadBuffer
   , fullyLoaded   = False
@@ -62,8 +59,8 @@ toIndexMaybe u =
 updateQKVBufferOnce ::
      WeightAddress
   -> RowI8E ModelDimension
-  -> QKVWeightBuffer
-  -> QKVWeightBuffer
+  -> QKVProjectionWeightBuffer
+  -> QKVProjectionWeightBuffer
 updateQKVBufferOnce WeightAddress{..} row buf =
   case matrixType of
     QMatrix ->
@@ -102,7 +99,7 @@ qkvWeightBufferController ::
   -> Signal dom (RowI8E ModelDimension)    -- ^ weight row (parsed)
   -> Signal dom Bool                       -- ^ allRowsReceived (qkvLoadDone pulse)
   -> Signal dom Bool                       -- ^ reset (new layer trigger)
-  -> Signal dom QKVWeightBuffer            -- ^ buffered weights
+  -> Signal dom QKVProjectionWeightBuffer            -- ^ buffered weights
 qkvWeightBufferController streamValid addr row allDone reset = bufS
   where
     stepEn = streamValid .||. reset
@@ -120,11 +117,11 @@ qkvWeightBufferController streamValid addr row allDone reset = bufS
     bufS = regEn emptyQKVBuffer stepEn bufNext
 
 -- Extraction helpers
-extractQWeight :: QKVWeightBuffer -> Index NumQueryHeads     -> MatI8E HeadDimension ModelDimension
+extractQWeight :: QKVProjectionWeightBuffer -> Index NumQueryHeads     -> MatI8E HeadDimension ModelDimension
 extractQWeight buf hIx = wqBuf (qHeadBuffers buf !! hIx)
 
-extractKWeight :: QKVWeightBuffer -> Index NumKeyValueHeads  -> MatI8E HeadDimension ModelDimension
+extractKWeight :: QKVProjectionWeightBuffer -> Index NumKeyValueHeads  -> MatI8E HeadDimension ModelDimension
 extractKWeight buf hIx = wkBuf (kvHeadBuffers buf !! hIx)
 
-extractVWeight :: QKVWeightBuffer -> Index NumKeyValueHeads  -> MatI8E HeadDimension ModelDimension
+extractVWeight :: QKVProjectionWeightBuffer -> Index NumKeyValueHeads  -> MatI8E HeadDimension ModelDimension
 extractVWeight buf hIx = wvBuf (kvHeadBuffers buf !! hIx)

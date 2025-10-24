@@ -11,7 +11,7 @@ import LLaMa2.Types.ModelConfig  (NumLayers, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.Parameters (TransformerLayerComponent)
-import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..))
+import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 -- | Type alias for layer completion flags
 -- (writeDone, attnDone, qkvDone, qkvReady, ffnDone)
@@ -24,7 +24,7 @@ processLayers :: forall dom .
   => Signal dom ProcessingState              -- ^ Current processing state
   -> Signal dom (Index NumLayers)            -- ^ Active layer index
   -> Signal dom LayerData                    -- ^ Input layer data
-  -> Signal dom QKVWeightBuffer              -- ^ complete RAM buffer
+  -> Signal dom QKVProjectionWeightBuffer              -- ^ complete RAM buffer
   -> Signal dom Bool                         -- ^ enable flag
   -> Vec NumLayers TransformerLayerComponent -- ^ All layer parameters
   -> ( Signal dom LayerData                  -- ^ Output layer data
