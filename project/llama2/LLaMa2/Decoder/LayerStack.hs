@@ -24,13 +24,13 @@ processLayers :: forall dom .
   => Signal dom ProcessingState              -- ^ Current processing state
   -> Signal dom (Index NumLayers)            -- ^ Active layer index
   -> Signal dom LayerData                    -- ^ Input layer data
-  -> Signal dom QKVWeightBuffer              -- ^ NEW: complete RAM buffer
-  -> Signal dom Bool                         -- ^ NEW: useRAM flag
+  -> Signal dom QKVWeightBuffer              -- ^ complete RAM buffer
+  -> Signal dom Bool                         -- ^ enable flag
   -> Vec NumLayers TransformerLayerComponent -- ^ All layer parameters
   -> ( Signal dom LayerData                  -- ^ Output layer data
      , Vec NumLayers (LayerDoneFlags dom)    -- ^ Completion flags per layer
      )
-processLayers processingState currentLayerIdx inputLayerData weightBuffer useRAM layers =
+processLayers processingState currentLayerIdx inputLayerData weightBuffer enable layers =
   (finalLayerData, doneFlagsVec)
   where
     (finalLayerData, layerResults) =
@@ -57,8 +57,8 @@ processLayers processingState currentLayerIdx inputLayerData weightBuffer useRAM
                 layerIdx
                 processingState
                 layerDataIn
-                weightBuffer        -- NEW
-                useRAM              -- NEW
+                weightBuffer
+                enable
 
         selectedData = mux isActive layerDataOut layerDataIn
 

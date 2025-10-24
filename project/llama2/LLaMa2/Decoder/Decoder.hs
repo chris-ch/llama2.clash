@@ -128,12 +128,9 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
           && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
           && rowIx la  == maxBound
 
-    useRAMEnable = pure True
-    useRAMLatched =
-      let next = mux loadTrigger (pure False)
-                 (useRAMLatched .||. (qkvDonePulse <$> layerAddrSig <*> mdRowValid))
+    layerEnable =
+      let next = mux loadTrigger (pure False) (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
       in register False next
-    useRAMWeights = useRAMEnable .&&. useRAMLatched
 
     -- Token gating and sampling
     (mantissasH, _expH) = unbundle parsedWeightsHold
@@ -158,7 +155,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
                    <*> embeddedVector
 
     (nextLayerData, doneFlags) =
-      LayerStack.processLayers processingState layerIdx layerInput weightBuffer useRAMWeights (modelLayers params)
+      LayerStack.processLayers processingState layerIdx layerInput weightBuffer layerEnable (modelLayers params)
 
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone

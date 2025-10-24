@@ -31,7 +31,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM =
+multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enable =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
     isStage1ThisLayer =
@@ -56,7 +56,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer us
         mha
         processingState
         weightBuffer
-        useRAM
+        enable
 
     (q, k, v) = unbundle qkvProjected
 

@@ -40,14 +40,14 @@ ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
 
 transformerLayer ::
   forall dom.
-  (HiddenClockResetEnable dom) =>
-  TransformerLayerComponent ->
-  Index NumLayers ->
-  Signal dom ProcessingState ->
-  Signal dom LayerData ->
-  Signal dom QKVWeightBuffer ->              -- full RAM buffer
-  Signal dom Bool ->                         --
-    ( Signal dom LayerData,
+  (HiddenClockResetEnable dom)
+   => TransformerLayerComponent
+   -> Index NumLayers
+   -> Signal dom ProcessingState
+   -> Signal dom LayerData
+   -> Signal dom QKVWeightBuffer             -- full RAM buffer
+   -> Signal dom Bool                        --
+   -> ( Signal dom LayerData,
     Signal dom Bool, -- writeDone
     Signal dom Bool, -- attentionDone
     Signal dom Bool, -- qkvDone
@@ -55,7 +55,7 @@ transformerLayer ::
     Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
-transformerLayer layer layerIndex processingState layerData weightBuffer useRAM =
+transformerLayer layer layerIndex processingState layerData weightBuffer enable =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -69,7 +69,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     ffn = feedforwardNetwork layer
 
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
+      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enable
 
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
