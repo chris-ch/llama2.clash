@@ -1,4 +1,4 @@
-module LLaMa2.Helpers.MatVecI8ESpec (spec) where
+module LLaMa2.Numeric.OperationsSpec (spec) where
 
 import Clash.Prelude
 import qualified Clash.Signal as CS

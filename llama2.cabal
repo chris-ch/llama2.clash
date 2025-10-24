@@ -164,7 +164,6 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Helpers.MatVecI8ESpec
       LLaMa2.Layer.Attention.AttentionHeadSpec
       LLaMa2.Layer.Attention.LayerWeightBufferSpec
       LLaMa2.Layer.Attention.MultiHeadAttentionSpec
@@ -174,6 +173,7 @@ test-suite llama2-test
       LLaMa2.Memory.AxiReadMasterSpec
       LLaMa2.Memory.AxiWriteMasterSpec
       LLaMa2.Memory.WeightLoaderSpec
+      LLaMa2.Numeric.OperationsSpec
   hs-source-dirs:
       test
   build-depends:
