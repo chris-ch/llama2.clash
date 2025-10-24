@@ -103,7 +103,6 @@ library
       LLaMa2.Layer.Attention.KVCache
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
-      LLaMa2.Layer.Attention.QKVProjectionWithRAM
       LLaMa2.Layer.Attention.RotaryEncoding
       LLaMa2.Layer.Attention.WeightBuffer
       LLaMa2.Layer.FeedForward.Activation
@@ -121,7 +120,7 @@ library
       LLaMa2.Memory.I8EDynamicRower
       LLaMa2.Memory.I8EStreamParser
       LLaMa2.Memory.WeightLoaderAddressing
-      LLaMa2.Memory.WeightLoaderAddressingExtended
+      LLaMa2.Memory.LayerAddressing
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations

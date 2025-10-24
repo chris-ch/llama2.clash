@@ -24,7 +24,7 @@ import LLaMa2.Numeric.Quantization (RowI8E)
 
 import LLaMa2.Layer.Attention.WeightBuffer (QKVWeightBuffer(..), qkvWeightBufferController)
 import LLaMa2.Memory.WeightLoaderAddressing (WeightAddress (..), WeightMatrixType (..))
-import LLaMa2.Memory.WeightLoaderAddressingExtended (LayerSeg(..), LayerAddress(..), layerAddressGenerator)
+import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddressGenerator)
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 
 -- Initial state
@@ -52,7 +52,6 @@ data DecoderIntrospection dom = DecoderIntrospection
   , sysState            :: Signal dom WeightSystemState
   , bootState           :: Signal dom BootLoaderState
   , weightBufferState   :: Signal dom QKVWeightBuffer
-  , useRAMFlag          :: Signal dom Bool
   } deriving (Generic, NFDataX)
 
 decoder :: forall dom. HiddenClockResetEnable dom
@@ -186,5 +185,4 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
       , sysState            = sysState
       , bootState           = bootState
       , weightBufferState   = weightBuffer
-      , useRAMFlag          = useRAMWeights
       }

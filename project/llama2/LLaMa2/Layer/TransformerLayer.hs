@@ -45,9 +45,9 @@ transformerLayer ::
   Index NumLayers ->
   Signal dom ProcessingState ->
   Signal dom LayerData ->
-  Signal dom QKVWeightBuffer ->              -- NEW: full RAM buffer
-  Signal dom Bool ->                         -- NEW: useRAM flag
-  ( Signal dom LayerData,
+  Signal dom QKVWeightBuffer ->              -- full RAM buffer
+  Signal dom Bool ->                         --
+    ( Signal dom LayerData,
     Signal dom Bool, -- writeDone
     Signal dom Bool, -- attentionDone
     Signal dom Bool, -- qkvDone

@@ -1,5 +1,5 @@
 module LLaMa2.Memory.AxiReadMaster 
-  (axiReadMaster, axiBurstReadMaster)
+  (axiBurstReadMaster)
 where
 import Clash.Prelude
 import LLaMa2.Memory.AXI
@@ -15,69 +15,6 @@ data ReadState
   | ReadData      -- Receiving data
   | ReadDone
   deriving (Generic, NFDataX, Show, Eq)
-
--- Simple AXI read master
--- Request: Give address and enable
--- Response: Returns data when valid
-axiReadMaster
-  :: HiddenClockResetEnable dom
-  => AxiSlaveIn dom                       -- From AXI slave (eMMC/DDR)
-  -> Signal dom (Unsigned 32)             -- Address to read
-  -> Signal dom Bool                      -- Start read
-  -> ( AxiMasterOut dom                   -- To AXI slave
-     , Signal dom (BitVector 512)         -- Read data out
-     , Signal dom Bool                    -- Data valid
-     , Signal dom Bool                    -- Ready for new request
-     )
-axiReadMaster slaveIn addrIn startRead = (masterOut, dataOut, validOut, readyOut)
-  where
-    -- State machine
-    state = register ReadIdle nextState
-    
-    -- Address to read (latched)
-    addr = regEn 0 startRead addrIn
-    
-    -- State transitions
-    nextState = mux (state .==. pure ReadIdle)
-      (mux startRead (pure ReadAddr) (pure ReadIdle))
-      (mux (state .==. pure ReadAddr)
-        (mux arHandshake (pure ReadData) (pure ReadAddr))
-        (mux (state .==. pure ReadData)
-          (mux rHandshake (pure ReadDone) (pure ReadData))
-          (mux (state .==. pure ReadDone)
-            (pure ReadIdle)
-            (pure ReadIdle))))
-    
-    -- AR channel (address)
-    arValid = state .==. pure ReadAddr
-    arAddr = (\a -> AxiAR
-      { araddr  = a
-      , arlen   = 0           -- Single transfer
-      , arsize  = 6           -- 2^6 = 64 bytes
-      , arburst = 1           -- INCR
-      , arid    = 0
-      }) <$> addr
-    arHandshake = arValid .&&. arready slaveIn
-    
-    -- R channel (data)
-    rReady = state .==. pure ReadData
-    rHandshake = rReady .&&. rvalid slaveIn
-    
-    -- Outputs
-    masterOut = AxiMasterOut
-      { arvalid = arValid
-      , ardata  = arAddr
-      , rready  = rReady
-      , awvalid = pure False  -- Not writing
-      , awdata  = pure (errorX "not writing")
-      , wvalid  = pure False
-      , wdataMI   = pure (errorX "not writing")
-      , bready  = pure False
-      }
-    
-    dataOut = rdata <$> rdataSI slaveIn
-    validOut = rHandshake
-    readyOut = state .==. pure ReadIdle
 
 -- Read multiple consecutive addresses (burst)
 axiBurstReadMaster :: HiddenClockResetEnable dom

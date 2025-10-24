@@ -11,7 +11,7 @@ import LLaMa2.Types.ModelConfig
   ( ModelDimension, HeadDimension, HiddenDimension
   , NumQueryHeads )
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
-import LLaMa2.Memory.WeightLoaderAddressingExtended (LayerSeg(..), LayerAddress(..))
+import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..))
 
 -- Counters as Index-typed to avoid undefined/out-of-range addressing
 data WOBuffer = WOBuffer

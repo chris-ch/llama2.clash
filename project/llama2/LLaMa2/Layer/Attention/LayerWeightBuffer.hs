@@ -21,7 +21,7 @@ import LLaMa2.Layer.Attention.WeightBuffer
   ( QKVWeightBuffer(..)
   , SingleHeadWeightBuffer(..)
   )
-import LLaMa2.Memory.WeightLoaderAddressingExtended
+import LLaMa2.Memory.LayerAddressing
   ( LayerSeg(..), LayerAddress(..) )
 
 -- Full per-layer RAM buffer (subset for now: Q/K/V + W1 + W3 + RMS vectors)

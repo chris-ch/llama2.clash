@@ -7,7 +7,7 @@ import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..))
 import LLaMa2.Types.LayerData (LayerData (..), ProcessingState (..), CycleStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layer.Attention.QKVProjectionWithRAM (qkvProjectionControllerWithRAM)
+import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
@@ -20,8 +20,8 @@ multiHeadAttentionStage :: forall dom.
   Signal dom ProcessingState ->
   Index NumLayers ->
   Signal dom LayerData ->
-  Signal dom QKVWeightBuffer ->              -- NEW
-  Signal dom Bool ->                         -- NEW
+  Signal dom QKVWeightBuffer ->
+  Signal dom Bool ->
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -49,7 +49,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer us
 
     -- CHANGED: RAM-aware controller
     (qkvProjected, qkvDone, qkvInReady) =
-      qkvProjectionControllerWithRAM
+      qkvProjectionController
         isStage1ThisLayer
         qkvOutReady
         input

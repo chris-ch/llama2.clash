@@ -1,4 +1,4 @@
-module LLaMa2.Memory.WeightLoaderAddressingExtended
+module LLaMa2.Memory.LayerAddressing
   ( LayerSeg(..)
   , LayerAddress(..)
   , layerAddressGenerator

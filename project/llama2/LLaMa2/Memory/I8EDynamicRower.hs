@@ -7,7 +7,7 @@ module LLaMa2.Memory.I8EDynamicRower
 import Clash.Prelude
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import LLaMa2.Numeric.Quantization (RowI8E)
-import LLaMa2.Memory.WeightLoaderAddressingExtended (LayerSeg(..))
+import LLaMa2.Memory.LayerAddressing (LayerSeg(..))
 
 type Byte = BitVector 8
 
