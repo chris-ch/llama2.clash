@@ -1,6 +1,8 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 module LLaMa2.Memory.I8EDynamicRower
-  ( dynamicRower ) where
+  ( dynamicRower
+  , dynamicRower3
+  ) where
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
@@ -33,7 +35,6 @@ rowLenBytes s = case s of
   SegW2     ->  natToNum @hid + 1
   SegW3     ->  natToNum @md + 1
 
--- MD segments are the only ones for which we emit a typed RowI8E md
 isMD :: LayerSeg -> Bool
 isMD s = case s of
   SegRmsAtt -> True
@@ -42,6 +43,12 @@ isMD s = case s of
   SegV      -> True
   SegRmsFfn -> True
   _         -> False
+
+isHD :: LayerSeg -> Bool
+isHD s  = s == SegWO
+
+isHID :: LayerSeg -> Bool
+isHID s = s == SegW2
 
 -- Simple circular FIFO for bytes; depth = 4096 (must be multiple of 64)
 data FifoState = FifoState
@@ -59,7 +66,8 @@ plusU12 a b = resize (a + b)  -- wraps mod 4096 automatically
 
 type Store = Vec 4096 Byte
 
-dynamicRower ::
+-- New: full triple-output rower
+dynamicRower3 ::
   forall dom md hd hid.
   ( HiddenClockResetEnable dom
   , KnownNat md, KnownNat hd, KnownNat hid
@@ -69,14 +77,18 @@ dynamicRower ::
   Signal dom Bool             ->  -- ^ beat valid
   Signal dom LayerSeg         ->  -- ^ current segment
   ( Signal dom (RowI8E md)    -- ^ mdRowOut (only for MD segments)
-  , Signal dom Bool           -- ^ mdRowValid
+  , Signal dom Bool   -- md row + valid (rmsAtt/Q/K/V/rmsFfn)
+  , Signal dom (RowI8E hd)
+  ,  Signal dom Bool   -- hd row + valid (WO)
+  , Signal dom (RowI8E hid)
+  , Signal dom Bool   -- hid row + valid (W2)
   , Signal dom Bool           -- ^ rowDoneExt (all segments)
   , Signal dom Bool           -- ^ sinkReady (can accept a beat)
   )
-dynamicRower _md _hd _hid beatData beatValid segS =
-  (mdRowOutS, mdRowValidS, rowDoneExtS, sinkReadyS)
+dynamicRower3 _md _hd _hid beatData beatValid segS =
+  (mdRowOutS, mdRowValidS, hdRowOutS, hdRowValidS, hidRowOutS, hidRowValidS, rowDoneExtS, sinkReadyS)
  where
-  -- FIFO storage
+    -- FIFO storage
   storeS :: Signal dom Store
   storeS = register (repeat 0) storeNext
 
@@ -86,10 +98,10 @@ dynamicRower _md _hd _hid beatData beatValid segS =
   -- Unpack incoming beat into 64 bytes
   beatBytes = bitCoerce <$> beatData :: Signal dom (Vec 64 Byte)
 
-  -- Ready to push another 64 bytes?
+    -- Ready to push another 64 bytes?
   canPush64 s = (used s + 64) <= 4096
   sinkReadyS = canPush64 <$> stS
-  pushNowS   = beatValid .&&.sinkReadyS
+  pushNowS   = beatValid .&&. sinkReadyS
 
   -- Per-segment row length
   rowLenS = rowLenBytes @md @hd @hid <$> segS
@@ -120,28 +132,54 @@ dynamicRower _md _hd _hid beatData beatValid segS =
   loadByte st addr = st !! toIdx4096 addr
 
   -- Read a row of length rl bytes starting at base; first md mantissas + 1 exp for MD segments
-  readRowMD :: forall n. KnownNat n => Store -> Unsigned 12 -> (Vec n Byte, Byte)
-  readRowMD st base =
+  readRowN :: forall n. KnownNat n => Store -> Unsigned 12 -> (Vec n Byte, Byte)
+  readRowN st base =
     let n = (natToNum @n) :: Int
         mant = map (\(i :: Index n) -> loadByte st (plusU12 base (resize (fromIntegral (fromEnum i) :: Unsigned 12)))) indicesI
         expB = loadByte st (plusU12 base (resize (fromIntegral n :: Unsigned 12)))
     in (mant, expB)
 
   nextStore st FifoState{..} pushNow xs =
-    let st1 = if pushNow then write64 st wrPtr xs else st
-        -- Pop doesn’t change stored bytes; rdPtr/used change in state only
-    in st1
+    if pushNow then write64 st wrPtr xs else st
+
 
   -- Outputs (combinational from current state)
-  mdRowOutComb :: Store -> FifoState -> LayerSeg -> Unsigned 13 -> (RowI8E md, Bool, Bool)
-  mdRowOutComb st FifoState{..} seg rl =
+  mdComb :: Store -> FifoState -> LayerSeg -> Unsigned 13 -> (RowI8E md,RowI8E hd,RowI8E hid, Bool, Bool, Bool)
+  mdComb st FifoState{..} seg rl =
     let popNow = used >= rl
-        (mantB, expB) = readRowMD @md st rdPtr
-        mdRow   = (map toMant mantB, toExp expB)
-        mdValid = popNow && isMD seg
-        rowDone = popNow
-    in (mdRow, mdValid, rowDone)
+        (mMdB, eMdB)   = readRowN @md  st rdPtr
+        (mHdB, eHdB)   = readRowN @hd  st rdPtr
+        (mHidB, eHidB) = readRowN @hid st rdPtr
+        mdRow  = (map toMant mMdB, toExp eMdB)
+        hdRow  = (map toMant mHdB, toExp eHdB)
+        hidRow = (map toMant mHidB, toExp eHidB)
+        mdV  = popNow && isMD  seg
+        hdV  = popNow && isHD  seg
+        hidV = popNow && isHID seg
+    in (mdRow, hdRow, hidRow, mdV, hdV, hidV)
 
-  (mdRowOutS, mdRowValidS, rowDoneExtS) =
-    unbundle (mdRowOutComb <$> storeS <*> stS <*> segS <*> rowLenS)
-  
+  (mdRowOutS, hdRowOutS, hidRowOutS, mdRowValidS, hdRowValidS, hidRowValidS) =
+    let tup = mdComb <$> storeS <*> stS <*> segS <*> rowLenS
+      in (  (\(a,_,_,_,_,_)->a) <$> tup
+        ,  (\(_,b,_,_,_,_)->b) <$> tup
+        ,  (\(_,_,c,_,_,_)->c) <$> tup
+        ,  (\(_,_,_,d,_,_)->d) <$> tup
+        ,  (\(_,_,_,_,e,_)->e) <$> tup
+        ,  (\(_,_,_,_,_,f)->f) <$> tup )
+
+  rowDoneExtS = willPopS
+
+-- Backward-compatible wrapper (MD only)
+dynamicRower ::
+  forall dom md hd hid.
+  ( HiddenClockResetEnable dom
+  , KnownNat md, KnownNat hd, KnownNat hid
+  ) =>
+  SNat md -> SNat hd -> SNat hid ->
+  Signal dom (BitVector 512) ->
+  Signal dom Bool ->
+  Signal dom LayerSeg ->
+  ( Signal dom (RowI8E md), Signal dom Bool, Signal dom Bool, Signal dom Bool )
+dynamicRower md hd hid d v s =
+  let (m, mv, _h, _hv, _i, _iv, done, rdy) = dynamicRower3 md hd hid d v s
+  in (m, mv, done, rdy)
