@@ -47,7 +47,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer en
 
     input = inputVector <$> layerData
 
-    -- CHANGED: RAM-aware controller
+    -- RAM-aware controller
     (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
         isStage1ThisLayer

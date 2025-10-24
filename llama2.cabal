@@ -160,13 +160,11 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Layer.Attention.AttentionHeadSpec
       LLaMa2.Layer.Attention.LayerWeightBufferSpec
-      LLaMa2.Layer.Attention.MultiHeadAttentionSpec
-      LLaMa2.Layer.FeedForward.FeedForwardNetworkSpec
+      LLaMa2.Layer.Attention.QKVProjectionIntegrationSpec
+      LLaMa2.Decoder.MultiTokenSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
-      LLaMa2.Memory.AxiReadMasterSpec
       LLaMa2.Memory.AxiWriteMasterSpec
       LLaMa2.Memory.WeightLoaderSpec
       LLaMa2.Numeric.OperationsSpec

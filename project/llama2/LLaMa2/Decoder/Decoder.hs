@@ -70,7 +70,7 @@ decoder :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom (Unsigned 32)
      , DecoderIntrospection dom )
-decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temperature seed =
+decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid temperature seed =
   (outputToken, readyPulse, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection)
   where
     -- WEIGHT MANAGEMENT SYSTEM (extended, robust)
@@ -88,7 +88,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
      , bootProgress
      , sysState
      , bootState
-     ) = weightManagementSystem bypass emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
+     ) = weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
 
     -- One real address generator, advanced by rowDoneExt from the rower
     (layerAddrSig, _layerDone) = layerAddressGenerator rowDoneExt loadTrigger
@@ -128,7 +128,7 @@ decoder bypass emmcSlave ddrSlave powerOn params inputToken inputTokenValid temp
           && rowIx la  == maxBound
 
     layerEnable :: Signal dom Bool
-    layerEnable = mux loadTrigger (pure False) (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
+    layerEnable = mux loadTrigger (pure False) (fullyLoaded <$> weightBuffer)
 
     -- Token gating and sampling
     (mantissasH, _expH) = unbundle parsedWeightsHold

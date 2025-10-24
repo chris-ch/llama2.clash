@@ -2,13 +2,10 @@ module LLaMa2.Layer.Attention.LayerWeightBufferSpec (spec) where
 
 import Clash.Prelude
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
-import LLaMa2.Memory.WeightLoaderAddressingExtended
-  ( LayerSeg (..),
-    rowsInSeg,
-  )
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, NumQueryHeads, NumKeyValueHeads)
+import LLaMa2.Memory.LayerAddressing (rowsInSeg, LayerSeg (..))
 
 -- ============================================================================
 -- HELPER FUNCTIONS

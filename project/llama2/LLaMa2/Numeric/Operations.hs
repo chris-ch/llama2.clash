@@ -26,20 +26,7 @@ parallelRowMatrixMultiplier :: forall dom rows cols .
  , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
  )
 parallelRowMatrixMultiplier = parallel64RowMatrixMultiplier
-
-parallelRowMatrixMultiplier' :: forall dom rows cols .
- ( HiddenClockResetEnable dom
- , KnownNat cols, KnownNat rows
- )
- => Signal dom Bool -- ^ validIn input from the upstream producer, indicating that the input vector is valid.
- -> Signal dom Bool -- ^ readyIn from downstream consumer, indicating it can accept new data
- -> MatI8E rows cols -- ^ matrix as row vectors.
- -> Signal dom (Vec cols FixedPoint) -- ^ input vector.
- -> ( Signal dom (Vec rows FixedPoint) -- ^ output vector.
- , Signal dom Bool -- ^ validOut indicating downstream consumer that the output vector is valid.
- , Signal dom Bool -- ^ readyOut input to the producer, indicating that the multiplier is ready to accept new input.
- )
-parallelRowMatrixMultiplier' = Simulation.MatVecSim.matrixMultiplierStub
+--parallelRowMatrixMultiplier = Simulation.MatVecSim.matrixMultiplierStub
 
 -- | An accumulator for sequentially summing FixedPoint values in a matrix-vector
 -- multiplication process. It accumulates products when enabled, can be reset,

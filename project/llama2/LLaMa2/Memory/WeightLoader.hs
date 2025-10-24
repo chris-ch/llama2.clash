@@ -299,14 +299,14 @@ weightManagementSystem
      , Signal dom WeightSystemState
      , Signal dom BootLoaderState
      )
-weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigger streamSinkReady =
+weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerRequest loadTrigger streamSinkReady =
   (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut, bootProgress, sysState, bootState)
   where
     sysState = register WSBoot nextSysState
     emmcBaseAddr = 0 :: Unsigned 32
     ddrBaseAddr  = 0 :: Unsigned 32
 
-    startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypass)
+    startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypassBoot)
     (emmcMasterBoot, ddrMasterBoot, bootDone, bootProgress, bootState) =
       bootWeightLoader emmcSlave ddrSlave startBoot (pure emmcBaseAddr) (pure ddrBaseAddr)
 
@@ -324,15 +324,15 @@ weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigge
       }
 
     -- eMMC master: pick idle when bypass=True, else boot master
-    emmcMaster = selectAxiMasterOut bypass emmcIdle emmcMasterBoot
+    emmcMaster = selectAxiMasterOut bypassBoot emmcIdle emmcMasterBoot
 
     -- DDR master: pick BOOT path only when NOT bypassing AND in WSBoot; otherwise Runtime
     isBoot  = sysState .==. pure WSBoot
-    useBoot = (not <$> bypass) .&&. isBoot
+    useBoot = (not <$> bypassBoot) .&&. isBoot
     ddrMaster = selectAxiMasterOut useBoot ddrMasterBoot ddrMasterRuntime
 
     nextSysState =
-      mux bypass
+      mux bypassBoot
         (pure WSReady)
         (mux (sysState .==. pure WSBoot)
              (mux bootDone (pure WSReady) (pure WSBoot))
@@ -342,4 +342,4 @@ weightManagementSystem bypass emmcSlave ddrSlave powerOn layerRequest loadTrigge
                        (mux streamComplete (pure WSReady) (pure WSStreaming))
                        sysState)))
 
-    systemReadyOut = mux bypass (pure True) (sysState .==. pure WSReady)
+    systemReadyOut = mux bypassBoot (pure True) (sysState .==. pure WSReady)
