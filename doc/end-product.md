@@ -20,7 +20,7 @@ Here is the **complete, minimal, production-ready BOM** for a **USB 2.0 version*
 | 4 | **QSPI Flash** | MT25QU256ABA (256Mb) | 1 | $3 | $3 |
 | 5 | **PMIC** | TPS6508640 (multi-rail) | 1 | $10 | $10 |
 | 6 | **LDO (1.8V, 3.3V)** | TPS7A47, TPS7A33 | 2 | $1 | $2 |
-| 7 | **Micro-USB Type-B Connector** | Molex 105017-0001 | 1 | **$0.50** | **$0.50** |
+| 7 | **Micro-USB Type-B Connector** | Molex 105017-0001 | 1 | $0.50 | $0.50 |
 | 8 | **25 MHz Crystal** (for PS refclk) | SIT5156 | 1 | $1.50 | $1.50 |
 | 9 | **PCB (6-layer, 100×80 mm)** | Custom | 1 | $40 | $40 |
 |10 | **Passives** (caps, resistors, ESD, etc.) | — | — | $20 | $20 |
@@ -86,9 +86,6 @@ while True:
 
 | Feature | Notes |
 |-------|----------|
-| **USB 2.0** | Built-in PS, just connector |
-| **No external PHY** | Saves \$5–\$8 |
-| **No FPGA fabric USB** | Saves 45K cells |
 | **eMMC → DDR4 copy** | 17 sec boot |
 | **ARM Linux** | Manages USB, boot, comms |
 | **FPGA AI core** | Clash decoder |
