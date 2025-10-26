@@ -21,8 +21,8 @@ import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decode
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import LLaMa2.Memory.AXI (AxiSlaveIn (..), AxiMasterOut (..))
-import qualified LLaMa2.Memory.FileBackedAxiSlave as FileAxi
-import LLaMa2.Memory.FileBackedAxiSlave (ReadState)
+import qualified Simulation.FileBackedAxiSlave as FileAxi
+import Simulation.RamBackedAxiSlave (ReadState)
 
 --------------------------------------------------------------------------------
 -- Main entry point

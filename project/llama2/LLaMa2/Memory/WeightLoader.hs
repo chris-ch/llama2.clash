@@ -15,10 +15,9 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Numeric.Types (Exponent, Mantissa)
-import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.AXI
-import LLaMa2.Memory.AxiReadMasterReady (axiBurstReadMasterReady)
+import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 
 -- ============================================================================
 -- File Layout Constants (matches Parser.hs)
@@ -82,12 +81,12 @@ calculateLayerBaseAddress layerIdx = embeddingSize + rmsFinalSize + rotarySize +
 data BootLoaderState
   = BootIdle
   | BootReading      -- Reading burst from eMMC
+  | BootPause        --
   | BootWriting      -- Writing burst to DDR4
   | BootComplete
   deriving (Generic, NFDataX, Show, Eq)
 
--- | Boot loader: Copy entire model from eMMC to DDR4
--- Takes ~17.5 seconds for 7GB @ 400 MB/s
+-- | Boot loader: eMMC -> DDR4, burst-to-burst streaming (read master Ready-aware, write master burst-capable)
 bootWeightLoader :: forall dom . HiddenClockResetEnable dom
   => AxiSlaveIn dom                     -- eMMC AXI slave
   -> AxiSlaveIn dom                     -- DDR4 AXI slave
@@ -97,7 +96,7 @@ bootWeightLoader :: forall dom . HiddenClockResetEnable dom
   -> ( AxiMasterOut dom                 -- eMMC AXI master
      , AxiMasterOut dom                 -- DDR4 AXI master
      , Signal dom Bool                  -- Boot complete
-     , Signal dom (Unsigned 32)         -- Bytes transferred
+     , Signal dom (Unsigned 32)         -- Bytes transferred (approx: completed bursts * 16KB)
      , Signal dom BootLoaderState
      )
 bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
@@ -105,62 +104,65 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
   where
     state = register BootIdle nextState
 
-    -- Use 256-transfer bursts (matches AXI limit)
-    burstSize = 255 :: Unsigned 8  -- 256 transfers
-    burstBytes = 16384 :: Unsigned 32  -- 256 * 64 bytes
-    currentBurst = register (0 :: Unsigned 32) nextBurst
+    -- 256 beats/burst, 64 bytes/beat
+    burstLen   = 255 :: Unsigned 8
+    burstBytes = 16384 :: Unsigned 32
+
+    -- Burst index and “bytes transferred” counter (coarse, per burst)
+    currentBurst     = register (0 :: Unsigned 32) nextBurst
     bytesTransferred = currentBurst * pure burstBytes
-    
-    -- Total model size
+
     totalBursts = (calculateModelSizeBytes + burstBytes - 1) `div` burstBytes
 
-    -- Address calculation
+    -- Addresses for the current burst
     emmcAddr = emmcBase + (currentBurst * pure burstBytes)
-    ddrAddr = ddrBase + (currentBurst * pure burstBytes)
+    ddrAddr  = ddrBase  + (currentBurst * pure burstBytes)
 
-    -- Read from eMMC
-    startRead = state .==. pure BootReading
-    (emmcMaster, readData, readValid, _emmcReady) =
-      axiBurstReadMaster emmcSlave emmcAddr (pure burstSize) startRead
+    -- Reader: start one burst while in BootReading
+    startReadBurst = state .==. pure BootReading
+    ( emmcMaster
+      , readData
+      , readValid
+      , _emmcReady     -- goes High in ReadIdle; not used further
+      ) = axiBurstReadMaster emmcSlave emmcAddr (pure burstLen) startReadBurst writerDataReady
 
-    -- Write to DDR4 (stream through)
-    startWrite = readValid
-    (ddrMaster, writeComplete, ddrReady) =
-      axiWriteMaster ddrSlave ddrAddr readData startWrite
+    -- Writer: start one burst when we enter BootReading and the per-burst counter is 0
+    atBurstStart   = (state .==. pure BootReading) .&&. (transfersInBurst .==. pure 0)
+    startWriteBurst= pulse1 atBurstStart
+    ( ddrMaster
+      , _writeDone
+      , writerDataReady ) = axiWriteMaster ddrSlave ddrAddr (pure burstLen) startWriteBurst readData readValid
 
-    -- Track burst completion
+    -- Count accepted beats within this burst (readValid == writer accepted beat, because we wire writerDataReady back)
     transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete = transfersInBurst .==. pure 256
-
-    -- Only reset counter when a new burst starts (e.g. after burstComplete)
+    burstComplete    = transfersInBurst .==. pure 256
     nextTransferCount =
       mux (state ./=. pure BootReading) 0 $
       mux burstComplete 0 $
       mux readValid (transfersInBurst + 1) transfersInBurst
 
-    -- All transfers done?
+    -- Progress state machine: Reading -> Pause (to bump burst index) -> Complete/Reading
     allComplete = currentBurst .>=. pure totalBursts
 
-    -- State machine
-    nextState = mux (state .==. pure BootIdle)
-      (mux startBoot (pure BootReading) (pure BootIdle))
-      (mux (state .==. pure BootReading)
-        (mux (burstComplete .&&. allComplete)
-          (pure BootComplete)
-          (mux burstComplete
-            (pure BootReading)  -- Next burst
-            (pure BootReading)))
-        (mux (state .==. pure BootComplete)
-          (pure BootIdle)
-          state))
+    nextState =
+      mux (state .==. pure BootIdle)
+        (mux startBoot (pure BootReading) (pure BootIdle)) $
+      mux (state .==. pure BootReading)
+        (mux burstComplete (pure BootPause) (pure BootReading)) $
+      mux (state .==. pure BootPause)
+        (mux allComplete (pure BootComplete) (pure BootReading)) $
+      -- BootComplete self-clears next cycle (optional)
+      pure BootIdle
 
-    nextBurst = mux (state .==. pure BootIdle)
-      0
-      (mux burstComplete
-        (currentBurst + 1)
-        currentBurst)
+    nextBurst =
+      mux (state .==. pure BootIdle) 0 $
+      mux ((state .==. pure BootReading) .&&. burstComplete) (currentBurst + 1) currentBurst
 
     bootComplete = state .==. pure BootComplete
+
+    -- One-shot pulse helper
+    pulse1 :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
+    pulse1 s = s .&&. not <$> register False s
 
 -- ============================================================================
 -- RUNTIME STREAMER: DDR4 → FPGA (Layer-at-a-time)
@@ -172,7 +174,7 @@ data StreamerState
   | StreamComplete
   deriving (Generic, NFDataX, Show, Eq)
 
--- | Stream one layer's weights from DDR4
+-- | Stream one layer's weights from DDR4 (READY-aware) — counter bug fixed
 layerWeightStreamer
   :: forall dom . HiddenClockResetEnable dom
   => AxiSlaveIn dom                     -- DDR4 AXI slave
@@ -191,43 +193,40 @@ layerWeightStreamer ddrSlave layerIdx startLoad sinkReady =
 
     layerBaseAddr = calculateLayerBaseAddress <$> layerIdx
 
-    burstSize  = 255 :: Unsigned 8
+    burstLen   = 255 :: Unsigned 8
     burstBytes = 16384 :: Unsigned 32
     totalBursts = (calculateLayerSizeBytes + burstBytes - 1) `div` burstBytes
 
     currentBurst = register (0 :: Unsigned 32) nextBurst
-    burstAddr = layerBaseAddr + (currentBurst * pure burstBytes)
+    burstAddr    = layerBaseAddr + (currentBurst * pure burstBytes)
 
     startBurst = state .==. pure StreamBursting
-    -- READY-AWARE master
     (axiMaster, weightData, dataValid, _ready) =
-      axiBurstReadMasterReady ddrSlave burstAddr (pure burstSize) startBurst sinkReady
+      axiBurstReadMaster ddrSlave burstAddr (pure burstLen) startBurst sinkReady
 
     transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete = transfersInBurst .==. pure 256
+    burstComplete    = transfersInBurst .==. pure 256
 
-    nextTransferCount = mux startBurst
-      0
-      (mux dataValid
-        (transfersInBurst + 1)
-        transfersInBurst)
+    -- BUGFIX: do not reset while in StreamBursting each cycle; reset only on Idle or when a burst completes
+    nextTransferCount =
+      mux (state .==. pure StreamIdle) 0 $
+      mux burstComplete 0 $
+      mux dataValid (transfersInBurst + 1) transfersInBurst
 
     allBurstsComplete = currentBurst .>=. pure totalBursts
 
-    nextState = mux (state .==. pure StreamIdle)
-      (mux startLoad (pure StreamBursting) (pure StreamIdle))
-      (mux (state .==. pure StreamBursting)
-        (mux (burstComplete .&&. allBurstsComplete)
-          (pure StreamComplete)
-          (mux burstComplete
-            (pure StreamBursting)
-            (pure StreamBursting)))
-        (mux (state .==. pure StreamComplete)
-          (pure StreamIdle)
-          state))
+    nextState =
+      mux (state .==. pure StreamIdle)
+        (mux startLoad (pure StreamBursting) (pure StreamIdle)) $
+      mux (state .==. pure StreamBursting)
+        (mux (burstComplete .&&. allBurstsComplete) (pure StreamComplete)
+          (mux burstComplete (pure StreamBursting) (pure StreamBursting))) $
+      -- StreamComplete -> StreamIdle
+      pure StreamIdle
 
-    nextBurst = mux (state .==. pure StreamIdle) 0
-             $ mux burstComplete (currentBurst + 1) currentBurst
+    nextBurst =
+      mux (state .==. pure StreamIdle) 0 $
+      mux burstComplete (currentBurst + 1) currentBurst
 
     loadComplete = state .==. pure StreamComplete
 

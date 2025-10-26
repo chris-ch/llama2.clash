@@ -46,9 +46,6 @@ spec = do
       -- CRITICAL: Once loaded, should STAY loaded (no reset)
       allStayTrue `shouldBe` True
 
-      P.putStrLn $ "\nFirst loaded at cycle: " P.++ show firstLoadedIdx
-      P.putStrLn $ "Stayed loaded for 5000 cycles: " P.++ show allStayTrue
-
       -- If this fails, fullyLoaded is clearing unexpectedly
 
     it "buffer should clear fullyLoaded ONLY when reset fires" $ do
@@ -75,9 +72,6 @@ spec = do
       beforeReset `shouldBe` True   -- Should be loaded before reset
       afterReset `shouldBe` False   -- Should clear after reset
 
-      P.putStrLn $ "\nBefore reset: " P.++ show beforeReset
-      P.putStrLn $ "After reset: " P.++ show afterReset
-
     it "detects if fullyLoaded glitches during normal operation" $ do
       -- Check for any unexpected transitions from True→False
       let writes = generateWriteSequence 10
@@ -101,15 +95,6 @@ spec = do
           anyGlitch = DL.any not flagsAfterLoad
 
       anyGlitch `shouldBe` False  -- Should never glitch
-
-      if anyGlitch
-        then do
-          let firstGlitchIdx = firstTrue + 1 + fromJust (DL.findIndex not flagsAfterLoad)
-          P.putStrLn $ "\n✗ GLITCH DETECTED at cycle " P.++ show firstGlitchIdx
-          P.putStrLn "This would cause incorrect tokens!"
-        else
-          P.putStrLn "\n✓ No glitches - fullyLoaded stays stable"
-
 
 -- Helper functions (same as before)
 makeSyntheticRow :: Index HeadDimension -> RowI8E ModelDimension

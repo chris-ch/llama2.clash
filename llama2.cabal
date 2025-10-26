@@ -107,17 +107,14 @@ library
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.FeedForward.FeedForwardNetworkWithRAM
       LLaMa2.Layer.TransformerLayer
-      LLaMa2.Memory.KVCacheBank
-      LLaMa2.Memory.DualPortRAM
-      LLaMa2.Memory.WeightLoader
       LLaMa2.Memory.AXI
       LLaMa2.Memory.AxiReadMaster
-      LLaMa2.Memory.AxiReadMasterReady
       LLaMa2.Memory.AxiWriteMaster
-      LLaMa2.Memory.FileBackedAxiSlave
+      LLaMa2.Memory.DualPortRAM
       LLaMa2.Memory.I8EDynamicRower
-      LLaMa2.Memory.I8EStreamParser
+      LLaMa2.Memory.KVCacheBank
       LLaMa2.Memory.LayerAddressing
+      LLaMa2.Memory.WeightLoader
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -131,6 +128,8 @@ library
       LLaMa2.Types.Parameters
       Parser
       Simulation.MatVecSim
+      Simulation.FileBackedAxiSlave
+      Simulation.RamBackedAxiSlave
       Tokenizer
   hs-source-dirs:
       project/llama2
@@ -161,12 +160,13 @@ test-suite llama2-test
   main-is: Spec.hs
   other-modules:
       LLaMa2.Layer.Attention.LayerWeightBufferSpec
-      LLaMa2.Layer.Attention.QKVProjectionIntegrationSpec
       LLaMa2.Decoder.MultiTokenSpec
+      LLaMa2.Decoder.TimingValidationSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
-      LLaMa2.Memory.AxiWriteMasterSpec
-      LLaMa2.Memory.WeightLoaderSpec
+      Simulation.AxiWriteMasterSpec
+      Simulation.BootThenLoadSpec
+      Simulation.WeightLoaderSpec
       LLaMa2.Numeric.OperationsSpec
   hs-source-dirs:
       test

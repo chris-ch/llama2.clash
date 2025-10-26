@@ -1,10 +1,8 @@
-module LLaMa2.Memory.WeightLoaderSpec (spec) where
+module Simulation.WeightLoaderSpec (spec) where
 
 import Clash.Prelude
-import qualified Data.ByteString.Lazy as BSL
 import qualified Data.List as DL
 import LLaMa2.Memory.AXI
-import LLaMa2.Memory.FileBackedAxiSlave (createFileBackedAxiSlave)
 import LLaMa2.Memory.WeightLoader
 import LLaMa2.Numeric.Types (Mantissa)
 import Test.Hspec
@@ -92,10 +90,10 @@ spec = do
             withClockResetEnable systemClockGen resetGen enableGen
               $ bootWeightLoader mockAxiSlave mockAxiSlave startBoot emmcBase ddrBase
 
-          states = sampleN 242_169 state
-          done = sampleN 242_169 bootComplete
+          states = sampleN 1_200_000 state
+          done = sampleN 1_200_000 bootComplete
 
-      states `shouldContain` [BootIdle, BootReading]
+      DL.nub states `shouldContain` [BootIdle, BootReading, BootPause, BootComplete]
       P.or done `shouldBe` True
 
     it "handles delayed rvalid signals without stalling forever" $ do
@@ -103,8 +101,8 @@ spec = do
           (_, _, bootComplete, _, _) =
             withClockResetEnable systemClockGen resetGen enableGen
               $ bootWeightLoader slowSlave mockAxiSlave (pure True) (pure 0) (pure 0)
-          done = sampleN 242_214 bootComplete
-      done `shouldContain` [True]
+          done = sampleN 1_200_000 bootComplete
+      DL.nub done `shouldContain` [True]
 
   describe "parseI8EChunk"
     $ it "extracts mantissas and exponent correctly"
@@ -137,37 +135,3 @@ spec = do
         P.all (== WSReady) stateS `shouldBe` True
       it "no boot reading" $ do
         bootS `shouldSatisfy` P.notElem BootReading
-
-  describe "bootWeightLoader with file-backed AXI" $ do
-    it "goes through all boot stages (mini-model 260K)" $ do
-      modelBinary <- BSL.readFile "data/stories260K.bin"
-
-      let emmcBase = pure 0
-          ddrBase = pure 0
-
-      withClockResetEnable systemClockGen resetGen enableGen $ do
-        let startBoot = fromList $ [False, True] P.++ P.repeat False
-
-            -- STEP 1: create the FSM outputs first
-            (emmcMasterOut, ddrMasterOut, bootCompleteSig, bytesTransferredSig, fsmStateSig) =
-              bootWeightLoader emmcSlave emmcSlave startBoot emmcBase ddrBase
-
-            -- STEP 2: create slaves driven by the FSM outputs
-            (emmcSlave, _emmcReadState) =
-              createFileBackedAxiSlave modelBinary emmcMasterOut
-            (_ddrSlave, _ddrReadState) =
-              createFileBackedAxiSlave modelBinary ddrMasterOut
-
-            -- STEP 3: sample outputs for enough cycles
-            sampledStates = sampleN 250_000 fsmStateSig
-            sampledBoot = sampleN 250_000 bootCompleteSig
-            sampledBytes = sampleN 250_000 bytesTransferredSig
-            uniqStates = DL.nub sampledStates
-
-        -- Assertions
-        P.or sampledBoot `shouldBe` True
-        uniqStates `shouldContain` [BootIdle]
-        uniqStates `shouldContain` [BootReading]
-        uniqStates `shouldContain` [BootComplete]
-        sampledBytes `shouldSatisfy` any (> 0)
-        pure ()
