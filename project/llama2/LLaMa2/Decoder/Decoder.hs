@@ -26,7 +26,6 @@ import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddre
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
-import LLaMa2.Memory.WeightLoader.BootWeightLoader (BootLoaderState)
 
 -- Initial state
 initialLayerData :: LayerData
@@ -48,17 +47,13 @@ data DecoderIntrospection dom = DecoderIntrospection
   , ffnDone             :: Signal dom Bool
   , weightStreamValid   :: Signal dom Bool
   , parsedWeightSample  :: Signal dom Mantissa
-  , bootProgressBytes   :: Signal dom (Unsigned 32)
   , layerChangeDetected :: Signal dom Bool
   , sysState            :: Signal dom WeightSystemState
-  , bootState           :: Signal dom BootLoaderState
   , weightBufferState   :: Signal dom QKVProjectionWeightBuffer
   } deriving (Generic, NFDataX)
 
 decoder :: forall dom. HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Slave.AxiSlaveIn dom
-  -> Slave.AxiSlaveIn dom
+  => Slave.AxiSlaveIn dom
   -> Signal dom Bool
   -> PARAM.DecoderParameters
   -> Signal dom Token
@@ -68,12 +63,10 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> ( Signal dom Token
      , Signal dom Bool
      , Master.AxiMasterOut dom
-     , Master.AxiMasterOut dom
      , Signal dom Bool
-     , Signal dom (Unsigned 32)
      , DecoderIntrospection dom )
-decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid temperature seed =
-  (outputToken, readyPulse, emmcMaster, ddrMaster, weightsReady, bootProgress, introspection)
+decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
+  (outputToken, readyPulse, ddrMaster, systemReadyOut, introspection)
   where
     -- WEIGHT MANAGEMENT SYSTEM (extended, robust)
     firstCycle = register True (pure False)
@@ -82,17 +75,12 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
     loadTrigger = firstCycle .||. layerChanged
 
     -- Real weight manager backpressured by sinkReady (defined below)
-    ( emmcMaster
-     , ddrMaster
+    (  ddrMaster
      , weightStream
-     , beatValid
-     , weightsReady
-     , bootProgress
+     , streamValid
+     , systemReadyOut
      , sysState
-     , bootState
-     , _, _, _
-     , _, _, _, _, _, _
-     ) = weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
+     ) = weightManagementSystem ddrSlave powerOn layerIdx loadTrigger sinkReady
 
     -- One real address generator, advanced by rowDoneExt from the rower
     (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
@@ -101,7 +89,7 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
     -- Dynamic rower (segment-aware, backpressured)
     (mdRowOut, mdRowValid, rowDoneExt, sinkReady) =
       dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
-                   weightStream beatValid segSig
+                   weightStream streamValid segSig
 
     -- Hold last good MD row (safe sampling)
     parsedWeightsHold :: Signal dom (RowI8E ModelDimension)
@@ -137,7 +125,7 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
     -- Token gating and sampling
     (mantissasH, expH) = unbundle parsedWeightsHold
     firstMantissa = fmap (bitCoerce . head) mantissasH
-    gatedTokenValid = inputTokenValid .&&. weightsReady
+    gatedTokenValid = inputTokenValid .&&. systemReadyOut
 
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     layerIdx :: Signal dom (Index NumLayers)
@@ -177,11 +165,9 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
       , ready               = readyPulse
       , attnDone            = attnDoneThisLayer
       , ffnDone             = ffnDoneThisLayer
-      , weightStreamValid   = beatValid
+      , weightStreamValid   = streamValid
       , parsedWeightSample  = firstMantissa
-      , bootProgressBytes   = bootProgress
       , layerChangeDetected = layerChanged
       , sysState            = sysState
-      , bootState           = bootState
       , weightBufferState   = weightBuffer
       }

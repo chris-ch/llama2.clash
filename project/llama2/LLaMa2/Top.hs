@@ -13,9 +13,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
 
 topEntityWithAxi
   :: HiddenClockResetEnable System
-  => Signal System Bool                -- ^ bypassBoot (True for simulation)
-  -> Slave.AxiSlaveIn System
-  -> Slave.AxiSlaveIn System
+  =>  Slave.AxiSlaveIn System
   -> Signal System Bool                -- ^ powerOn
   -> Signal System Token
   -> Signal System Bool
@@ -24,10 +22,8 @@ topEntityWithAxi
   -> ( Signal System Token
      , Signal System Bool
      , Master.AxiMasterOut System
-     , Master.AxiMasterOut System
      , Signal System Bool
-     , Signal System (Unsigned 32)
      , Decoder.DecoderIntrospection System
      )
-topEntityWithAxi bypassBoot emmcSlave ddrSlave powerOn inTok inTokValid temp seed =
-  Decoder.decoder bypassBoot emmcSlave ddrSlave powerOn decoderConst inTok inTokValid temp seed
+topEntityWithAxi ddrSlave powerOn inTok inTokValid temp seed =
+  Decoder.decoder ddrSlave powerOn decoderConst inTok inTokValid temp seed

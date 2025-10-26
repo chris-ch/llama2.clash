@@ -1,6 +1,7 @@
 module LLaMa2.Memory.WeightLoader 
  (
   calculateLayerBaseAddress,
+  calculateLayerSizeBytes,
   layerWeightStreamer,
   parseI8EChunk,
   weightManagementSystem,
@@ -16,7 +17,6 @@ import LLaMa2.Numeric.Types (Exponent, Mantissa)
 import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
-import LLaMa2.Memory.WeightLoader.BootWeightLoader (BootLoaderState, calculateLayerSizeBytes, bootWeightLoader)
 
 -- ============================================================================
 -- File Layout Constants (matches Parser.hs)
@@ -36,6 +36,28 @@ calculateLayerBaseAddress layerIdx = embeddingSize + rmsFinalSize + rotarySize +
     rotarySize = 2 * seqLen * rotaryDim * 4
     layerOffset = fromIntegral layerIdx * calculateLayerSizeBytes
 
+-- Calculate size of one layer in bytes (I8E format: 1 byte mantissa + 1/N byte exponent per row)
+calculateLayerSizeBytes :: Unsigned 32
+calculateLayerSizeBytes = rmsAttSize + wqSize + wkSize + wvSize + woSize +
+                          rmsFfnSize + w1Size + w2Size + w3Size
+  where
+    modelDim = snatToNum (SNat @ModelDimension)
+    hiddenDim = snatToNum (SNat @HiddenDimension)
+    numQueryHeads = snatToNum (SNat @NumQueryHeads)
+    numKVHeads = snatToNum (SNat @NumKeyValueHeads)
+    headDim = snatToNum (SNat @HeadDimension)
+
+    -- Each row: N mantissas (1 byte each) + 1 exponent (1 byte)
+    rmsAttSize = modelDim + 1
+    wqSize = numQueryHeads * headDim * (modelDim + 1)
+    wkSize = numKVHeads * headDim * (modelDim + 1)
+    wvSize = numKVHeads * headDim * (modelDim + 1)
+    woSize = modelDim * (modelDim + 1)
+    rmsFfnSize = modelDim + 1
+    w1Size = hiddenDim * (modelDim + 1)
+    w2Size = modelDim * (hiddenDim + 1)
+    w3Size = hiddenDim * (modelDim + 1)
+
 -- ============================================================================
 -- RUNTIME STREAMER: DDR4 → FPGA (Layer-at-a-time)
 -- ============================================================================
@@ -46,7 +68,7 @@ data StreamerState
   | StreamComplete
   deriving (Generic, NFDataX, Show, Eq)
 
--- | Stream one layer's weights from DDR4 (READY-aware) — counter bug fixed
+-- | Stream one layer's weights from DDR4 (READY-aware)
 layerWeightStreamer
   :: forall dom . HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
@@ -130,104 +152,35 @@ parseI8EChunk rawData = (mantissas, expon)
 -- ============================================================================
 
 data WeightSystemState
-  = WSBoot           -- Boot: loading eMMC → DDR4
-  | WSReady          -- Ready for inference
+  = WSReady          -- Ready for inference
   | WSStreaming      -- Streaming layer from DDR4
   deriving (Generic, NFDataX, Show, Eq)
 
--- | Complete weight management system
--- Find the weightManagementSystem function and ADD a bypass parameter:
--- Select between two AXI master records (record-of-signals) using a Signal Bool
-selectAxiMasterOut
-  :: Signal dom Bool         -- ^ sel=True => pick 'a', otherwise 'b'
-  -> Master.AxiMasterOut dom        -- ^ a
-  -> Master.AxiMasterOut dom        -- ^ b
-  -> Master.AxiMasterOut dom
-selectAxiMasterOut sel a b = Master.AxiMasterOut
-  { arvalid = mux sel (Master.arvalid a) (Master.arvalid b)
-  , ardata  = mux sel (Master.ardata  a) (Master.ardata  b)
-  , rready  = mux sel (Master.rready  a) (Master.rready  b)
-  , awvalid = mux sel (Master.awvalid a) (Master.awvalid b)
-  , awdata  = mux sel (Master.awdata  a) (Master.awdata  b)
-  , wvalid  = mux sel (Master.wvalid  a) (Master.wvalid  b)
-  , wdata = mux sel (Master.wdata a) (Master.wdata b)
-  , bready  = mux sel (Master.bready  a) (Master.bready  b)
-  }
-
 weightManagementSystem
   :: forall dom . HiddenClockResetEnable dom
-  => Signal dom Bool                    -- bypass
-  -> Slave.AxiSlaveIn dom                     -- eMMC AXI slave
-  -> Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
-  -> Signal dom Bool                    -- Power on / start boot
-  -> Signal dom (Index NumLayers)       -- Current layer
-  -> Signal dom Bool                    -- Load layer trigger
-  -> Signal dom Bool                    -- streamSinkReady (consumer ready for beats)
+  => Slave.AxiSlaveIn dom
+  -> Signal dom Bool
+  -> Signal dom (Index NumLayers)
+  -> Signal dom Bool
+  -> Signal dom Bool
   -> ( Master.AxiMasterOut dom
-     , Master.AxiMasterOut dom
      , Signal dom (BitVector 512)
      , Signal dom Bool
      , Signal dom Bool
-     , Signal dom (Unsigned 32)
      , Signal dom WeightSystemState
-     , Signal dom BootLoaderState     
-     , Signal dom Bool                  -- readValid (for debugging)
-     , Signal dom Bool                  -- writerDataReady (for debugging)
-     , Signal dom (Unsigned 8)         -- transfersInBurst (for debugging)
-     , Signal dom Bool                  -- burstComplete (for debugging)
-     , Signal dom Bool                  -- allComplete (for debugging)
-     , Signal dom (Unsigned 32)        -- currentBurst (for debugging)
-     , Signal dom Bool                  -- burstStarted (for debugging)
-     , Signal dom Bool                  -- startReadBurst (for debugging)
-     , Signal dom Bool                  -- emmcReady (for debugging)
      )
-weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerRequest loadTrigger streamSinkReady =
-  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut,
-   bootProgress, sysState, bootState, readValid, writerDataReady,
-    transfersInBurst, burstComplete, allComplete, currentBurst,
-     burstStarted, startReadBurst, emmcReady)
+weightManagementSystem ddrSlave powerOn layerReq loadTrigger sinkReady =
+  (ddrMaster, weightStream, streamValid, systemReadyOut, sysState)
   where
-    sysState = register WSBoot nextSysState
-    emmcBaseAddr = 0 :: Unsigned 32
-    ddrBaseAddr  = 0 :: Unsigned 32
+    sysState = register WSReady nextState
 
-    startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypassBoot)
-    (emmcMasterBoot, ddrMasterBoot, bootDone, 
-      bootProgress, bootState, readValid, writerDataReady,
-     transfersInBurst, burstComplete, allComplete,
-      currentBurst, burstStarted, startReadBurst, emmcReady) =
-      bootWeightLoader emmcSlave ddrSlave startBoot (pure emmcBaseAddr) (pure ddrBaseAddr)
+    startStream = (sysState .==. pure WSReady) .&&. powerOn .&&. loadTrigger
+    (ddrMaster, weightStream, streamValid, streamComplete) =
+      layerWeightStreamer ddrSlave layerReq startStream sinkReady
 
-    startStream = (sysState .==. pure WSReady) .&&. loadTrigger
-    (ddrMasterRuntime, weightStream, streamValid, streamComplete) =
-      layerWeightStreamer ddrSlave layerRequest startStream streamSinkReady
+    nextState =
+      mux (sysState .==. pure WSReady)
+        (mux startStream (pure WSStreaming) (pure WSReady))
+        (mux streamComplete (pure WSReady) (pure WSStreaming))
 
-    -- An idle/zeroed AXI master for eMMC when bypassing boot
-    emmcIdle = Master.AxiMasterOut
-      { arvalid = pure False, ardata  = pure (errorX "emmc bypass")
-      , rready  = pure False
-      , awvalid = pure False, awdata  = pure (errorX "emmc bypass")
-      , wvalid  = pure False, wdata = pure (errorX "emmc bypass")
-      , bready  = pure False
-      }
-
-    -- eMMC master: pick idle when bypass=True, else boot master
-    emmcMaster = selectAxiMasterOut bypassBoot emmcIdle emmcMasterBoot
-
-    -- DDR master: pick BOOT path only when NOT bypassing AND in WSBoot; otherwise Runtime
-    isBoot  = sysState .==. pure WSBoot
-    useBoot = (not <$> bypassBoot) .&&. isBoot
-    ddrMaster = selectAxiMasterOut useBoot ddrMasterBoot ddrMasterRuntime
-
-    nextSysState =
-      mux bypassBoot
-        (pure WSReady)
-        (mux (sysState .==. pure WSBoot)
-             (mux bootDone (pure WSReady) (pure WSBoot))
-             (mux (sysState .==. pure WSReady)
-                  (mux startStream (pure WSStreaming) (pure WSReady))
-                  (mux (sysState .==. pure WSStreaming)
-                       (mux streamComplete (pure WSReady) (pure WSStreaming))
-                       sysState)))
-
-    systemReadyOut = mux bypassBoot (pure True) (sysState .==. pure WSReady)
+    systemReadyOut = sysState .==. pure WSReady
