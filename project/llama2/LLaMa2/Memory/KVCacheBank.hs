@@ -1,24 +1,10 @@
 module LLaMa2.Memory.KVCacheBank (
-  writeSequencer,
   writePulseGenerator
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig  (HeadDimension)
 
--- Existing (unchanged) counter-based sequencer (if you still want it):
-writeSequencer
-  :: HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom Bool
-writeSequencer enSig = doneSig
- where
-  dimCnt     = register (0 :: Index HeadDimension) nextDimCnt
-  nextDimCnt = mux enSig (succ <$> dimCnt) (pure 0)
-  atLastDim  = (== maxBound) <$> dimCnt
-  doneSig    = (&&) <$> enSig <*> atLastDim
-
--- New: one-pulse generator (rising edge of 'en')
+-- one-pulse generator (rising edge of 'en')
 writePulseGenerator
   :: HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ en (Level during Stage2)

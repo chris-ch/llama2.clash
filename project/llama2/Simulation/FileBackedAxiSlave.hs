@@ -7,8 +7,10 @@ import Clash.Prelude
 import qualified Data.ByteString.Lazy as BSL
 import Data.ByteString.Lazy (ByteString)
 
-import LLaMa2.Memory.AXI
 import Simulation.RamBackedAxiSlave (ReadState (..))
+import LLaMa2.Memory.AXI.Slave (AxiSlaveIn (..))
+import LLaMa2.Memory.AXI.Master (AxiMasterOut (..))
+import LLaMa2.Memory.AXI.Types (AxiAR (..), AxiB (..), AxiR (..))
 
 data StateRAM = SIdle | SBurst
   deriving (Generic, NFDataX, Eq, Show)
@@ -99,7 +101,7 @@ createFileBackedAxiSlave modelBin AxiMasterOut{..} = (slaveOut, readState)
     AxiSlaveIn
       { arready = pure True
       , rvalid  = rvalid
-      , rdataSI = AxiR <$> rdataWord <*> pure 0 <*> rlast <*> pure 0
+      , rdata = AxiR <$> rdataWord <*> pure 0 <*> rlast <*> pure 0
       , awready = awready
       , wready  = wready
       , bvalid  = bvalid

@@ -20,9 +20,10 @@ import qualified LLaMa2.Top as Top ( DecoderIntrospection (..), topEntityWithAxi
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
-import LLaMa2.Memory.AXI (AxiSlaveIn (..), AxiMasterOut (..))
 import qualified Simulation.FileBackedAxiSlave as FileAxi
 import Simulation.RamBackedAxiSlave (ReadState)
+import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Slave as Slave
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -175,12 +176,12 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
      introspection, emmcSlaveArHandshakeCount, ddrSlaveArHandshakeCount
      ) = bundledOutputs modelBinary inputSignals
 
-    emmcMasterRReadySampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rready emmcMaster)
-    emmcRValidSampled = C.sampleN simSteps (LLaMa2.Memory.AXI.rvalid emmcSlave)
+    emmcMasterRReadySampled = C.sampleN simSteps (Master.rready emmcMaster)
+    emmcRValidSampled = C.sampleN simSteps (Slave.rvalid emmcSlave)
     -- Sample DDR write signals
-    ddrWValidSampled = C.sampleN simSteps (wvalid ddrMaster)
-    ddrWReadySampled = C.sampleN simSteps (wready ddrSlave)
-    ddrBValidSampled = C.sampleN simSteps (bvalid ddrSlave)
+    ddrWValidSampled = C.sampleN simSteps (Master.wvalid ddrMaster)
+    ddrWReadySampled = C.sampleN simSteps (Slave.wready ddrSlave)
+    ddrBValidSampled = C.sampleN simSteps (Slave.bvalid ddrSlave)
 
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
@@ -190,7 +191,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     statesSampled         = C.sampleN simSteps (Top.state introspection)
     layerIndicesSampled   = C.sampleN simSteps (Top.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Top.ready introspection)
-    attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
+    --attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
     weightsReadySampled = C.sampleN simSteps weightsReady
     weightValidSampled = C.sampleN simSteps (Top.weightStreamValid introspection)
@@ -225,7 +226,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "--------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
-  let printCycle (cycleIdx, tok) = do
+  let printCycle (cycleIdx, token) = do
         let 
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
           ps     = processingStage (statesSampled !! cycleIdx)
@@ -236,7 +237,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           wSample = weightSampleSampled !! cycleIdx
           boot   = bootProgressSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
-          token  = coreOutputs !! cycleIdx
+          --token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           bootSt  = bootStateSampled !! cycleIdx
           emmcHS  = emmcHandshakesSampled !! cycleIdx
@@ -294,10 +295,10 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
 bundledOutputs :: BSL.ByteString
   -> C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
-     , AxiMasterOut C.System
-     , AxiSlaveIn C.System
-     , AxiMasterOut C.System
-     , AxiSlaveIn C.System
+     , Master.AxiMasterOut C.System
+     , Slave.AxiSlaveIn C.System
+     , Master.AxiMasterOut C.System
+     , Slave.AxiSlaveIn C.System
      , C.Signal C.System Bool
      , C.Signal C.System (C.Unsigned 32)
      , Top.DecoderIntrospection C.System

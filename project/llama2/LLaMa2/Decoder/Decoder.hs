@@ -18,13 +18,14 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
-import LLaMa2.Memory.AXI (AxiSlaveIn, AxiMasterOut)
 import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState, BootLoaderState)
 import LLaMa2.Numeric.Quantization (RowI8E)
 
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..), qkvWeightBufferController)
 import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddressGenerator, WeightAddress (..), WeightMatrixType (..))
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
 
 -- Initial state
 initialLayerData :: LayerData
@@ -55,8 +56,8 @@ data DecoderIntrospection dom = DecoderIntrospection
 
 decoder :: forall dom. HiddenClockResetEnable dom
   => Signal dom Bool
-  -> AxiSlaveIn dom
-  -> AxiSlaveIn dom
+  -> Slave.AxiSlaveIn dom
+  -> Slave.AxiSlaveIn dom
   -> Signal dom Bool
   -> DecoderParameters
   -> Signal dom Token
@@ -65,8 +66,8 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Seed
   -> ( Signal dom Token
      , Signal dom Bool
-     , AxiMasterOut dom
-     , AxiMasterOut dom
+     , Master.AxiMasterOut dom
+     , Master.AxiMasterOut dom
      , Signal dom Bool
      , Signal dom (Unsigned 32)
      , DecoderIntrospection dom )

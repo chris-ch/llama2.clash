@@ -16,8 +16,9 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Numeric.Types (Exponent, Mantissa)
 import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
-import LLaMa2.Memory.AXI
 import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
 
 -- ============================================================================
 -- File Layout Constants (matches Parser.hs)
@@ -88,13 +89,13 @@ data BootLoaderState
 
 -- | Boot loader: eMMC -> DDR4, burst-to-burst streaming (read master Ready-aware, write master burst-capable)
 bootWeightLoader :: forall dom . HiddenClockResetEnable dom
-  => AxiSlaveIn dom                     -- eMMC AXI slave
-  -> AxiSlaveIn dom                     -- DDR4 AXI slave
+  => Slave.AxiSlaveIn dom                     -- eMMC AXI slave
+  -> Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom Bool                    -- Start boot
   -> Signal dom (Unsigned 32)           -- eMMC base address
   -> Signal dom (Unsigned 32)           -- DDR4 base address
-  -> ( AxiMasterOut dom                 -- eMMC AXI master
-     , AxiMasterOut dom                 -- DDR4 AXI master
+  -> ( Master.AxiMasterOut dom                 -- eMMC AXI master
+     , Master.AxiMasterOut dom                 -- DDR4 AXI master
      , Signal dom Bool                  -- Boot complete
      , Signal dom (Unsigned 32)         -- Bytes transferred (approx: completed bursts * 16KB)
      , Signal dom BootLoaderState
@@ -177,11 +178,11 @@ data StreamerState
 -- | Stream one layer's weights from DDR4 (READY-aware) — counter bug fixed
 layerWeightStreamer
   :: forall dom . HiddenClockResetEnable dom
-  => AxiSlaveIn dom                     -- DDR4 AXI slave
+  => Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom (Index NumLayers)       -- Layer to load
   -> Signal dom Bool                    -- Start load
   -> Signal dom Bool                    -- sinkReady (consumer can accept a beat)
-  -> ( AxiMasterOut dom                 -- DDR4 AXI master
+  -> ( Master.AxiMasterOut dom                 -- DDR4 AXI master
      , Signal dom (BitVector 512)       -- Raw weight data (64 bytes)
      , Signal dom Bool                  -- Data valid
      , Signal dom Bool                  -- Load complete
@@ -266,31 +267,31 @@ data WeightSystemState
 -- Select between two AXI master records (record-of-signals) using a Signal Bool
 selectAxiMasterOut
   :: Signal dom Bool         -- ^ sel=True => pick 'a', otherwise 'b'
-  -> AxiMasterOut dom        -- ^ a
-  -> AxiMasterOut dom        -- ^ b
-  -> AxiMasterOut dom
-selectAxiMasterOut sel a b = AxiMasterOut
-  { arvalid = mux sel (arvalid a) (arvalid b)
-  , ardata  = mux sel (ardata  a) (ardata  b)
-  , rready  = mux sel (rready  a) (rready  b)
-  , awvalid = mux sel (awvalid a) (awvalid b)
-  , awdata  = mux sel (awdata  a) (awdata  b)
-  , wvalid  = mux sel (wvalid  a) (wvalid  b)
-  , wdataMI = mux sel (wdataMI a) (wdataMI b)
-  , bready  = mux sel (bready  a) (bready  b)
+  -> Master.AxiMasterOut dom        -- ^ a
+  -> Master.AxiMasterOut dom        -- ^ b
+  -> Master.AxiMasterOut dom
+selectAxiMasterOut sel a b = Master.AxiMasterOut
+  { arvalid = mux sel (Master.arvalid a) (Master.arvalid b)
+  , ardata  = mux sel (Master.ardata  a) (Master.ardata  b)
+  , rready  = mux sel (Master.rready  a) (Master.rready  b)
+  , awvalid = mux sel (Master.awvalid a) (Master.awvalid b)
+  , awdata  = mux sel (Master.awdata  a) (Master.awdata  b)
+  , wvalid  = mux sel (Master.wvalid  a) (Master.wvalid  b)
+  , wdata = mux sel (Master.wdata a) (Master.wdata b)
+  , bready  = mux sel (Master.bready  a) (Master.bready  b)
   }
 
 weightManagementSystem
   :: forall dom . HiddenClockResetEnable dom
   => Signal dom Bool                    -- bypass
-  -> AxiSlaveIn dom                     -- eMMC AXI slave
-  -> AxiSlaveIn dom                     -- DDR4 AXI slave
+  -> Slave.AxiSlaveIn dom                     -- eMMC AXI slave
+  -> Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
   -> Signal dom Bool                    -- Power on / start boot
   -> Signal dom (Index NumLayers)       -- Current layer
   -> Signal dom Bool                    -- Load layer trigger
   -> Signal dom Bool                    -- streamSinkReady (consumer ready for beats)
-  -> ( AxiMasterOut dom
-     , AxiMasterOut dom
+  -> ( Master.AxiMasterOut dom
+     , Master.AxiMasterOut dom
      , Signal dom (BitVector 512)
      , Signal dom Bool
      , Signal dom Bool
@@ -314,11 +315,11 @@ weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerRequest loadTr
       layerWeightStreamer ddrSlave layerRequest startStream streamSinkReady
 
     -- An idle/zeroed AXI master for eMMC when bypassing boot
-    emmcIdle = AxiMasterOut
+    emmcIdle = Master.AxiMasterOut
       { arvalid = pure False, ardata  = pure (errorX "emmc bypass")
       , rready  = pure False
       , awvalid = pure False, awdata  = pure (errorX "emmc bypass")
-      , wvalid  = pure False, wdataMI = pure (errorX "emmc bypass")
+      , wvalid  = pure False, wdata = pure (errorX "emmc bypass")
       , bready  = pure False
       }
 

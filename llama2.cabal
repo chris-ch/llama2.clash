@@ -107,7 +107,9 @@ library
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.FeedForward.FeedForwardNetworkWithRAM
       LLaMa2.Layer.TransformerLayer
-      LLaMa2.Memory.AXI
+      LLaMa2.Memory.AXI.Master
+      LLaMa2.Memory.AXI.Slave
+      LLaMa2.Memory.AXI.Types
       LLaMa2.Memory.AxiReadMaster
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM

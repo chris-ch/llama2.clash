@@ -1,5 +1,5 @@
-module LLaMa2.Memory.AXI
-(AxiMasterOut(..), AxiSlaveIn(..), AxiAR(..), AxiW(..), AxiAW(..), AxiR(..), AxiB(..))
+module LLaMa2.Memory.AXI.Types
+( AxiAR(..), AxiW(..), AxiAW(..), AxiR(..), AxiB(..))
 where
 
 import Clash.Prelude
@@ -42,44 +42,3 @@ data AxiB = AxiB
   { bresp   :: Unsigned 2
   , bid     :: Unsigned 4
   } deriving (Generic, NFDataX, Show)
-
--- Complete AXI4 Master Interface (output signals from FPGA)
-data AxiMasterOut dom = AxiMasterOut
-  { -- Address Read Channel
-    arvalid :: Signal dom Bool
-  , ardata  :: Signal dom AxiAR
-  
-    -- Read Data Channel
-  , rready  :: Signal dom Bool
-  
-    -- Address Write Channel
-  , awvalid :: Signal dom Bool
-  , awdata  :: Signal dom AxiAW
-  
-    -- Write Data Channel  
-  , wvalid  :: Signal dom Bool
-  , wdataMI   :: Signal dom AxiW
-  
-    -- Write Response Channel
-  , bready  :: Signal dom Bool
-  }
-
--- Complete AXI4 Slave Interface (input signals to FPGA)
-data AxiSlaveIn dom = AxiSlaveIn
-  { -- Address Read Channel
-    arready :: Signal dom Bool
-  
-    -- Read Data Channel
-  , rvalid  :: Signal dom Bool
-  , rdataSI   :: Signal dom AxiR
-  
-    -- Address Write Channel
-  , awready :: Signal dom Bool
-  
-    -- Write Data Channel
-  , wready  :: Signal dom Bool
-  
-    -- Write Response Channel
-  , bvalid  :: Signal dom Bool
-  , bdata   :: Signal dom AxiB
-  }

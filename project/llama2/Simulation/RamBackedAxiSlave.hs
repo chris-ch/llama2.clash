@@ -4,10 +4,12 @@ module Simulation.RamBackedAxiSlave
   , WriteState(..)
   ) where
 import Clash.Prelude
-import LLaMa2.Memory.AXI
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Vector.Unboxed  as V
 import Data.Word (Word8)
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn (..))
+import LLaMa2.Memory.AXI.Types (AxiW (..), AxiB (..), AxiR (..), AxiAW (..), AxiAR (..))
 
 -- ==================================================================
 -- State definitions
@@ -55,8 +57,8 @@ initialVec bs = foldr (\i v -> replace i (wordAt i) v) emptyVec (iterateI @65_53
 createRamBackedAxiSlave
   :: forall dom . HiddenClockResetEnable dom
   => BSL.ByteString
-  -> AxiMasterOut dom
-  -> (AxiSlaveIn dom, Signal dom ReadState, Signal dom WriteState)
+  -> Master.AxiMasterOut dom
+  -> (Slave.AxiSlaveIn dom, Signal dom ReadState, Signal dom WriteState)
 createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
  where
   ------------------------------------------------------------------
@@ -74,19 +76,19 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
   ------------------------------------------------------------------
   -- Register master inputs (unchanged)
   ------------------------------------------------------------------
-  arvalid_r = register False (arvalid masterOut)
-  ardata_r  = register (AxiAR 0 0 0 0 0) (ardata masterOut)
+  arvalid_r = register False (Master.arvalid masterOut)
+  ardata_r  = register (AxiAR 0 0 0 0 0) (Master.ardata masterOut)
   araddr_r  = araddr <$> ardata_r
   arlen_r   = arlen  <$> ardata_r
 
-  awvalid_r = register False (awvalid masterOut)
-  awdata_r  = register (AxiAW 0 0 0 0 0) (awdata masterOut)
+  awvalid_r = register False (Master.awvalid masterOut)
+  awdata_r  = register (AxiAW 0 0 0 0 0) (Master.awdata masterOut)
   awaddr_r  = awaddr <$> awdata_r
-  wvalid_r  = register False (wvalid masterOut)
-  wdata_r   = register 0 (wdata <$> wdataMI masterOut)
-  wlast_r   = register False (wlast <$> (wdataMI masterOut :: Signal dom AxiW))
+  wvalid_r  = register False (Master.wvalid masterOut)
+  wdata_r   = register 0 (wdata <$> Master.wdata masterOut)
+  wlast_r   = register False (wlast <$> (Master.wdata masterOut :: Signal dom AxiW))
 
-  rready_r = register False (rready masterOut)
+  rready_r = register False (Master.rready masterOut)
 
   ------------------------------------------------------------------
   -- WRITE PATH (fixed: per-beat address increment)
@@ -170,10 +172,10 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
   ------------------------------------------------------------------
   -- Output bundle (unchanged)
   ------------------------------------------------------------------
-  slaveIn = AxiSlaveIn
+  slaveIn = Slave.AxiSlaveIn
     { arready = arReady
     , rvalid  = rValid
-    , rdataSI = rDataOut
+    , rdata = rDataOut
     , awready = awReady
     , wready  = wReady
     , bvalid  = bValid

@@ -2,39 +2,41 @@ module Simulation.WeightLoaderSpec (spec) where
 
 import Clash.Prelude
 import qualified Data.List as DL
-import LLaMa2.Memory.AXI
 import LLaMa2.Memory.WeightLoader
 import LLaMa2.Numeric.Types (Mantissa)
 import Test.Hspec
 import qualified Prelude as P
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Types as AXITypes
 
 -- ============================================================================
 -- MOCKS
 -- ============================================================================
 
 -- A simple, always-ready AXI slave for testing.
-mockAxiSlave :: AxiSlaveIn dom
+mockAxiSlave :: Slave.AxiSlaveIn dom
 mockAxiSlave =
-  AxiSlaveIn
+  Slave.AxiSlaveIn
     { arready = pure True,
       rvalid = fromList $ P.replicate 5 False P.++ P.repeat True,
-      rdataSI = pure (AxiR 0 0 False 0),
+      rdata = pure (AXITypes.AxiR 0 0 False 0),
       awready = pure True,
       wready = fromList $ P.replicate 5 False P.++ P.repeat True,
       bvalid = pure True,
-      bdata = pure (AxiB 0 0)
+      bdata = pure (AXITypes.AxiB 0 0)
     }
 
 -- | Simulation wrapper around 'bootWeightLoader' that limits model size.
 bootWeightLoaderFast ::
   (HiddenClockResetEnable dom) =>
-  AxiSlaveIn dom ->
-  AxiSlaveIn dom ->
+  Slave.AxiSlaveIn dom ->
+  Slave.AxiSlaveIn dom ->
   Signal dom Bool ->
   Signal dom (Unsigned 32) ->
   Signal dom (Unsigned 32) ->
-  ( AxiMasterOut dom,
-    AxiMasterOut dom,
+  ( Master.AxiMasterOut dom,
+    Master.AxiMasterOut dom,
     Signal dom Bool,
     Signal dom (Unsigned 32),
     Signal dom BootLoaderState
@@ -97,7 +99,7 @@ spec = do
       P.or done `shouldBe` True
 
     it "handles delayed rvalid signals without stalling forever" $ do
-      let slowSlave = mockAxiSlave {rvalid = fromList $ P.replicate 50 False P.++ P.repeat True}
+      let slowSlave = mockAxiSlave {Slave.rvalid = fromList $ P.replicate 50 False P.++ P.repeat True}
           (_, _, bootComplete, _, _) =
             withClockResetEnable systemClockGen resetGen enableGen
               $ bootWeightLoader slowSlave mockAxiSlave (pure True) (pure 0) (pure 0)

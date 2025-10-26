@@ -3,7 +3,9 @@ module LLaMa2.Memory.AxiWriteMaster
 where
 
 import Clash.Prelude
-import LLaMa2.Memory.AXI
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn (..))
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
+import qualified LLaMa2.Memory.AXI.Types as AXITypes (AxiAW(..), AxiW (..))
 
 -- Burst-capable write master:
 -- - Latches base address and burst length on 'startBurst' (one-cycle pulse).
@@ -15,13 +17,13 @@ data WState = WIdle | WAddr | WData | WResp | WDone
 
 axiWriteMaster
   :: forall dom . HiddenClockResetEnable dom
-  => AxiSlaveIn dom
+  => Slave.AxiSlaveIn dom
   -> Signal dom (Unsigned 32)   -- ^ base address (byte)
   -> Signal dom (Unsigned 8)    -- ^ burst length (N-1); e.g., 255 for 256 beats
   -> Signal dom Bool            -- ^ startBurst (one-cycle pulse)
   -> Signal dom (BitVector 512) -- ^ dataIn
   -> Signal dom Bool            -- ^ dataValid
-  -> ( AxiMasterOut dom
+  -> ( Master.AxiMasterOut dom
      , Signal dom Bool          -- ^ writeDone (one-cycle True at WDone)
      , Signal dom Bool          -- ^ dataReady (we can accept a beat now)
      )
@@ -45,19 +47,19 @@ axiWriteMaster slaveIn addrIn lenIn startBurst dataIn dataValid =
 
   -- Channel signals
   awValid = state .==. pure WAddr
-  awData  = AxiAW <$> baseAddr <*> burstLen <*> pure 6 <*> pure 1 <*> pure 0
-  awHS    = awValid .&&. awready slaveIn
+  awData  = AXITypes.AxiAW <$> baseAddr <*> burstLen <*> pure 6 <*> pure 1 <*> pure 0
+  awHS    = awValid .&&. Slave.awready slaveIn
 
-  wFire   = wValid .&&. wready slaveIn
+  wFire   = wValid .&&. Slave.wready slaveIn
   wValid  = (state .==. pure WData) .&&. dataValid
   wLast   = isLastBeat
-  wData   = AxiW <$> dataIn <*> pure maxBound <*> wLast
+  wData   = AXITypes.AxiW <$> dataIn <*> pure maxBound <*> wLast
 
   bReady  = state .==. pure WResp
-  bHS     = bReady .&&. bvalid slaveIn
+  bHS     = bReady .&&. Slave.bvalid slaveIn
 
   -- Upstream backpressure: can accept a beat iff in data phase and slave is ready
-  dataReady = (state .==. pure WData) .&&. wready slaveIn
+  dataReady = (state .==. pure WData) .&&. Slave.wready slaveIn
 
   nextBeatCnt =
     mux (state .==. pure WIdle) 0 $
@@ -78,14 +80,14 @@ axiWriteMaster slaveIn addrIn lenIn startBurst dataIn dataValid =
     -- WDone -> WIdle (one-shot done pulse)
     pure WIdle
 
-  masterOut = AxiMasterOut
+  masterOut = Master.AxiMasterOut
     { arvalid = pure False
     , ardata  = pure (errorX "no read")
     , rready  = pure False
     , awvalid = awValid
     , awdata  = awData
     , wvalid  = wValid
-    , wdataMI = wData
+    , wdata = wData
     , bready  = bReady
     }
   
