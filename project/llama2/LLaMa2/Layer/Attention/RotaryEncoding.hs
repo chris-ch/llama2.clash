@@ -6,16 +6,16 @@ import Clash.Prelude
 
 import LLaMa2.Types.ModelConfig 
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.Parameters (RotaryEncodingComponentF (..))
+import qualified Simulation.Parameters as PARAM (RotaryEncodingComponentF (..))
 
 rotaryEncoder
-  :: RotaryEncodingComponentF
+  :: PARAM.RotaryEncodingComponentF
   -> Index SequenceLength
   -> Vec HeadDimension FixedPoint
   -> Vec HeadDimension FixedPoint
 rotaryEncoder rot step tokenVec =
-  let cosF = freqCosF rot !! step
-      sinF = freqSinF rot !! step
+  let cosF = PARAM.freqCosF rot !! step
+      sinF = PARAM.freqSinF rot !! step
   in  rotaryPositionEncoder tokenVec cosF sinF
 
 -- Helper: safely destructure a Vec 2

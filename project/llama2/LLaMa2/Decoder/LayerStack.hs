@@ -10,7 +10,7 @@ import LLaMa2.Types.LayerData (LayerData(..), ProcessingState)
 import LLaMa2.Types.ModelConfig  (NumLayers, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types
-import LLaMa2.Types.Parameters (TransformerLayerComponent)
+import qualified Simulation.Parameters as PARAM (TransformerLayerComponent)
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 -- | Type alias for layer completion flags
@@ -26,7 +26,7 @@ processLayers :: forall dom .
   -> Signal dom LayerData                    -- ^ Input layer data
   -> Signal dom QKVProjectionWeightBuffer              -- ^ complete RAM buffer
   -> Signal dom Bool                         -- ^ enable flag
-  -> Vec NumLayers TransformerLayerComponent -- ^ All layer parameters
+  -> Vec NumLayers PARAM.TransformerLayerComponent -- ^ All layer parameters
   -> ( Signal dom LayerData                  -- ^ Output layer data
      , Vec NumLayers (LayerDoneFlags dom)    -- ^ Completion flags per layer
      )
@@ -39,7 +39,7 @@ processLayers processingState currentLayerIdx inputLayerData weightBuffer enable
     doneFlagsVec = fmap (\(flags, _, _) -> flags) layerResults
 
     processOneLayer :: Signal dom LayerData
-                    -> (Index NumLayers, TransformerLayerComponent)
+                    -> (Index NumLayers, PARAM.TransformerLayerComponent)
                     -> (Signal dom LayerData, (LayerDoneFlags dom, Signal dom Bool, Signal dom Bool))
     processOneLayer layerDataIn (layerIdx, layerComponent) =
       let
@@ -49,7 +49,7 @@ processLayers processingState currentLayerIdx inputLayerData weightBuffer enable
           , writeDone
           , attnDone
           , qkvDone
-          , _layerDataAfterAttn
+          , layerDataAfterAttn
           , qkvReady
           , ffnDone
           ) = TransformerLayer.transformerLayer

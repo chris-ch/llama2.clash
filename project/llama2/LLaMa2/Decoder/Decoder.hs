@@ -7,7 +7,7 @@ import Clash.Prelude
 
 import LLaMa2.Types.LayerData
   ( LayerData(..), ProcessingState (..), Temperature, Seed, Token )
-import LLaMa2.Types.Parameters (DecoderParameters (..))
+import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
 import LLaMa2.Numeric.Types (Mantissa)
@@ -60,7 +60,7 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> Slave.AxiSlaveIn dom
   -> Slave.AxiSlaveIn dom
   -> Signal dom Bool
-  -> DecoderParameters
+  -> PARAM.DecoderParameters
   -> Signal dom Token
   -> Signal dom Bool
   -> Signal dom Temperature
@@ -91,11 +91,11 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
      , sysState
      , bootState
      , _, _, _
-     , _, _, _, _, _
+     , _, _, _, _, _, _
      ) = weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
 
     -- One real address generator, advanced by rowDoneExt from the rower
-    (layerAddrSig, _layerDone) = layerAddressGenerator rowDoneExt loadTrigger
+    (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
     segSig = seg <$> layerAddrSig
 
     -- Dynamic rower (segment-aware, backpressured)
@@ -135,7 +135,7 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
     layerEnable = mux loadTrigger (pure False) (fullyLoaded <$> weightBuffer)
 
     -- Token gating and sampling
-    (mantissasH, _expH) = unbundle parsedWeightsHold
+    (mantissasH, expH) = unbundle parsedWeightsHold
     firstMantissa = fmap (bitCoerce . head) mantissasH
     gatedTokenValid = inputTokenValid .&&. weightsReady
 
@@ -150,14 +150,14 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
         ffnDoneThisLayer logitsValid gatedTokenValid)
 
     outputToken = mux gatedTokenValid inputToken feedbackToken
-    embeddedVector = InputEmbedding.inputEmbedding (modelEmbedding params) outputToken
+    embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
     layerInput = LayerStack.prepareLayerInput <$> layerIdx
                    <*> register initialLayerData nextLayerData
                    <*> embeddedVector
 
     (nextLayerData, doneFlags) =
-      LayerStack.processLayers processingState layerIdx layerInput weightBuffer layerEnable (modelLayers params)
+      LayerStack.processLayers processingState layerIdx layerInput weightBuffer layerEnable (PARAM.modelLayers params)
 
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone

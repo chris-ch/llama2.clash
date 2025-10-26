@@ -122,15 +122,16 @@ library
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
       LLaMa2.Numeric.Types
-      LLaMa2.ParamsPlaceholder 
+      Simulation.ParamsPlaceholder 
       LLaMa2.Sampling.Distribution
       LLaMa2.Sampling.Sampler
       LLaMa2.Top
       LLaMa2.Types.LayerData
       LLaMa2.Types.ModelConfig
-      LLaMa2.Types.Parameters
       Parser
       Simulation.MatVecSim
+      Simulation.Parameters
+      Simulation.ParametersQuantization
       Simulation.FileBackedAxiSlave
       Simulation.RamBackedAxiSlave
       Tokenizer

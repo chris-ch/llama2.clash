@@ -3,8 +3,8 @@ module LLaMa2.Memory.WeightLoader.BootWeightLoader
   ) where
 
 import Clash.Prelude
-import qualified LLaMa2.Memory.AXI.Slave as Slave
-import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (arvalid))
 import LLaMa2.Types.ModelConfig (VocabularySize, ModelDimension, NumLayers, SequenceLength, RotaryPositionalEmbeddingDimension, HiddenDimension, NumQueryHeads, NumKeyValueHeads, HeadDimension)
 import qualified LLaMa2.Memory.AxiReadMaster as ReadMaster (axiBurstReadMaster)
 import qualified LLaMa2.Memory.AxiWriteMaster as WriteMaster (axiWriteMaster)
@@ -80,11 +80,12 @@ bootWeightLoader :: forall dom . HiddenClockResetEnable dom
      , Signal dom (Unsigned 32)        -- currentBurst (for debugging)
      , Signal dom Bool                  -- burstStarted (for debugging)
      , Signal dom Bool                  -- startReadBurst (for debugging)
+     , Signal dom Bool                  -- emmcReady (for debugging)
      )
 bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
-  (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state, readValid, 
+  (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state, readValid,
     writerDataReady, transfersInBurst, burstComplete, allComplete,
-    currentBurst, burstStarted, needsStart)
+    currentBurst, burstStarted, needsStart, emmcReady)
   where
     state = register BootIdle nextState
 
@@ -111,19 +112,19 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
     -- If axiBurstReadMaster provides a "ready" output:
     ( emmcMaster, readData, readValid, emmcReady ) = 
       ReadMaster.axiBurstReadMaster emmcSlave emmcAddr (pure burstLen) needsStart writerDataReady
-
+    
     -- Reader: start one burst when entering BootReading
     -- Use burstStarted flag to track if current burst already initiated (more reliable than pulse1)
     burstStarted = register False nextBurstStarted
     nextBurstStarted =
-      mux (state .==. pure BootPause2) (pure False) $
-      mux needsStart (pure True) burstStarted
+        mux (state .==. pure BootPause2) (pure False) $
+        mux needsStart (pure True) burstStarted
 
     -- Writer: use same logic to start write burst
     ( ddrMaster
-      , _writeDone
+      , writeDone
       , writerDataReady ) = WriteMaster.axiWriteMaster ddrSlave ddrAddr (pure burstLen) needsStart readData readValid
-
+      
     -- Count accepted beats within this burst (readValid == writer accepted beat, because we wire writerDataReady back)
     transfersInBurst = register (0 :: Unsigned 8) nextTransferCount
 
@@ -135,7 +136,7 @@ bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
       mux (state ./=. pure BootReading) 0 $
       mux (transfersInBurst .>=. pure (burstLen - 1)) (pure burstLen) $
       mux readValid (transfersInBurst + 1) transfersInBurst
-
+      
     -- Progress state machine: Reading -> Pause (to bump burst index) -> Complete/Reading
     allComplete = (currentBurst + 1) .>=. pure totalBursts
 

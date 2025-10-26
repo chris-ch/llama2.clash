@@ -8,17 +8,17 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Types.LayerData ( Token )
 import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint, scalePow2F )
 import LLaMa2.Numeric.Quantization ( MatI8E, MatI8E )
-import LLaMa2.Types.Parameters (EmbeddingComponentQ (..))
+import qualified Simulation.Parameters as PARAM (EmbeddingComponentQ (..))
 
 -- | Lookup token embedding from vocabulary
 inputEmbedding :: HiddenClockResetEnable dom
-  => EmbeddingComponentQ           -- ^ Embedding parameters
+  => PARAM.EmbeddingComponentQ           -- ^ Embedding parameters
   -> Signal dom Token                        -- ^ Input token
   -> Signal dom (Vec ModelDimension FixedPoint)  -- ^ Embedded vector
 inputEmbedding embParams = embedder vocabulary
   where
     vocabulary :: MatI8E VocabularySize ModelDimension
-    vocabulary = vocabularyQ embParams
+    vocabulary = PARAM.vocabularyQ embParams
 
 -- BRAM/ROM-backed dequantize-on-read. 1-cycle latency.
 embedder

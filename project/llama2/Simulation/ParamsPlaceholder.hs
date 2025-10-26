@@ -1,6 +1,5 @@
 {-# LANGUAGE CPP #-}
-{-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
-module LLaMa2.ParamsPlaceholder (decoderConst) where
+module Simulation.ParamsPlaceholder (decoderConst) where
 
 import Prelude
 
@@ -8,7 +7,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as BS (readFile)  -- Use STRICT ByteString
 import qualified Data.Binary.Get as BG
 import qualified Parser
-import LLaMa2.Types.Parameters (DecoderParameters)
+import Simulation.Parameters (DecoderParameters)
 import qualified Data.ByteString.Lazy.Char8 as BSL
 
 -- Load weights with strict ByteString to avoid lazy I/O issues

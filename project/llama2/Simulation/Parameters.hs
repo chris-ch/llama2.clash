@@ -1,4 +1,4 @@
-module LLaMa2.Types.Parameters (
+module Simulation.Parameters (
     DecoderParameters(..), TransformerLayerComponent(..)
   , SingleHeadComponentQ(..)
   , MultiHeadAttentionComponentQ(..)
@@ -9,9 +9,10 @@ module LLaMa2.Types.Parameters (
 ) where
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, ModelDimension, HeadDimension, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension, VocabularySize)
-import LLaMa2.Numeric.Quantization (MatI8E, quantizeMatI8E)
+import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.LayerData (FeedForwardNetworkComponent (..), EmbeddingComponent (..), CArray2D (..), MultiHeadAttentionComponent (..), SingleHeadComponent (..), RotaryEncodingComponent (..))
+import Simulation.ParametersQuantization (quantizeMatI8E)
 
 data DecoderParameters = DecoderParameters
   { modelEmbedding :: EmbeddingComponentQ
@@ -33,7 +34,7 @@ data SingleHeadComponentQ = SingleHeadComponentQ
   { wqHeadQ :: MatI8E HeadDimension ModelDimension
   , wkHeadQ :: MatI8E HeadDimension ModelDimension
   , wvHeadQ :: MatI8E HeadDimension ModelDimension
-  , rotaryQ :: RotaryEncodingComponentF
+  , rotaryF :: RotaryEncodingComponentF
   } deriving (Generic, Show, Eq)
 
 -- MHA with quantized per-head WO and preconverted RMS weights.
@@ -64,7 +65,7 @@ quantizeSingleHead sh =
     { wqHeadQ = quantizeMatI8E (wqHead sh)
     , wkHeadQ = quantizeMatI8E (wkHead sh)
     , wvHeadQ = quantizeMatI8E (wvHead sh)
-    , rotaryQ = quantizeRotary (freqCos (rotary sh), freqSin (rotary sh))
+    , rotaryF = quantizeRotary (freqCos (rotary sh), freqSin (rotary sh))
     }
 
 quantizeMHA :: MultiHeadAttentionComponent -> MultiHeadAttentionComponentQ

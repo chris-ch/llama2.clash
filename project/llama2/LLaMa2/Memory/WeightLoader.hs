@@ -13,7 +13,6 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Numeric.Types (Exponent, Mantissa)
-import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
@@ -74,7 +73,7 @@ layerWeightStreamer ddrSlave layerIdx startLoad sinkReady =
     burstAddr    = layerBaseAddr + (currentBurst * pure burstBytes)
 
     startBurst = state .==. pure StreamBursting
-    (axiMaster, weightData, dataValid, _ready) =
+    (axiMaster, weightData, dataValid, ready) =
       axiBurstReadMaster ddrSlave burstAddr (pure burstLen) startBurst sinkReady
 
     transfersInBurst = register (0 :: Unsigned 8) nextTransferCount
@@ -180,16 +179,23 @@ weightManagementSystem
      , Signal dom (Unsigned 32)        -- currentBurst (for debugging)
      , Signal dom Bool                  -- burstStarted (for debugging)
      , Signal dom Bool                  -- startReadBurst (for debugging)
+     , Signal dom Bool                  -- emmcReady (for debugging)
      )
 weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerRequest loadTrigger streamSinkReady =
-  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut, bootProgress, sysState, bootState, readValid, writerDataReady, transfersInBurst, burstComplete, allComplete, currentBurst, burstStarted, startReadBurst)
+  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut,
+   bootProgress, sysState, bootState, readValid, writerDataReady,
+    transfersInBurst, burstComplete, allComplete, currentBurst,
+     burstStarted, startReadBurst, emmcReady)
   where
     sysState = register WSBoot nextSysState
     emmcBaseAddr = 0 :: Unsigned 32
     ddrBaseAddr  = 0 :: Unsigned 32
 
     startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypassBoot)
-    (emmcMasterBoot, ddrMasterBoot, bootDone, bootProgress, bootState, readValid, writerDataReady, transfersInBurst, burstComplete, allComplete, currentBurst, burstStarted, startReadBurst) =
+    (emmcMasterBoot, ddrMasterBoot, bootDone, 
+      bootProgress, bootState, readValid, writerDataReady,
+     transfersInBurst, burstComplete, allComplete,
+      currentBurst, burstStarted, startReadBurst, emmcReady) =
       bootWeightLoader emmcSlave ddrSlave startBoot (pure emmcBaseAddr) (pure ddrBaseAddr)
 
     startStream = (sysState .==. pure WSReady) .&&. loadTrigger

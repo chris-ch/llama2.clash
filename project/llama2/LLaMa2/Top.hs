@@ -7,7 +7,7 @@ import Clash.Prelude
 import LLaMa2.Types.LayerData ( Temperature, Seed, Token )
 
 import qualified LLaMa2.Decoder.Decoder as Decoder ( decoder, DecoderIntrospection(..) )
-import LLaMa2.ParamsPlaceholder (decoderConst)
+import Simulation.ParamsPlaceholder (decoderConst)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
 

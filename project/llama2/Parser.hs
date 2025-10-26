@@ -31,7 +31,7 @@ import LLaMa2.Types.ModelConfig
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import LLaMa2.Types.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding)
+import Simulation.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding)
 
 
 -- ============================================================================

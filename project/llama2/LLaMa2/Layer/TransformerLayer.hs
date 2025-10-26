@@ -18,7 +18,7 @@ import LLaMa2.Types.ModelConfig
     NumLayers,
     NumQueryHeads,
   )
-import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
+import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
@@ -27,7 +27,7 @@ ffnController ::
   Signal dom Bool ->
   Signal dom Bool ->
   Signal dom (Vec ModelDimension FixedPoint) ->
-  FeedForwardNetworkComponentQ ->
+  PARAM.FeedForwardNetworkComponentQ ->
   ( Signal dom (Vec ModelDimension FixedPoint),
     Signal dom Bool,
     Signal dom Bool
@@ -35,13 +35,13 @@ ffnController ::
 ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
   where
     (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
-    (result, ffnSeqValid, _ready) =
+    (result, ffnSeqValid, ready) =
       FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
 
 transformerLayer ::
   forall dom.
   (HiddenClockResetEnable dom)
-   => TransformerLayerComponent
+   => PARAM.TransformerLayerComponent
    -> Index NumLayers
    -> Signal dom ProcessingState
    -> Signal dom LayerData
@@ -65,8 +65,8 @@ transformerLayer layer layerIndex processingState layerData weightBuffer enable 
     ffnValidOut
   )
   where
-    mha = multiHeadAttention layer
-    ffn = feedforwardNetwork layer
+    mha = PARAM.multiHeadAttention layer
+    ffn = PARAM.feedforwardNetwork layer
 
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enable
@@ -107,7 +107,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer enable 
             | otherwise -> False
       )
         <$> processingState
-    (ffnOutput, ffnValidOut, _ffnInReady) =
+    (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController
         isStage4ThisLayer
         ffnOutReady

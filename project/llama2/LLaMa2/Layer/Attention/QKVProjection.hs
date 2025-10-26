@@ -15,7 +15,7 @@ import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
-import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
+import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
 import LLaMa2.Types.LayerData (ProcessingState(..))
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
   ( QKVProjectionWeightBuffer(..)
@@ -83,7 +83,7 @@ queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom Bool                          -- ^ validIn
   -> Signal dom Bool                          -- ^ readyIn
-  -> SingleHeadComponentQ                     -- ^ hardcoded (fallback)
+  -> PARAM.SingleHeadComponentQ                     -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM weights
@@ -97,14 +97,14 @@ queryHeadProjector validIn readyIn headComp stepCountSig xHatSig ramWeights useR
  where
   -- Select matrix dynamically
   selectedMat :: Signal dom (MatI8E HeadDimension ModelDimension)
-  selectedMat = mux useRAM ramWeights (pure (wqHeadQ headComp))
+  selectedMat = mux useRAM ramWeights (pure (PARAM.wqHeadQ headComp))
 
   -- MatVec with dynamic matrix
   (qOut, qValidOut, qReadyOut) =
     parallelRowMatrixMultiplierDyn validIn (pure True) selectedMat xHatSig
 
   -- Rotary encoding on Q
-  qRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> qOut
+  qRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> qOut
 
   validOut = qValidOut
   readyOut = qReadyOut
@@ -116,7 +116,7 @@ keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom Bool                          -- ^ validIn
   -> Signal dom Bool                          -- ^ readyIn
-  -> SingleHeadComponentQ                     -- ^ hardcoded (fallback)
+  -> PARAM.SingleHeadComponentQ                     -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM K
@@ -127,11 +127,11 @@ keyValueHeadProjector :: forall dom.
      , Signal dom Bool                            -- validOut
      , Signal dom Bool                            -- readyOut
      )
-keyValueHeadProjector validIn _readyIn headComp stepCountSig xHatSig ramK ramV useRAM =
+keyValueHeadProjector validIn readyIn headComp stepCountSig xHatSig ramK ramV useRAM =
   (kRoOut, vOut, validOut, readyOut)
  where
-  selectedK = mux useRAM ramK (pure (wkHeadQ headComp))
-  selectedV = mux useRAM ramV (pure (wvHeadQ headComp))
+  selectedK = mux useRAM ramK (pure (PARAM.wkHeadQ headComp))
+  selectedV = mux useRAM ramV (pure (PARAM.wvHeadQ headComp))
 
   (kOut, kValidOut, kReadyOut) =
     parallelRowMatrixMultiplierDyn validIn (pure True) selectedK xHatSig
@@ -139,7 +139,7 @@ keyValueHeadProjector validIn _readyIn headComp stepCountSig xHatSig ramK ramV u
   (vOut, vValidOut, vReadyOut) =
     parallelRowMatrixMultiplierDyn validIn (pure True) selectedV xHatSig
 
-  kRoOut = (rotaryEncoder (rotaryQ headComp) <$> stepCountSig) <*> kOut
+  kRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> kOut
 
   validOut = kValidOut .&&. vValidOut
   readyOut = kReadyOut .&&. vReadyOut
@@ -151,7 +151,7 @@ qkvProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom Bool                          -- ^ validIn
   -> Signal dom Bool                          -- ^ readyIn
-  -> MultiHeadAttentionComponentQ             -- ^ hardcoded (fallback)
+  -> PARAM.MultiHeadAttentionComponentQ             -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom QKVProjectionWeightBuffer               -- ^ RAM weight buffer
@@ -165,12 +165,12 @@ qkvProjector :: forall dom.
 qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer enable =
   (qkvOut, allValid, allReady)
  where
-  xNorm = rmsNormFwFix <$> xSig <*> pure (rmsAttF mhaQ)
+  xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaQ)
 
   -- Q heads
-  qResults = imap qHead (headsQ mhaQ)
+  qResults = imap qHead (PARAM.headsQ mhaQ)
    where
-    qHead :: Index NumQueryHeads -> SingleHeadComponentQ
+    qHead :: Index NumQueryHeads -> PARAM.SingleHeadComponentQ
           -> ( Signal dom (Vec HeadDimension FixedPoint)
              , Signal dom Bool
              , Signal dom Bool )
@@ -191,7 +191,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer enable =
               , Signal dom Bool
               , Signal dom Bool )
     kvHead kvIx qIx =
-      let headQ = headsQ mhaQ !! qIx
+      let headQ = PARAM.headsQ mhaQ !! qIx
           ramK  = extractKWeight <$> weightBuffer <*> pure kvIx
           ramV  = extractVWeight <$> weightBuffer <*> pure kvIx
       in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV enable
@@ -218,7 +218,7 @@ qkvProjectionController ::
   => Signal dom Bool                             -- ^ validIn
   -> Signal dom Bool                             -- ^ readyIn
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> MultiHeadAttentionComponentQ
+  -> PARAM.MultiHeadAttentionComponentQ
   -> Signal dom ProcessingState
   -> Signal dom QKVProjectionWeightBuffer                 -- ^ RAM weights
   -> Signal dom Bool                            -- ^ useRAM
@@ -233,7 +233,7 @@ qkvProjectionController inValid outReady input mhaQ psSig weightBuf enable =
   (projectorEnable, validOut, inReady) =
     processingControllerFSM inValid outReady matVecValid
 
-  (result, matVecValid, _ready) =
+  (result, matVecValid, ready) =
     qkvProjector projectorEnable (pure True) mhaQ
                         (sequencePosition <$> psSig)
                         input

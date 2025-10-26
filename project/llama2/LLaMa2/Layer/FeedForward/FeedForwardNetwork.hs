@@ -10,13 +10,13 @@ import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
 
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
-import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ (..))
+import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ (..))
 
 feedForwardStage
   :: HiddenClockResetEnable dom
   => Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
-  -> FeedForwardNetworkComponentQ
+  -> PARAM.FeedForwardNetworkComponentQ
   -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ input vector
   -> ( Signal dom (Vec ModelDimension FixedPoint) -- ^ output vector
      , Signal dom Bool                             -- ^ validOut
@@ -26,7 +26,7 @@ feedForwardStage validIn readyIn ffn inputVector =
   (outputVector, validOut, readyOut)
   where
     -- Pre-normalize the input (combinational)
-    xHat = rmsNormFwFix <$> inputVector <*> pure (fRMSFfnF ffn)
+    xHat = rmsNormFwFix <$> inputVector <*> pure (PARAM.fRMSFfnF ffn)
 
     -- Sequential FFN core with handshaking
     (ffnCore, coreValidOut, coreReadyOut) =
@@ -49,7 +49,7 @@ data FFNState = FFNIdle | FFNGate | FFNUp | FFNDown | FFNDone
 feedForwardCore :: forall dom . HiddenClockResetEnable dom
   => Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
-  -> FeedForwardNetworkComponentQ
+  -> PARAM.FeedForwardNetworkComponentQ
   -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ input vector (normalized)
   -> ( Signal dom (Vec ModelDimension FixedPoint) -- ^ output vector
      , Signal dom Bool                             -- ^ validOut
@@ -69,20 +69,20 @@ feedForwardCore validIn readyIn ffn xHat =
     -- W1 (gate) computation
     gateValidIn = state .==. pure FFNGate
     gateReadyIn = pure True  -- Always ready to accept multiplier result
-    (gateRaw, gateValidOut, _gateReadyOut) =
-      parallelRowMatrixMultiplier gateValidIn gateReadyIn (fW1Q ffn) xHatLatched
+    (gateRaw, gateValidOut, gateReadyOut) =
+      parallelRowMatrixMultiplier gateValidIn gateReadyIn (PARAM.fW1Q ffn) xHatLatched
 
     -- W3 (up) computation  
     upValidIn = state .==. pure FFNUp
     upReadyIn = pure True
-    (upRaw, upValidOut, _upReadyOut) =
-      parallelRowMatrixMultiplier upValidIn upReadyIn (fW3Q ffn) xHatLatched
+    (upRaw, upValidOut, upReadyOut) =
+      parallelRowMatrixMultiplier upValidIn upReadyIn (PARAM.fW3Q ffn) xHatLatched
 
     -- W2 (down) computation
     downValidIn = state .==. pure FFNDown
     downReadyIn = pure True
-    (downRaw, downValidOut, _downReadyOut) =
-      parallelRowMatrixMultiplier downValidIn downReadyIn (fW2Q ffn) gateUpLatched
+    (downRaw, downValidOut, downReadyOut) =
+      parallelRowMatrixMultiplier downValidIn downReadyIn (PARAM.fW2Q ffn) gateUpLatched
 
     -- State transitions with explicit conditions
     nextState =

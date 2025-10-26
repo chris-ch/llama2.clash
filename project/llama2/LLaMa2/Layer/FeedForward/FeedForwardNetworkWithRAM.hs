@@ -6,7 +6,7 @@ import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Types.ModelConfig (ModelDimension, HiddenDimension)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E, dequantRowToF)
-import LLaMa2.Types.Parameters (FeedForwardNetworkComponentQ(..))
+import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ(..))
 import LLaMa2.Numeric.Operations (parallel64RowProcessor, matrixMultiplierStateMachine, MultiplierState (..))
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
 
@@ -52,7 +52,7 @@ feedForwardStageWithRAM ::
   HiddenClockResetEnable dom =>
   Signal dom Bool                              ->  -- validIn
   Signal dom Bool                              ->  -- readyIn (downstream)
-  FeedForwardNetworkComponentQ                 ->  -- constants fallback
+  PARAM.FeedForwardNetworkComponentQ                 ->  -- constants fallback
   Signal dom (MatI8E HiddenDimension ModelDimension) ->  -- RAM W1
   Signal dom (MatI8E ModelDimension HiddenDimension) ->  -- RAM W2
   Signal dom (MatI8E HiddenDimension ModelDimension) ->  -- RAM W3
@@ -65,14 +65,14 @@ feedForwardStageWithRAM ::
 feedForwardStageWithRAM validIn readyIn ffn ramW1 ramW2 ramW3 ramRms useRAMFFN xIn =
   (outVec, validOut, readyOut)
  where
-  letW1 = mux useRAMFFN ramW1 (pure (fW1Q ffn))
-  letW2 = mux useRAMFFN ramW2 (pure (fW2Q ffn))
-  letW3 = mux useRAMFFN ramW3 (pure (fW3Q ffn))
+  letW1 = mux useRAMFFN ramW1 (pure (PARAM.fW1Q ffn))
+  letW2 = mux useRAMFFN ramW2 (pure (PARAM.fW2Q ffn))
+  letW3 = mux useRAMFFN ramW3 (pure (PARAM.fW3Q ffn))
   
   -- Normalize with RAM rms when enabled (using dequantRowToF)
   xHat = rmsNormFwFix 
     <$> xIn
-    <*> mux useRAMFFN (dequantRowToF <$> ramRms) (pure (fRMSFfnF ffn))
+    <*> mux useRAMFFN (dequantRowToF <$> ramRms) (pure (PARAM.fRMSFfnF ffn))
   
   -- Rest of the code remains unchanged...
   state = register (0::Unsigned 3) (mux accept (pure 1) (mux (state .==. pure 1 .&&. gateV) (pure 2)
@@ -82,11 +82,11 @@ feedForwardStageWithRAM validIn readyIn ffn ramW1 ramW2 ramW3 ramRms useRAMFFN x
   gateValidIn = state .==. pure 1
   upValidIn   = state .==. pure 2
   downValidIn = state .==. pure 3
-  (gateRaw, gateV, _gr) = parallelRowMatrixMultiplierDyn gateValidIn (pure True) letW1 xHat
-  (upRaw,   upV,   _ur) = parallelRowMatrixMultiplierDyn upValidIn   (pure True) letW3 xHat
+  (gateRaw, gateV, gr) = parallelRowMatrixMultiplierDyn gateValidIn (pure True) letW1 xHat
+  (upRaw,   upV,   ur) = parallelRowMatrixMultiplierDyn upValidIn   (pure True) letW3 xHat
   gateSiLU = regEn (repeat 0) gateV (map sigmoidLinearUnit <$> gateRaw)
   gateUp   = regEn (repeat 0) upV   (zipWith (*) <$> gateSiLU <*> upRaw)
-  (downRaw, downV, _dr) = parallelRowMatrixMultiplierDyn downValidIn (pure True) letW2 gateUp
+  (downRaw, downV, dr) = parallelRowMatrixMultiplierDyn downValidIn (pure True) letW2 gateUp
   outVec   = regEn (repeat 0) downV downRaw
   validOut = state .==. pure 0 .&&. downV
   readyOut = state .==. pure 0

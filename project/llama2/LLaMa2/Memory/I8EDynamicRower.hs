@@ -85,7 +85,7 @@ dynamicRower3 ::
   , Signal dom Bool           -- ^ rowDoneExt (all segments)
   , Signal dom Bool           -- ^ sinkReady (can accept a beat)
   )
-dynamicRower3 _md _hd _hid beatData beatValid segS =
+dynamicRower3 md hd hid beatData beatValid segS =
   (mdRowOutS, mdRowValidS, hdRowOutS, hdRowValidS, hidRowOutS, hidRowValidS, rowDoneExtS, sinkReadyS)
  where
     -- FIFO storage

@@ -1,9 +1,8 @@
 module LLaMa2.Layer.Attention.MultiHeadAttention (
     multiHeadAttentionStage, singleHeadController
 ) where
-
 import Clash.Prelude
-import LLaMa2.Types.Parameters (MultiHeadAttentionComponentQ (..))
+import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..))
 import LLaMa2.Types.LayerData (LayerData (..), ProcessingState (..), CycleStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -16,7 +15,7 @@ import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuff
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
-  MultiHeadAttentionComponentQ ->
+  PARAM.MultiHeadAttentionComponentQ ->
   Signal dom ProcessingState ->
   Index NumLayers ->
   Signal dom LayerData ->
@@ -70,7 +69,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer en
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-    (writeValidOutNew, _writeReadyIn, _writeEnable) =
+    (writeValidOutNew, writeReadyIn, writeEnable) =
       kvWriteControllerFSM
         qkvDone
         (pure True)
@@ -79,10 +78,10 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer en
 
     -- WO projection unchanged
     (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
-      perHeadWOController perHeadOutputs perHeadDoneFlags (mWoQ mha)
+      perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
     gatedHeads =
       zipWith3
-        (\proj _valid ready -> mux ready proj (pure (repeat 0)))
+        (\proj valid ready -> mux ready proj (pure (repeat 0)))
         perHeadProjected
         perHeadValidOuts
         perHeadReadyOuts

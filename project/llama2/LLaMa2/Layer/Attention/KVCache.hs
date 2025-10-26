@@ -50,8 +50,8 @@ kvBankController layerIndex processingState layerData qkvValid (headOutAcc, head
   wrKVRowK = mux wrPulse (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
   wrKVRowV = mux wrPulse (Just <$> bundle (seqPos, valVec)) (pure Nothing)
 
-  (kRow, _kRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowK
-  (vRow, _vRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowV
+  (kRow, kRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowK
+  (vRow, vRowB) = trueDualPortRam tAddrRow (pure Nothing) seqPos wrKVRowV
   writeDoneAcc1 = replace kvIx wrDone writeDoneAcc
 
   -- Attention row sequencer

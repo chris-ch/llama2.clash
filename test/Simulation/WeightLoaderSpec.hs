@@ -52,7 +52,7 @@ bootWeightLoaderFast emmcSlave ddrSlave startBoot emmcBase ddrBase =
     -- Run the real loader
     (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state
       , readValid, writerDataReady, transfersInBurst
-      , burstComplete, allComplete, currentBurst, _, _
+      , burstComplete, allComplete, currentBurst, _, _, _
       ) =
       bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase
 
@@ -98,7 +98,7 @@ spec = do
           ddrBase = pure 0
           (_, _, bootComplete, _, state
             , readValid, writerDataReady, transfersInBurst
-            , burstComplete, allComplete, currentBurst, _, _
+            , burstComplete, allComplete, currentBurst, _, _, _
             ) =
             withClockResetEnable systemClockGen resetGen enableGen
               $ bootWeightLoader mockAxiSlave mockAxiSlave startBoot emmcBase ddrBase
@@ -113,7 +113,7 @@ spec = do
       let slowSlave = mockAxiSlave {Slave.rvalid = fromList $ P.replicate 50 False P.++ P.repeat True}
           (_, _, bootComplete, _, _
             , readValid, writerDataReady, transfersInBurst
-            , burstComplete, allComplete, currentBurst, _, _
+            , burstComplete, allComplete, currentBurst, _, _, _
             ) =
             withClockResetEnable systemClockGen resetGen enableGen
               $ bootWeightLoader slowSlave mockAxiSlave (pure True) (pure 0) (pure 0)
@@ -140,7 +140,7 @@ spec = do
           sinkRdy = pure True
           (_emmcMaster, _ddrMaster, _, _, sysReady, _, sysState, bootState
             , readValid, writerDataReady, transfersInBurst
-            , burstComplete, allComplete, currentBurst, _, _
+            , burstComplete, allComplete, currentBurst, _, _, _
             ) =
             withClockResetEnable systemClockGen resetGen enableGen
               $ weightManagementSystem bypass mockAxiSlave mockAxiSlave powerOn layerIdx loadTrig sinkRdy
@@ -175,7 +175,7 @@ spec = do
                 _sysReady, _bootProgress, _sysState, bootState
                 , readValid, writerDataReady, transfersInBurst
                 , burstComplete, allComplete, currentBurst
-                , burstStarted, startReadBurst
+                , burstStarted, startReadBurst, emmcReady
                 ) =
                   weightManagementSystem bypass emmcSlave ddrSlave
                                         powerOn layerIdx loadTrig sinkRdy
@@ -201,12 +201,14 @@ spec = do
               sampledCurrentBurst = sampleN totalCycles currentBurst
               sampledBurstStarted = sampleN totalCycles burstStarted
               sampledStartReadBurst = sampleN totalCycles startReadBurst
+              sampledEMMCReady = sampleN totalCycles emmcReady
 
               -- Add to your error message:
               readEverValid = or sampledReadValid
               writerEverReady = or sampledWriterReady
               maxTransfers = P.maximum sampledTransfers
               burstCompleteEver = or sampledBurstComplete
+              emmcReadyEver = or sampledEMMCReady
               allCompleteEver = or sampledAllComplete
               finalBurst = P.last sampledCurrentBurst
               -- Find when burstComplete first went high
@@ -233,6 +235,7 @@ spec = do
               , " • BurstComplete ever high: " P.++ show burstCompleteEver
               , " • AllComplete ever high: " P.++ show allCompleteEver
               , " • Final burst counter: " P.++ show finalBurst
+              , " • eMMC ever ready: " P.++ show emmcReadyEver
               , " • First burstComplete cycle: " P.++ maybe "never" show firstBurstCompleteCycle
               , " • StartReadBurst pulse count: " P.++ show startReadBurstPulses
               , " • StartReadBurst cycles: " P.++ show (P.take 10 startReadBurstCycles P.++ ([-1 | P.length startReadBurstCycles > 10]))
