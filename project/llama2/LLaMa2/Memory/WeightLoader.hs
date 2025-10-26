@@ -1,13 +1,11 @@
 module LLaMa2.Memory.WeightLoader 
  (
-  bootWeightLoader,
-  calculateModelSizeBytes,
-  calculateLayerSizeBytes,
   calculateLayerBaseAddress,
   layerWeightStreamer,
   parseI8EChunk,
   weightManagementSystem,
-  WeightSystemState(..), BootLoaderState(..))
+  WeightSystemState(..)
+ )
     
     where
 
@@ -19,47 +17,11 @@ import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
+import LLaMa2.Memory.WeightLoader.BootWeightLoader (BootLoaderState, calculateLayerSizeBytes, bootWeightLoader)
 
 -- ============================================================================
 -- File Layout Constants (matches Parser.hs)
 -- ============================================================================
-
--- Calculate size of one layer in bytes (I8E format: 1 byte mantissa + 1/N byte exponent per row)
-calculateLayerSizeBytes :: Unsigned 32
-calculateLayerSizeBytes = rmsAttSize + wqSize + wkSize + wvSize + woSize +
-                          rmsFfnSize + w1Size + w2Size + w3Size
-  where
-    modelDim = snatToNum (SNat @ModelDimension)
-    hiddenDim = snatToNum (SNat @HiddenDimension)
-    numQueryHeads = snatToNum (SNat @NumQueryHeads)
-    numKVHeads = snatToNum (SNat @NumKeyValueHeads)
-    headDim = snatToNum (SNat @HeadDimension)
-
-    -- Each row: N mantissas (1 byte each) + 1 exponent (1 byte)
-    rmsAttSize = modelDim + 1
-    wqSize = numQueryHeads * headDim * (modelDim + 1)
-    wkSize = numKVHeads * headDim * (modelDim + 1)
-    wvSize = numKVHeads * headDim * (modelDim + 1)
-    woSize = modelDim * (modelDim + 1)
-    rmsFfnSize = modelDim + 1
-    w1Size = hiddenDim * (modelDim + 1)
-    w2Size = modelDim * (hiddenDim + 1)
-    w3Size = hiddenDim * (modelDim + 1)
-
--- Calculate total model size in bytes
-calculateModelSizeBytes :: Unsigned 32
-calculateModelSizeBytes = headerSize + embeddingSize + layersSize + rotarySize
-  where
-    vocabSize = snatToNum (SNat @VocabularySize)
-    modelDim = snatToNum (SNat @ModelDimension)
-    numLayers = snatToNum (SNat @NumLayers)
-    seqLen = snatToNum (SNat @SequenceLength)
-    rotaryDim = snatToNum (SNat @RotaryPositionalEmbeddingDimension)
-
-    headerSize = 7 * 4  -- 7 int32s
-    embeddingSize = vocabSize * (modelDim + 1)
-    layersSize = numLayers * calculateLayerSizeBytes
-    rotarySize = 2 * seqLen * rotaryDim * 4  -- freqCos + freqSin (Float32)
 
 -- Calculate DDR4 base address for a specific layer
 calculateLayerBaseAddress :: Index NumLayers -> Unsigned 32
@@ -74,96 +36,6 @@ calculateLayerBaseAddress layerIdx = embeddingSize + rmsFinalSize + rotarySize +
     rmsFinalSize = modelDim + 1
     rotarySize = 2 * seqLen * rotaryDim * 4
     layerOffset = fromIntegral layerIdx * calculateLayerSizeBytes
-
--- ============================================================================
--- BOOT LOADER: eMMC → DDR4 (One-time at startup)
--- ============================================================================
-
-data BootLoaderState
-  = BootIdle
-  | BootReading      -- Reading burst from eMMC
-  | BootPause        --
-  | BootWriting      -- Writing burst to DDR4
-  | BootComplete
-  deriving (Generic, NFDataX, Show, Eq)
-
--- | Boot loader: eMMC -> DDR4, burst-to-burst streaming (read master Ready-aware, write master burst-capable)
-bootWeightLoader :: forall dom . HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom                     -- eMMC AXI slave
-  -> Slave.AxiSlaveIn dom                     -- DDR4 AXI slave
-  -> Signal dom Bool                    -- Start boot
-  -> Signal dom (Unsigned 32)           -- eMMC base address
-  -> Signal dom (Unsigned 32)           -- DDR4 base address
-  -> ( Master.AxiMasterOut dom                 -- eMMC AXI master
-     , Master.AxiMasterOut dom                 -- DDR4 AXI master
-     , Signal dom Bool                  -- Boot complete
-     , Signal dom (Unsigned 32)         -- Bytes transferred (approx: completed bursts * 16KB)
-     , Signal dom BootLoaderState
-     )
-bootWeightLoader emmcSlave ddrSlave startBoot emmcBase ddrBase =
-  (emmcMaster, ddrMaster, bootComplete, bytesTransferred, state)
-  where
-    state = register BootIdle nextState
-
-    -- 256 beats/burst, 64 bytes/beat
-    burstLen   = 255 :: Unsigned 8
-    burstBytes = 16384 :: Unsigned 32
-
-    -- Burst index and “bytes transferred” counter (coarse, per burst)
-    currentBurst     = register (0 :: Unsigned 32) nextBurst
-    bytesTransferred = currentBurst * pure burstBytes
-
-    totalBursts = (calculateModelSizeBytes + burstBytes - 1) `div` burstBytes
-
-    -- Addresses for the current burst
-    emmcAddr = emmcBase + (currentBurst * pure burstBytes)
-    ddrAddr  = ddrBase  + (currentBurst * pure burstBytes)
-
-    -- Reader: start one burst while in BootReading
-    startReadBurst = state .==. pure BootReading
-    ( emmcMaster
-      , readData
-      , readValid
-      , _emmcReady     -- goes High in ReadIdle; not used further
-      ) = axiBurstReadMaster emmcSlave emmcAddr (pure burstLen) startReadBurst writerDataReady
-
-    -- Writer: start one burst when we enter BootReading and the per-burst counter is 0
-    atBurstStart   = (state .==. pure BootReading) .&&. (transfersInBurst .==. pure 0)
-    startWriteBurst= pulse1 atBurstStart
-    ( ddrMaster
-      , _writeDone
-      , writerDataReady ) = axiWriteMaster ddrSlave ddrAddr (pure burstLen) startWriteBurst readData readValid
-
-    -- Count accepted beats within this burst (readValid == writer accepted beat, because we wire writerDataReady back)
-    transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete    = transfersInBurst .==. pure 256
-    nextTransferCount =
-      mux (state ./=. pure BootReading) 0 $
-      mux burstComplete 0 $
-      mux readValid (transfersInBurst + 1) transfersInBurst
-
-    -- Progress state machine: Reading -> Pause (to bump burst index) -> Complete/Reading
-    allComplete = currentBurst .>=. pure totalBursts
-
-    nextState =
-      mux (state .==. pure BootIdle)
-        (mux startBoot (pure BootReading) (pure BootIdle)) $
-      mux (state .==. pure BootReading)
-        (mux burstComplete (pure BootPause) (pure BootReading)) $
-      mux (state .==. pure BootPause)
-        (mux allComplete (pure BootComplete) (pure BootReading)) $
-      -- BootComplete self-clears next cycle (optional)
-      pure BootIdle
-
-    nextBurst =
-      mux (state .==. pure BootIdle) 0 $
-      mux ((state .==. pure BootReading) .&&. burstComplete) (currentBurst + 1) currentBurst
-
-    bootComplete = state .==. pure BootComplete
-
-    -- One-shot pulse helper
-    pulse1 :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
-    pulse1 s = s .&&. not <$> register False s
 
 -- ============================================================================
 -- RUNTIME STREAMER: DDR4 → FPGA (Layer-at-a-time)
@@ -205,10 +77,12 @@ layerWeightStreamer ddrSlave layerIdx startLoad sinkReady =
     (axiMaster, weightData, dataValid, _ready) =
       axiBurstReadMaster ddrSlave burstAddr (pure burstLen) startBurst sinkReady
 
-    transfersInBurst = register (0 :: Unsigned 16) nextTransferCount
-    burstComplete    = transfersInBurst .==. pure 256
+    transfersInBurst = register (0 :: Unsigned 8) nextTransferCount
+    burstComplete = register False $
+      mux (state ./=. pure StreamBursting) (pure False) $
+      mux (transfersInBurst .==. pure 255) (pure True) burstComplete
 
-    -- BUGFIX: do not reset while in StreamBursting each cycle; reset only on Idle or when a burst completes
+    -- do not reset while in StreamBursting each cycle; reset only on Idle or when a burst completes
     nextTransferCount =
       mux (state .==. pure StreamIdle) 0 $
       mux burstComplete 0 $
@@ -297,17 +171,25 @@ weightManagementSystem
      , Signal dom Bool
      , Signal dom (Unsigned 32)
      , Signal dom WeightSystemState
-     , Signal dom BootLoaderState
+     , Signal dom BootLoaderState     
+     , Signal dom Bool                  -- readValid (for debugging)
+     , Signal dom Bool                  -- writerDataReady (for debugging)
+     , Signal dom (Unsigned 8)         -- transfersInBurst (for debugging)
+     , Signal dom Bool                  -- burstComplete (for debugging)
+     , Signal dom Bool                  -- allComplete (for debugging)
+     , Signal dom (Unsigned 32)        -- currentBurst (for debugging)
+     , Signal dom Bool                  -- burstStarted (for debugging)
+     , Signal dom Bool                  -- startReadBurst (for debugging)
      )
 weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerRequest loadTrigger streamSinkReady =
-  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut, bootProgress, sysState, bootState)
+  (emmcMaster, ddrMaster, weightStream, streamValid, systemReadyOut, bootProgress, sysState, bootState, readValid, writerDataReady, transfersInBurst, burstComplete, allComplete, currentBurst, burstStarted, startReadBurst)
   where
     sysState = register WSBoot nextSysState
     emmcBaseAddr = 0 :: Unsigned 32
     ddrBaseAddr  = 0 :: Unsigned 32
 
     startBoot = powerOn .&&. (sysState .==. pure WSBoot) .&&. (not <$> bypassBoot)
-    (emmcMasterBoot, ddrMasterBoot, bootDone, bootProgress, bootState) =
+    (emmcMasterBoot, ddrMasterBoot, bootDone, bootProgress, bootState, readValid, writerDataReady, transfersInBurst, burstComplete, allComplete, currentBurst, burstStarted, startReadBurst) =
       bootWeightLoader emmcSlave ddrSlave startBoot (pure emmcBaseAddr) (pure ddrBaseAddr)
 
     startStream = (sysState .==. pure WSReady) .&&. loadTrigger

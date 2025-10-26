@@ -112,53 +112,6 @@ Scaling from 260K model (weights embedded in FPGA) to 7B model (weights in exter
 └────────────────────────────────────────────────────────┘
 ```
 
-## Bill of Materials
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Component                    Part Number         Cost   │
-├──────────────────────────────────────────────────────────┤
-│  FPGA SoC                                                │
-│  Xilinx Zynq UltraScale+ ZU9EG               $700        │
-│  ├─ Logic Cells: 356K                                    │
-│  ├─ DSP Slices: 1,728 ← Enough for parallel64            │
-│  ├─ Block RAM: 23 Mb                                     │
-│  ├─ Max Clock: 450 MHz ← Run at 400 MHz                  │
-│  └─ DDR4 controller (up to 2666 MT/s)                    │
-│                                                          │
-│  Memory                                                  │
-│  ├─ 8GB DDR4-2666 (2× 4GB SO-DIMM)           $60         │
-│  │  └─ Bandwidth: 42 GB/s (sufficient)                   │
-│  └─ 64GB eMMC 5.1                            $30         │
-│     └─ Sequential: 400 MB/s                              │
-│                                                          │
-│  PCB                                                     │
-│  └─ 8-layer board + assembly                 $120        │
-│                                                          │
-│  Power                                                   │
-│  ├─ DC-DC converters (multi-rail)            $40         │
-│  └─ 12V @ 3A power adapter                   $15         │
-│                                                          │
-│  Cooling                                                 │
-│  └─ Heatsink + 40mm fan                      $25         │
-│                                                          │
-│  Connectors & Misc                                       │
-│  ├─ USB 3.1 Type-C controller                $20         │
-│  ├─ Status LEDs, buttons                     $10         │
-│  └─ Enclosure (CNC aluminum)                 $50         │
-│                                                          │
-│  Manufacturing & Testing                     $150        │
-├──────────────────────────────────────────────────────────┤
-│  Total BOM per unit:                         $1,220      │
-│  Retail (with margin):                       $1,799      │
-└──────────────────────────────────────────────────────────┘
-
-NRE (one-time): $120K
-├─ Board design: $40K
-├─ Firmware/drivers: $50K  
-└─ Testing/certification: $30K
-```
-
 ## Resource Utilization Check
 
 ### parallel64 Requirements
@@ -210,53 +163,6 @@ Resource usage:
 └─ Firmware/OS: ~5 GB
 ```
 
-## Physical Specifications
-```
-┌──────────────────────────────────────────┐
-│  Dimensions: 12cm × 10cm × 3.5cm         │
-│  Weight: 180g                            │
-│  Power: 12V @ 3A (30W typical, 36W peak) │
-│                                          │
-│  Connectors:                             │
-│  ├─ USB-C 3.1 Gen 2 (10 Gbps)            │
-│  └─ DC barrel jack (12V)                 │
-│                                          │
-│  Indicators:                             │
-│  ├─ Power LED (green)                    │
-│  ├─ Activity LED (blue)                  │
-│  └─ Status LED (RGB)                     │
-│                                          │
-│  Cooling: Active (temp-controlled)       │
-└──────────────────────────────────────────┘
-```
-
-## Development Path
-
-### Phase 1: Validate with Dev Board
-```
-Use: Kria KV260 ($500)
-├─ Has ZU5EV (smaller than ZU9EG)
-├─ Test parallel64 implementation
-├─ Verify timing closure @ 400 MHz
-└─ Timeline: 3 months
-```
-
-### Phase 2: Custom Board Prototype
-```
-Design custom board with ZU9EG
-├─ Schematic + PCB layout
-├─ 5 prototype boards
-└─ Timeline: 6 months
-   Cost: $120K NRE
-```
-
-### Phase 3: Production
-```
-First batch: 100 units
-├─ Price: $1,799 retail
-└─ Timeline: 12 months from start
-```
-
 ## Quick Reference Card
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -265,7 +171,7 @@ First batch: 100 units
 │  Performance:     5.2 tokens/second                    │
 │  Model Support:   7B, 13B (with slower speed)          │
 │  Power:           30W typical (vs 450W GPU)            │
-│  Interface:       USB 3.1 to Raspberry Pi              │
+│  Interface:       USB 2 to Raspberry Pi              │
 │  Storage:         64GB (multiple models)               │
 │  Memory:          8GB DDR4 working memory              │
 │  Clock:           400 MHz                              │
@@ -274,18 +180,6 @@ First batch: 100 units
 │  Cooling:         Active fan (quiet)                   │
 │  Price:           $1,799                               │
 └────────────────────────────────────────────────────────┘
-```
-
-## Software Requirements
-```
-Your Clash code changes:
-├─ Replace matrixMultiplier with parallel64RowMatrixMultiplier
-│  in: QKV projection, FFN, OutputProjection
-├─ Set clock to 400 MHz in constraints
-├─ Ensure timing closure (may need pipeline stages)
-└─ Expected code changes: ~500 lines
-
-Estimated effort: 2-3 weeks to implement + test
 ```
 
 ## Final Checklist
@@ -302,6 +196,7 @@ Estimated effort: 2-3 weeks to implement + test
 
 # In the short-term
 
+- LLaMA-2 7B KV cache cannot fit on-chip. We must use external DDR via AXI masters, with URAM for active tokens.
 - We now have QKV loaded from DDR, buffered, and used in projection (RAM path), with a robust row assembler. Tokens are correct with useRAMEnable=True.
 - We must replace every remaining constant weight/table with a DDR-driven, buffered (or on-demand) source.
 - What still uses hardcoded params:

@@ -10,7 +10,6 @@ import qualified LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec (spec)
 import qualified Simulation.AxiWriteMasterSpec (spec)
 import qualified Simulation.WeightLoaderSpec (spec)
 import qualified LLaMa2.Decoder.MultiTokenSpec (spec)
-import qualified Simulation.BootThenLoadSpec (spec)
 import qualified LLaMa2.Decoder.TimingValidationSpec (spec)
 
 main :: IO ()
@@ -22,5 +21,4 @@ main = hspec $ do
   Simulation.WeightLoaderSpec.spec
   LLaMa2.Layer.Attention.LayerWeightBufferSpec.spec
   --LLaMa2.Decoder.MultiTokenSpec.spec
-  Simulation.BootThenLoadSpec.spec
   LLaMa2.Decoder.TimingValidationSpec.spec

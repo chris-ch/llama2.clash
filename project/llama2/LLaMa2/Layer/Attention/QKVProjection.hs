@@ -1,7 +1,6 @@
 module LLaMa2.Layer.Attention.QKVProjection
-  ( queryHeadProjector
-  , keyValueHeadProjector
-  , qkvProjector
+  (
+    keyValueHeadProjector
   , qkvProjectionController
   ) where
 
@@ -55,11 +54,11 @@ parallelRowMatrixMultiplierDyn validIn readyInDownstream matSig inputVector =
   currentRow :: Signal dom (RowI8E cols)
   currentRow = (!!) <$> matSig <*> rowIndex
 
-  -- Parallel row engine (unchanged)
+  -- Parallel row engine
   (rowResult, rowDone) =
     parallel64RowProcessor rowReset rowEnable currentRow inputVector
 
-  -- Protocol FSM (unchanged)
+  -- Protocol FSM
   (state, rowReset, rowEnable, validOut, readyOut) =
     matrixMultiplierStateMachine validIn readyInDownstream rowDone rowIndex
 

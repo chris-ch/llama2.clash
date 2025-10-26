@@ -74,7 +74,7 @@ matrixMultiplierStateMachine  :: forall dom rows .
   -> Signal dom Bool
   -> Signal dom (Index rows)
   -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
-matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
+matrixMultiplierStateMachine validIn readyIn rowDone currentRow =
   (state, rowReset, rowEnable, validOut, readyOut)
   where
     state = register MIdle nextState
@@ -85,7 +85,7 @@ matrixMultiplierStateMachine validIn readyInDownstream rowDone currentRow =
     acceptInput = (state .==. pure MIdle) .&&. validIn
 
     -- Move to next state when done and downstream is ready
-    outputAccepted = (state .==. pure MDone) .&&. readyInDownstream
+    outputAccepted = (state .==. pure MDone) .&&. readyIn
 
     nextState = mux acceptInput
                     (pure MReset)
@@ -206,7 +206,7 @@ parallel64RowMatrixMultiplier :: forall dom rows cols.
      , Signal dom Bool      -- ^ validOut
      , Signal dom Bool      -- ^ readyOut
      )
-parallel64RowMatrixMultiplier validIn readyInDownstream rowVectors inputVector =
+parallel64RowMatrixMultiplier validIn readyIn rowVectors inputVector =
   (outputVector, validOut, readyOut)
   where
     -- Row counter
@@ -218,12 +218,12 @@ parallel64RowMatrixMultiplier validIn readyInDownstream rowVectors inputVector =
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
-      matrixMultiplierStateMachine validIn readyInDownstream rowDone rowIndex
+      matrixMultiplierStateMachine validIn readyIn rowDone rowIndex
 
     -- Increment row index when row completes, reset after last row
     nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
                        (rowIndex + 1)
-                       (mux ((state .==. pure MDone) .&&. readyInDownstream)
+                       (mux ((state .==. pure MDone) .&&. readyIn)
                             (pure 0)
                             rowIndex)
 

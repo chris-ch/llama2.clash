@@ -18,7 +18,7 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
-import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState, BootLoaderState)
+import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState)
 import LLaMa2.Numeric.Quantization (RowI8E)
 
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..), qkvWeightBufferController)
@@ -26,6 +26,7 @@ import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddre
 import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
+import LLaMa2.Memory.WeightLoader.BootWeightLoader (BootLoaderState)
 
 -- Initial state
 initialLayerData :: LayerData
@@ -89,6 +90,8 @@ decoder bypassBoot emmcSlave ddrSlave powerOn params inputToken inputTokenValid 
      , bootProgress
      , sysState
      , bootState
+     , _, _, _
+     , _, _, _, _, _
      ) = weightManagementSystem bypassBoot emmcSlave ddrSlave powerOn layerIdx loadTrigger sinkReady
 
     -- One real address generator, advanced by rowDoneExt from the rower

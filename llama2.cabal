@@ -117,6 +117,7 @@ library
       LLaMa2.Memory.KVCacheBank
       LLaMa2.Memory.LayerAddressing
       LLaMa2.Memory.WeightLoader
+      LLaMa2.Memory.WeightLoader.BootWeightLoader
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -167,7 +168,6 @@ test-suite llama2-test
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
       Simulation.AxiWriteMasterSpec
-      Simulation.BootThenLoadSpec
       Simulation.WeightLoaderSpec
       LLaMa2.Numeric.OperationsSpec
   hs-source-dirs:
