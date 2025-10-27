@@ -267,26 +267,27 @@ spec = do
         `shouldBe` True
 
     it "passes randomized AXI fuzz test (100 cycles, deterministic seed)" $ do
-
-      -- Deterministic PRNG
       let gen = mkStdGen 42
           randBools = randoms gen :: [Bool]
+          inf xs     = xs P.++ P.repeat False
 
-          -- Take pseudo-random boolean streams for each control signal
-          arvalid = fromList $ P.take 100 randBools
-          awvalid = fromList $ P.take 100 (P.drop 100 randBools)
-          wvalid  = fromList $ P.take 100 (P.drop 200 randBools)
-          rready  = fromList $ P.take 100 (P.drop 300 randBools)
-          bready  = fromList $ P.take 100 (P.drop 400 randBools)
+          arvalid = fromList $ inf (takeN 100 randBools)
+          awvalid = fromList $ inf (takeN 100 (P.drop 100 randBools))
+          wvalid  = fromList $ inf (takeN 100 (P.drop 200 randBools))
+          rready  = fromList $ inf (takeN 100 (P.drop 300 randBools))
+          bready  = fromList $ inf (takeN 100 (P.drop 400 randBools))
 
-          -- Constant addresses and data for simplicity
           defaultAR = AXITypes.AxiAR 0 0 0 0 0
           defaultAW = AXITypes.AxiAW 0 0 0 1 0
-          defaultW  = AXITypes.AxiW  0xF00DBABE 0xFFFFFFFFFFFFFFFF True
+          -- Write one well-defined 512-bit word: low 32 bits 0xF00DBABE, rest zero
+          defaultW  = AXITypes.AxiW  (0xF00DBABE :: WordData)  0xFFFFFFFFFFFFFFFF  True
 
-          ardata = fromList (P.replicate 100 defaultAR)
-          awdata = fromList (P.replicate 100 defaultAW)
-          wdata  = fromList (P.replicate 100 defaultW)
+          ardata = fromList (P.replicate 100 defaultAR P.++ P.repeat defaultAR)
+          awdata = fromList (P.replicate 100 defaultAW P.++ P.repeat defaultAW)
+          wdata  = fromList (P.replicate 100 defaultW  P.++ P.repeat defaultW)
+
+          initMem :: Vec 65536 WordData
+          initMem = repeat 0x5555555555555555555555555555555555555555555555555555555555555555
 
           masterOut = Master.AxiMasterOut
             { Master.arvalid = arvalid
@@ -299,31 +300,29 @@ spec = do
             , Master.bready  = bready
             }
 
-          initMem :: Vec 65536 WordData
-          initMem = repeat 0x5555555555555555555555555555555555555555555555555555555555555555
-
-      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+          slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
                       createDRAMBackedAxiSlave (DRAMConfig 2 1 1) initMem masterOut
 
-      let sampledRValid = sampleN 120 (Slave.rvalid slaveIn)
-          sampledBValid = sampleN 120 (Slave.bvalid slaveIn)
-          sampledRData  = sampleN 120 (AXITypes.rdata <$> Slave.rdata slaveIn)
+          rs = sampleN 120 (bundle ( Slave.rvalid slaveIn
+                                   , AXITypes.rdata <$> Slave.rdata slaveIn))
+          bs = sampleN 120 (Slave.bvalid slaveIn)
 
-      P.putStrLn $ "Random fuzz: rvalid=" P.++ show (P.take 30 sampledRValid)
-      P.putStrLn $ "Random fuzz: bvalid=" P.++ show (P.take 30 sampledBValid)
+          rBeats = [d | (True,d) <- rs]
 
-      -- ✅ Sanity checks:
-      -- 1. Some reads and writes should occur (coverage)
-      P.length (filter id sampledRValid) `shouldSatisfy` (> 0)
-      P.length (filter id sampledBValid) `shouldSatisfy` (> 0)
+          -- Helper: create an infinite boolean stream (first 100 pseudo-random, then False)
+          takeN = P.take          -- gate on rvalid
 
-      -- 2. rdata should be either 0x555... (initial) or written data pattern
-      let expectedPatterns =
-            [ 0x5555555555555555555555555555555555555555555555555555555555555555
-            , 0xF00DBABE
-            ]
-      P.all (`elem` expectedPatterns) (P.take 50 sampledRData) `shouldBe` True
+      P.putStrLn $ "Random fuzz: rvalid first 30 = " P.++ show (P.take 30 (P.map fst rs))
+      P.putStrLn $ "Random fuzz: bvalid first 30 = " P.++ show (P.take 30 bs)
 
-      -- 3. No "explosions" (no NaN, X, undefined, etc.)
-      -- Clash simulation should stay well-defined.
-      sampledRData `shouldSatisfy` P.all (\x -> x == x)  -- x == x checks for no NaN
+      -- 1) Coverage
+      P.length rBeats `shouldSatisfy` (> 0)
+      P.length (filter id bs) `shouldSatisfy` (> 0)
+
+      -- 2) rdata is either initial pattern or the written pattern
+      let initPat  = 0x5555555555555555555555555555555555555555555555555555555555555555 :: WordData
+          writePat = 0xF00DBABE :: WordData
+      P.all (\x -> x == initPat || x == writePat) (P.take 50 rBeats) `shouldBe` True
+
+      -- 3) No X explosions
+      rBeats `shouldSatisfy` P.all (\x -> x == x)
