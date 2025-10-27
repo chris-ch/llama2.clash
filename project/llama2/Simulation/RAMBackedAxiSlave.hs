@@ -1,5 +1,5 @@
-module Simulation.RamBackedAxiSlave
-  ( createRamBackedAxiSlave
+module Simulation.RAMBackedAxiSlave
+  ( createRAMBackedAxiSlave
   , ReadState(..)
   , WriteState(..)
   ) where
@@ -54,15 +54,15 @@ initialVec bs = foldr (\i v -> replace i (wordAt i) v) emptyVec (iterateI @65_53
 -- Main AXI slave
 -- ==================================================================
 
-createRamBackedAxiSlave
+createRAMBackedAxiSlave
   :: forall dom . HiddenClockResetEnable dom
   => BSL.ByteString
   -> Master.AxiMasterOut dom
   -> (Slave.AxiSlaveIn dom, Signal dom ReadState, Signal dom WriteState)
-createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
+createRAMBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
  where
   ------------------------------------------------------------------
-  -- BRAM initialised from the supplied ByteString (unchanged)
+  -- BRAM initialised from the supplied ByteString
   ------------------------------------------------------------------
   initMem :: Vec 65536 WordData
   initMem = initialVec initFile
@@ -74,12 +74,8 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
   ram = blockRamPow2 initMem
 
   ------------------------------------------------------------------
-  -- Register master inputs (unchanged)
+  -- Register master inputs
   ------------------------------------------------------------------
-  arvalid_r = register False (Master.arvalid masterOut)
-  ardata_r  = register (AxiAR 0 0 0 0 0) (Master.ardata masterOut)
-  araddr_r  = araddr <$> ardata_r
-  arlen_r   = arlen  <$> ardata_r
 
   awvalid_r = register False (Master.awvalid masterOut)
   awdata_r  = register (AxiAW 0 0 0 0 0) (Master.awdata masterOut)
@@ -91,7 +87,7 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
   rready_r = register False (Master.rready masterOut)
 
   ------------------------------------------------------------------
-  -- WRITE PATH (fixed: per-beat address increment)
+  -- WRITE PATH (per-beat address increment)
   ------------------------------------------------------------------
   writeState = register WIdle nextWriteState
   awReady    = (== WIdle) <$> writeState
@@ -130,34 +126,46 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
       (pure WBursting)
 
   lastWriteBeat = writeState .==. pure WBursting .&&. writeEn .&&. wlast_r
-  bValid = writeState .==. pure WIdle .&&. register False lastWriteBeat
+
+  -- proper BVALID retention
+  bvalid_r = register False nextBValid
+  nextBValid = (bvalid_r .&&. (not <$> Master.bready masterOut)) .||. lastWriteBeat
+  bValid = bvalid_r
+
   bData  = pure (AxiB 0 0)   -- OKAY
 
   ------------------------------------------------------------------
-  -- READ PATH (unchanged)
+  -- READ PATH
   ------------------------------------------------------------------
   readState = register RIdle nextReadState
   arReady = readState .==. pure RIdle
-  arHandshake = arvalid_r .&&. arReady
 
-  latchedReadAddr  = regEn 0 arHandshake araddr_r
-  latchedReadBeats = regEn 1 arHandshake (arlen_r + 1)
+  arHandshake = Master.arvalid masterOut .&&. arReady
 
+  currentArData = Master.ardata masterOut
+  currentArLen = arlen <$> currentArData
+
+  latchedReadAddr  = regEn 0 arHandshake (araddr <$> currentArData)
+  latchedReadBeats = regEn 1 arHandshake (currentArLen + 1)  -- total beats
+
+  -- raw signal that the slave is in bursting mode (pre-registered)
+  rawBursting = readState .==. pure RBursting
+
+  -- rValid is delayed one cycle to match BRAM read latency / readDataRaw
+  rValid = register False rawBursting
+
+  -- Beat counter increments only when the *output* data is accepted:
+  -- i.e. when rValid && master.rready (we have registered rready earlier as rready_r)
   readBeatCounter :: Signal dom (Unsigned 8)
   readBeatCounter = register 0 nextReadBeatCounter
   nextReadBeatCounter =
     mux (readState .==. pure RIdle) 0 $
-    mux (rready_r .&&. (readState .==. pure RBursting))
-        (readBeatCounter + 1)
-        readBeatCounter
+    mux (readState .==. pure RBursting)
+      (mux (rValid .&&. rready_r) (readBeatCounter + 1) readBeatCounter)
+      readBeatCounter
 
-  nextReadState =
-    mux (readState .==. pure RIdle)
-        (mux arHandshake (pure RBursting) (pure RIdle)) $
-    mux (rready_r .&&. (readBeatCounter + 1 .>=. latchedReadBeats))
-        (pure RIdle)
-        (pure RBursting)
-
+  -- compute read address (uses the unincremented beat counter: address for
+  -- the beat being requested this cycle; BRAM returns it next cycle)
   readWordAddr :: Signal dom (Unsigned 16)
   readWordAddr =
     let offs = (* 64) . extend <$> readBeatCounter :: Signal dom (Unsigned 32)
@@ -165,12 +173,29 @@ createRamBackedAxiSlave initFile masterOut = (slaveIn, readState, writeState)
 
   readDataRaw = ram readWordAddr writeOp
 
-  rValid = (== RBursting) <$> readState
-  rLast  = (readBeatCounter + 1 .>=. latchedReadBeats) .&&. rValid
+  -- rLast: should be true on the same cycle rValid is true when the data
+  -- appearing on rdata is the last beat. To make that happen, compute the
+  -- predicate one cycle earlier and register it.
+  -- The data arriving when rValid==True corresponds to the beat index that
+  -- was present in readBeatCounter *one cycle earlier*, so we check:
+  --    (readBeatCounter + 1 >= latchedReadBeats)
+  -- evaluated *before* the rValid cycle, and then register it.
+  rLastNext = (readBeatCounter + 1 .>=. latchedReadBeats) .&&. rawBursting
+  rLast = register False rLastNext
+
   rDataOut = AxiR <$> readDataRaw <*> pure 0 <*> rLast <*> pure 0
 
+  -- A burst is done only when the last beat has been emitted AND accepted
+  burstDone = rValid .&&. rready_r .&&. rLast
+
+  nextReadState =
+    mux (readState .==. pure RIdle)
+        (mux arHandshake (pure RBursting) (pure RIdle)) $
+    mux burstDone
+        (pure RIdle)
+        (pure RBursting)
   ------------------------------------------------------------------
-  -- Output bundle (unchanged)
+  -- Output bundle
   ------------------------------------------------------------------
   slaveIn = Slave.AxiSlaveIn
     { arready = arReady

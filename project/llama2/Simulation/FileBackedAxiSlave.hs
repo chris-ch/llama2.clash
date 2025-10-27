@@ -7,7 +7,7 @@ import Clash.Prelude
 import qualified Data.ByteString.Lazy as BSL
 import Data.ByteString.Lazy (ByteString)
 
-import Simulation.RamBackedAxiSlave (ReadState (..))
+import Simulation.RAMBackedAxiSlave (ReadState (..))
 import LLaMa2.Memory.AXI.Slave (AxiSlaveIn (..))
 import LLaMa2.Memory.AXI.Master (AxiMasterOut (..))
 import LLaMa2.Memory.AXI.Types (AxiAR (..), AxiB (..), AxiR (..))

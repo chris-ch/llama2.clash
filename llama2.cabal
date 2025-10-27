@@ -128,11 +128,12 @@ library
       LLaMa2.Types.LayerData
       LLaMa2.Types.ModelConfig
       Parser
+      Simulation.FileBackedAxiSlave
+      Simulation.RAMBackedAxiSlave
+      Simulation.DRAMBackedAxiSlave
       Simulation.MatVecSim
       Simulation.Parameters
       Simulation.ParametersQuantization
-      Simulation.FileBackedAxiSlave
-      Simulation.RamBackedAxiSlave
       Tokenizer
   hs-source-dirs:
       project/llama2
@@ -162,14 +163,15 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Layer.Attention.LayerWeightBufferSpec
       LLaMa2.Decoder.MultiTokenSpec
       LLaMa2.Decoder.TimingValidationSpec
+      LLaMa2.Layer.Attention.LayerWeightBufferSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.WeightLoaderSpec
-      LLaMa2.Numeric.OperationsSpec
+      Simulation.DRAMBackedAxiSlaveSpec 
   hs-source-dirs:
       test
   build-depends:
