@@ -34,7 +34,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
 
       let sampledRValid = sampleN 5 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid: " P.++ show sampledRValid
@@ -63,7 +63,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
 
       let sampledRValid = sampleN 10 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid (burst 2): " P.++ show sampledRValid
@@ -111,7 +111,7 @@ spec = do
 
       let
         slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                    createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+                    createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
 
         sampledBValid :: [Bool]
         sampledBValid = sampleN 12 (Slave.bvalid slaveIn)
@@ -147,7 +147,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 5 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 5 1 1) initMem masterOut
 
       let sampledRValid = sampleN 15 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid (latency=5): " P.++ show sampledRValid
@@ -186,7 +186,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
 
       let bValidSamples = sampleN 20 (Slave.bvalid slaveIn)
       P.putStrLn $ "bValid (burst write 4): " P.++ show bValidSamples
@@ -213,7 +213,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
 
       let wreadySamples = sampleN 10 (Slave.wready slaveIn)
       let bvalidSamples = sampleN 10 (Slave.bvalid slaveIn)
@@ -260,7 +260,7 @@ spec = do
             }
 
           slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 2 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 2 1 1) initMem masterOut
 
           rs = sampleN 120 (bundle ( Slave.rvalid slaveIn
                                    , AXITypes.rdata <$> Slave.rdata slaveIn))
