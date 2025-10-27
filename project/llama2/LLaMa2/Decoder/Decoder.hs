@@ -63,10 +63,9 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> ( Signal dom Token
      , Signal dom Bool
      , Master.AxiMasterOut dom
-     , Signal dom Bool
      , DecoderIntrospection dom )
 decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
-  (outputToken, readyPulse, ddrMaster, systemReadyOut, introspection)
+  (outputToken, readyPulse, ddrMaster, introspection)
   where
     -- WEIGHT MANAGEMENT SYSTEM (extended, robust)
     firstCycle = register True (pure False)
@@ -78,7 +77,6 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     (  ddrMaster
      , weightStream
      , streamValid
-     , systemReadyOut
      , sysState
      ) = weightManagementSystem ddrSlave powerOn layerIdx loadTrigger sinkReady
 
@@ -125,7 +123,6 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- Token gating and sampling
     (mantissasH, expH) = unbundle parsedWeightsHold
     firstMantissa = fmap (bitCoerce . head) mantissasH
-    gatedTokenValid = inputTokenValid .&&. systemReadyOut
 
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     layerIdx :: Signal dom (Index NumLayers)
@@ -135,9 +132,9 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     processingState = SequenceController.processingState
       (SequenceController.pipelineController
         attnDoneThisLayer writeDoneThisLayer qkvDoneThisLayer
-        ffnDoneThisLayer logitsValid gatedTokenValid)
+        ffnDoneThisLayer logitsValid inputTokenValid)
 
-    outputToken = mux gatedTokenValid inputToken feedbackToken
+    outputToken = mux inputTokenValid inputToken feedbackToken
     embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
     layerInput = LayerStack.prepareLayerInput <$> layerIdx

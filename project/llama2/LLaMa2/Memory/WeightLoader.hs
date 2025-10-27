@@ -166,11 +166,10 @@ weightManagementSystem
   -> ( Master.AxiMasterOut dom
      , Signal dom (BitVector 512)
      , Signal dom Bool
-     , Signal dom Bool
      , Signal dom WeightSystemState
      )
 weightManagementSystem ddrSlave powerOn layerReq loadTrigger sinkReady =
-  (ddrMaster, weightStream, streamValid, systemReadyOut, sysState)
+  (ddrMaster, weightStream, streamValid, sysState)
   where
     sysState = register WSReady nextState
 
@@ -183,4 +182,3 @@ weightManagementSystem ddrSlave powerOn layerReq loadTrigger sinkReady =
         (mux startStream (pure WSStreaming) (pure WSReady))
         (mux streamComplete (pure WSReady) (pure WSStreaming))
 
-    systemReadyOut = sysState .==. pure WSReady

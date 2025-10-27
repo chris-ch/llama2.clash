@@ -22,7 +22,6 @@ topEntityWithAxi
   -> ( Signal System Token
      , Signal System Bool
      , Master.AxiMasterOut System
-     , Signal System Bool
      , Decoder.DecoderIntrospection System
      )
 topEntityWithAxi ddrSlave powerOn inTok inTokValid temp seed =

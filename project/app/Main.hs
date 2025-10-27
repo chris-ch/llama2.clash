@@ -172,9 +172,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, ddrMaster, ddrSlave, weightsReady,
-     introspection
-     ) = bundledOutputs modelBinary inputSignals
+    (coreOutputsSignal, ddrMaster, ddrSlave, introspection) = bundledOutputs modelBinary inputSignals
 
     -- Sample DDR write signals
     ddrWValidSampled = C.sampleN simSteps (Master.wvalid ddrMaster)
@@ -191,7 +189,6 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     readiesSampled        = C.sampleN simSteps (Top.ready introspection)
     --attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
-    weightsReadySampled = C.sampleN simSteps weightsReady
     weightValidSampled = C.sampleN simSteps (Top.weightStreamValid introspection)
     weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
     layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
@@ -226,7 +223,6 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           ps     = processingStage (statesSampled !! cycleIdx)
           rdy    = readiesSampled !! cycleIdx
           ffn    = ffnDonesSampled !! cycleIdx
-          wRdy   = weightsReadySampled !! cycleIdx
           wValid = weightValidSampled !! cycleIdx
           wSample = weightSampleSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
@@ -237,13 +233,12 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           ddrBValid = ddrBValidSampled !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %5s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s | %8s | %8s | %8s | %8s"
+            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %9s |  %9d | %8s | %8s | %8s | %8s | %8s | %8s"
               cycleIdx
               li
               (show ps)
               (show rdy)
               (show ffn)
-              (show wRdy)
               (show wValid)
               (show layChg)
               wSample
@@ -280,21 +275,17 @@ bundledOutputs
   -> ( C.Signal C.System (Token, Bool)
      , Master.AxiMasterOut C.System
      , Slave.AxiSlaveIn C.System
-     , C.Signal C.System Bool
      , Top.DecoderIntrospection C.System
      )
 bundledOutputs modelBinary bundledInputs =
-  (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave
-  , weightsReady
-  , introspection
-  )
+  (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave, introspection)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
 
   powerOn = C.pure True
 
   -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, ddrMaster, weightsReady, introspection) =
+  (tokenOut, validOut, ddrMaster, introspection) =
     C.exposeClockResetEnable
       (Top.topEntityWithAxi ddrSlave powerOn token isValid temperature seed)
       C.systemClockGen
