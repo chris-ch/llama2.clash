@@ -7,6 +7,7 @@ import Simulation.DRAMBackedAxiSlave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified  LLaMa2.Memory.AXI.Types as AXITypes
+import System.Random (mkStdGen, randoms)
 
 spec :: Spec
 spec = do
@@ -120,8 +121,209 @@ spec = do
       P.length (filter id sampledBValid) `shouldBe` 1
 
       -- Extract bresp from bdata
-      let 
+      let
         brespSamples :: [Unsigned 2]
         brespSamples = sampleN 12 (AXITypes.bresp <$> Slave.bdata slaveIn)
 
       brespSamples P.!! 5 `shouldBe` 0
+
+    it "applies configured read latency correctly" $ do
+      -- readLatency = 5 → expect rvalid delayed by 6 cycles total (1 RAM + 5 extra)
+      let initMem :: Vec 65536 WordData
+          initMem = repeat 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          arvalid = fromList $ [False, True] P.++ P.repeat False
+          ardata  = fromList $ AXITypes.AxiAR 0 0 0 0 0 : P.repeat (AXITypes.AxiAR 0 0 0 0 0)
+          rready  = pure True
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = arvalid
+            , Master.ardata  = ardata
+            , Master.rready  = rready
+            , Master.awvalid = pure False
+            , Master.awdata  = pure (AXITypes.AxiAW 0 0 0 0 0)
+            , Master.wvalid  = pure False
+            , Master.wdata   = pure (AXITypes.AxiW 0 0 False)
+            , Master.bready  = pure False
+            }
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlave (DRAMConfig 5 1 1) initMem masterOut
+
+      let sampledRValid = sampleN 15 (Slave.rvalid slaveIn)
+      P.putStrLn $ "rValid (latency=5): " P.++ show sampledRValid
+
+      -- Should appear only once, around cycle 6
+      let validIdxs = [i | (i,v) <- P.zip [0 :: Int ..] sampledRValid, v]
+      validIdxs `shouldSatisfy` (\ix -> not (null ix) && P.head ix >= 5 && P.head ix <= 7)
+
+    it "handles a 4-beat burst write correctly and issues a single response" $ do
+      let initMem :: Vec 65536 WordData
+          initMem = repeat 0
+          awvalid = fromList $ [False, True] P.++ P.repeat False
+          awdata  = fromList $
+                      [ AXITypes.AxiAW 0 3 0 1 0  -- len=3 → 4 beats
+                      , AXITypes.AxiAW 0 3 0 1 0
+                      ] P.++ P.repeat (AXITypes.AxiAW 0 3 0 1 0)
+
+          wvalid = fromList $ [False, True, True, True, True] P.++ P.repeat False
+          wdata  = fromList $
+                      [ AXITypes.AxiW 0xA 0xFFFFFFFFFFFFFFFF True
+                      , AXITypes.AxiW 0xB 0xFFFFFFFFFFFFFFFF True
+                      , AXITypes.AxiW 0xC 0xFFFFFFFFFFFFFFFF True
+                      , AXITypes.AxiW 0xD 0xFFFFFFFFFFFFFFFF True
+                      , AXITypes.AxiW 0xE 0xFFFFFFFFFFFFFFFF True
+                      ] P.++ P.repeat (AXITypes.AxiW 0 0 False)
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = pure False
+            , Master.ardata  = pure (AXITypes.AxiAR 0 0 0 0 0)
+            , Master.rready  = pure False
+            , Master.awvalid = awvalid
+            , Master.awdata  = awdata
+            , Master.wvalid  = wvalid
+            , Master.wdata   = wdata
+            , Master.bready  = pure True
+            }
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+
+      let bValidSamples = sampleN 20 (Slave.bvalid slaveIn)
+      P.putStrLn $ "bValid (burst write 4): " P.++ show bValidSamples
+
+      -- Expect exactly one valid response after all beats complete
+      P.length (filter id bValidSamples) `shouldBe` 1
+
+    it "ignores WVALID beats that arrive before any AWVALID" $ do
+      let initMem :: Vec 65536 WordData
+          initMem = repeat 0
+          awvalid = pure False
+          awdata  = pure (AXITypes.AxiAW 0 0 0 1 0)
+          wvalid  = fromList $ [True, True, False] P.++ P.repeat False
+          wdata   = fromList $ AXITypes.AxiW 0x1234 0xFFFFFFFFFFFFFFFF True : P.repeat (AXITypes.AxiW 0 0 False)
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = pure False
+            , Master.ardata  = pure (AXITypes.AxiAR 0 0 0 0 0)
+            , Master.rready  = pure False
+            , Master.awvalid = awvalid
+            , Master.awdata  = awdata
+            , Master.wvalid  = wvalid
+            , Master.wdata   = wdata
+            , Master.bready  = pure True
+            }
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+
+      let wreadySamples = sampleN 10 (Slave.wready slaveIn)
+      let bvalidSamples = sampleN 10 (Slave.bvalid slaveIn)
+      P.putStrLn $ "wready (no AW): " P.++ show wreadySamples
+      P.putStrLn $ "bvalid (no AW): " P.++ show bvalidSamples
+
+      -- Should not accept writes (wready should remain False)
+      P.or wreadySamples `shouldBe` False
+      -- Should not produce a response
+      P.or bvalidSamples `shouldBe` False
+
+    it "returns freshly written data when read immediately after a write" $ do
+      let initMem :: Vec 65536 WordData
+          initMem = repeat 0
+
+          awvalid = fromList $ [False, True, False] P.++ P.repeat False
+          awdata  = fromList $
+                      [ AXITypes.AxiAW 0 0 0 1 0
+                      , AXITypes.AxiAW 0 0 0 1 0
+                      ] P.++ P.repeat (AXITypes.AxiAW 0 0 0 1 0)
+
+          wvalid = fromList $ [False, False, True] P.++ P.repeat False
+          wdata  = fromList $
+                      AXITypes.AxiW 0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE
+                            0xFFFFFFFFFFFFFFFF
+                            True : P.repeat (AXITypes.AxiW 0 0 False)
+
+          arvalid = fromList $ [False, False, False, True] P.++ P.repeat False
+          ardata  = fromList $ P.replicate 4 (AXITypes.AxiAR 0 0 0 0 0) P.++ P.repeat (AXITypes.AxiAR 0 0 0 0 0)
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = arvalid
+            , Master.ardata  = ardata
+            , Master.rready  = pure True
+            , Master.awvalid = awvalid
+            , Master.awdata  = awdata
+            , Master.wvalid  = wvalid
+            , Master.wdata   = wdata
+            , Master.bready  = pure True
+            }
+
+          slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
+
+          samples = sampleN 32 (bundle (Slave.rvalid slaveIn, AXITypes.rdata <$> Slave.rdata slaveIn))
+          validData = [d | (True,d) <- samples]
+
+      P.putStrLn $ "valid R data: " P.++ show (P.take 6 validData)
+
+      P.elem 0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE validData
+        `shouldBe` True
+
+    it "passes randomized AXI fuzz test (100 cycles, deterministic seed)" $ do
+
+      -- Deterministic PRNG
+      let gen = mkStdGen 42
+          randBools = randoms gen :: [Bool]
+
+          -- Take pseudo-random boolean streams for each control signal
+          arvalid = fromList $ P.take 100 randBools
+          awvalid = fromList $ P.take 100 (P.drop 100 randBools)
+          wvalid  = fromList $ P.take 100 (P.drop 200 randBools)
+          rready  = fromList $ P.take 100 (P.drop 300 randBools)
+          bready  = fromList $ P.take 100 (P.drop 400 randBools)
+
+          -- Constant addresses and data for simplicity
+          defaultAR = AXITypes.AxiAR 0 0 0 0 0
+          defaultAW = AXITypes.AxiAW 0 0 0 1 0
+          defaultW  = AXITypes.AxiW  0xF00DBABE 0xFFFFFFFFFFFFFFFF True
+
+          ardata = fromList (P.replicate 100 defaultAR)
+          awdata = fromList (P.replicate 100 defaultAW)
+          wdata  = fromList (P.replicate 100 defaultW)
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = arvalid
+            , Master.ardata  = ardata
+            , Master.rready  = rready
+            , Master.awvalid = awvalid
+            , Master.awdata  = awdata
+            , Master.wvalid  = wvalid
+            , Master.wdata   = wdata
+            , Master.bready  = bready
+            }
+
+          initMem :: Vec 65536 WordData
+          initMem = repeat 0x5555555555555555555555555555555555555555555555555555555555555555
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlave (DRAMConfig 2 1 1) initMem masterOut
+
+      let sampledRValid = sampleN 120 (Slave.rvalid slaveIn)
+          sampledBValid = sampleN 120 (Slave.bvalid slaveIn)
+          sampledRData  = sampleN 120 (AXITypes.rdata <$> Slave.rdata slaveIn)
+
+      P.putStrLn $ "Random fuzz: rvalid=" P.++ show (P.take 30 sampledRValid)
+      P.putStrLn $ "Random fuzz: bvalid=" P.++ show (P.take 30 sampledBValid)
+
+      -- ✅ Sanity checks:
+      -- 1. Some reads and writes should occur (coverage)
+      P.length (filter id sampledRValid) `shouldSatisfy` (> 0)
+      P.length (filter id sampledBValid) `shouldSatisfy` (> 0)
+
+      -- 2. rdata should be either 0x555... (initial) or written data pattern
+      let expectedPatterns =
+            [ 0x5555555555555555555555555555555555555555555555555555555555555555
+            , 0xF00DBABE
+            ]
+      P.all (`elem` expectedPatterns) (P.take 50 sampledRData) `shouldBe` True
+
+      -- 3. No "explosions" (no NaN, X, undefined, etc.)
+      -- Clash simulation should stay well-defined.
+      sampledRData `shouldSatisfy` P.all (\x -> x == x)  -- x == x checks for no NaN

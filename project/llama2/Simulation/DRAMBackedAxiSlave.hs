@@ -8,6 +8,7 @@ import Clash.Prelude
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave  as Slave
+import Data.Maybe (fromMaybe, isJust)
 
 -- ===============================================================
 -- Configuration
@@ -91,86 +92,47 @@ readPath masterOut initMem ramConfig ramOp = ReadPathData {
     readData = rData
   }
   where
-
-    -- ---------------------------------------------------------------
-    -- Backing RAM (single port, synchronous read, write-enabled)
-    -- ---------------------------------------------------------------
+    -- Backing RAM (single-port, synchronous)
     ram :: Signal dom (Unsigned 16)
         -> Signal dom (Maybe (Unsigned 16, WordData))
         -> Signal dom WordData
     ram = blockRamPow2 initMem
 
+    -- AXI master inputs we use
     arValid = Master.arvalid masterOut
     arData  = Master.ardata  masterOut
     rReady  = Master.rready  masterOut
-    
-    -- State registers
-    rActive    :: Signal dom Bool
-    rActive    = register False rActiveN
 
-    rBeatsLeft :: Signal dom (Unsigned 9) -- (arlen+1) .. 0
-    rBeatsLeft = register 0 rBeatsLeftN
+    -- =======================
+    -- Read channel state
+    -- =======================
+    rActive     = register False rActiveN
+    rBeatsLeft  = register 0     rBeatsLeftN
+    rAddr       = register 0     rAddrN
+    rIDReg      = register 0     rIDRegN
+    rIssuedAddr = register 0     rIssuedAddrN
+    rWaitCnt    = register 0     rWaitCntN
+    rValidReg   = register False rValidRegN
+    rLastReg    = register False rLastRegN
 
-    rAddr      :: Signal dom (Unsigned 32) -- next-beat address
-    rAddr      = register 0 rAddrN
-
-    rIDReg     :: Signal dom (Unsigned 4)  -- widen to taste; uses arid width from your AxiAR
-    rIDReg     = register 0 rIDRegN
-
-    -- Address issued to RAM for the "currently pending" beat
-    rIssuedAddr :: Signal dom (Unsigned 32)
-    rIssuedAddr = register 0 rIssuedAddrN
-
-    -- Simple per-beat countdown before rvalid (extra latency only).
-    -- blockRamPow2 already adds 1 cycle for data; we trigger the RAM read
-    -- at "launchBeat", then wait 'readLatency' cycles before asserting rvalid.
-    rWaitCnt   :: Signal dom (Unsigned 16)
-    rWaitCnt   = register 0 rWaitCntN
-
-    -- rvalid is explicitly registered and cleared on handshake
-    rValidReg  :: Signal dom Bool
-    rValidReg  = register False rValidRegN
-
-    -- rlast generated when the beat being presented is the last (beatsLeft == 1)
-    rLastReg   :: Signal dom Bool
-    rLastReg   = register False rLastRegN
-
-    -- Handshake/accept lines
-    arReady    :: Signal dom Bool
+    -- Handshakes
     arReady    = not <$> rActive
-
-    arAccepted :: Signal dom Bool
     arAccepted = arValid .&&. arReady
-
-    -- Launch a new beat:
-    --  - when we just accepted AR (first beat), or
-    --  - after an R handshake and more beats remain.
-    rHandsh    :: Signal dom Bool
     rHandsh    = rValidReg .&&. rReady
-
-    moreBeats  :: Signal dom Bool
     moreBeats  = (> 1) <$> rBeatsLeft
-
-    launchBeat :: Signal dom Bool
     launchBeat = arAccepted .||. (rHandsh .&&. moreBeats)
 
-    -- Next address to issue (at launch)
-    nextIssueAddr :: Signal dom (Unsigned 32)
+    -- Issue next read address
     nextIssueAddr =
-      mux arAccepted
-        (araddr <$> arData)
-        (incrAddr64B <$> rAddr)
-
-    -- Registers update
+      mux arAccepted (araddr <$> arData)
+                     (incrAddr64B <$> rAddr)
     rIssuedAddrN = mux launchBeat nextIssueAddr rIssuedAddr
 
-    -- Countdown management: load on launch, count down while waiting for rvalid
+    -- Per-beat extra latency (BRAM adds 1 implicitly)
     readLatU :: Unsigned 16
     readLatU = fromIntegral (max 0 (readLatency ramConfig))
 
-    waiting  :: Signal dom Bool
-    waiting  = rWaitCnt ./=. pure 0
-
+    waiting = rWaitCnt ./=. pure 0
     rWaitCntN =
       mux launchBeat
         (pure readLatU)
@@ -178,68 +140,65 @@ readPath masterOut initMem ramConfig ramOp = ReadPathData {
         (rWaitCnt - 1)
         rWaitCnt
 
-    -- rvalid generation:
-    -- - Assert when countdown reached 0 and we are active, and rvalid was not already asserted.
-    -- - Deassert immediately after handshake.
-    rValidRise :: Signal dom Bool
-    rValidRise = rActive .&&. (rWaitCnt .==. 0) .&&. not <$> rValidReg
-
+    -- Align rvalid to (BRAM 1 + readLatency) after AR accept
+    rValidRise = rActive .&&. (rWaitCnt .==. 1) .&&. not <$> rValidReg
     rValidRegN =
-      mux rHandsh
-        (pure False)
-      $ mux rValidRise
-        (pure True)
-        rValidReg
+      mux rHandsh   (pure False) $
+      mux rValidRise (pure True) rValidReg
 
-    -- Beats-left, address and active-state bookkeeping
-    newBeatsVal :: Signal dom (Unsigned 9)
+    -- Bookkeeping
     newBeatsVal = beatsFromLen . arlen <$> arData
-
     rBeatsLeftN =
-      mux arAccepted
-        newBeatsVal
-      $ mux rHandsh
-        (rBeatsLeft - 1)
-        rBeatsLeft
+      mux arAccepted newBeatsVal $
+      mux rHandsh   (rBeatsLeft - 1) rBeatsLeft
 
     rAddrN =
-      mux arAccepted
-        (araddr <$> arData)
-      $ mux rHandsh
-        (incrAddr64B <$> rAddr)
-        rAddr
+      mux arAccepted (araddr <$> arData) $
+      mux rHandsh    (incrAddr64B <$> rAddr) rAddr
 
     rActiveN =
-      mux arAccepted
-        (pure True)
-      $ mux (rHandsh .&&. (rBeatsLeft .==. 1))
-        (pure False)
-        rActive
-    
-    rIDRegN :: Signal dom (Unsigned 4)
+      mux arAccepted (pure True) $
+      mux (rHandsh .&&. (rBeatsLeft .==. 1)) (pure False) rActive
+
     rIDRegN =
-      mux arAccepted
-        (arid <$> arData)
-        rIDReg
+      mux arAccepted (arid <$> arData) rIDReg
 
-    -- rlast is high exactly when we present the last beat
     rLastRegN =
-      mux rValidReg
-        (rBeatsLeft .==. 1)
-        (pure False)
+      mux rValidReg (rBeatsLeft .==. 1) (pure False)
 
-    -- Connect RAM: read index from the last issued address; write port defined below
-    readIx :: Signal dom (Unsigned 16)
-    readIx = toRamIx <$> rIssuedAddr
-
-    ramData :: Signal dom WordData
+    -- =======================
+    -- RAM and RAW bypass
+    -- =======================
+    readIx  = toRamIx <$> rIssuedAddr
     ramData = ram readIx ramOp
 
-    -- R-channel payload
-    rData :: Signal dom AxiR
+    -- Capture last write and keep it "recent" for readLatency+2 cycles
+    -- Window = 1 (BRAM) + readLatency + 1 (registered rvalid)
+    recentWindow :: Unsigned 8
+    recentWindow = fromIntegral (2 + max 0 (readLatency ramConfig))
+
+    wJust     = isJust <$> ramOp
+    wIdxData  = fromMaybe (0, 0) <$> ramOp
+    lastWIdx  = regEn 0 wJust (fst <$> wIdxData)
+    lastWData = regEn 0 wJust (snd <$> wIdxData)
+
+    wAge      = register 0 wAgeN
+    wAgeN =
+      mux wJust
+        (pure recentWindow)
+      $ mux (wAge .==. 0)
+        (pure 0)
+        (wAge - 1)
+
+    recentW   = wAge ./=. 0
+    hitForward = recentW .&&. (readIx .==. lastWIdx)
+
+    rPayload  = mux hitForward lastWData ramData
+
+    -- R payload
     rData = AxiR
-          <$> ramData
-          <*> pure 0            -- RRESP = OKAY
+          <$> rPayload
+          <*> pure 0
           <*> rLastReg
           <*> rIDReg
 
@@ -261,13 +220,12 @@ writePath :: forall dom.
   -> WritePathData dom
 writePath masterOut = WritePathData {
     addressWriteReady = awReady,
-    writeReady  = wReadyS,
+    writeReady        = wReadyS,
     writeResponseValid  = bValidReg,
     writeResponseData   = bData,
-    writeOperation = writeOp
+    writeOperation      = writeOp
  }
  where
-
     awValid = Master.awvalid masterOut
     awData  = Master.awdata  masterOut
     wValid  = Master.wvalid  masterOut
@@ -275,82 +233,44 @@ writePath masterOut = WritePathData {
     bReady  = Master.bready  masterOut
 
     -- State
-    wActive     :: Signal dom Bool
-    wActive     = register False wActiveN
-
-    wBeatsLeft  :: Signal dom (Unsigned 9)
-    wBeatsLeft  = register 0 wBeatsLeftN
-
-    wAddrReg    :: Signal dom (Unsigned 32)
-    wAddrReg    = register 0 wAddrRegN
-
-    wIDReg      :: Signal dom (Unsigned 4)
-    wIDReg      = register 0 wIDRegN
+    wActive    = register False wActiveN
+    wBeatsLeft = register 0     wBeatsLeftN
+    wAddrReg   = register 0     wAddrRegN
+    wIDReg     = register 0     wIDRegN
 
     -- Handshakes
-    awReady     :: Signal dom Bool
-    awReady     = not <$> wActive
+    awReady    = not <$> wActive
+    awAccepted = awValid .&&. awReady
 
-    awAccepted  :: Signal dom Bool
-    awAccepted  = awValid .&&. awReady
+    -- Accept first W in the same cycle as AW
+    wReadyS     = wActive .||. awAccepted
+    wHandshSame = wReadyS .&&. wValid
 
-    wReadyS     :: Signal dom Bool
-    wReadyS     = wActive
+    -- Pre/post values (atomic update)
+    beatsOnAw     = beatsFromLen . awlen <$> awData
+    preBeatsLeft  = mux awAccepted beatsOnAw wBeatsLeft
+    postBeatsLeft = mux wHandshSame (preBeatsLeft - 1) preBeatsLeft
 
-    wHandsh     :: Signal dom Bool
-    wHandsh     = wReadyS .&&. wValid
+    preAddr  = mux awAccepted (awaddr <$> awData) wAddrReg
+    postAddr = mux wHandshSame (incrAddr64B <$> preAddr) preAddr
 
-    -- bvalid (single response at end-of-burst)
-    bValidReg   :: Signal dom Bool
+    -- Register updates
+    wBeatsLeftN = postBeatsLeft
+    wAddrRegN   = postAddr
+    wIDRegN     = mux awAccepted (awid <$> awData) wIDReg
+    wActiveN    = postBeatsLeft ./=. 0
+
+    -- Write operation: address before increment (this beat)
+    writeIxThisBeat = toRamIx <$> preAddr
+    wWord           = wdata <$> wData
+    writeOp         = mux wHandshSame (Just <$> bundle (writeIxThisBeat, wWord))
+                                     (pure Nothing)
+
+    -- Single BRESP at end-of-burst; hold until BREADY
+    bValidPulse = wHandshSame .&&. (postBeatsLeft .==. 0)
     bValidReg   = register False bValidRegN
+    bValidRegN  =
+      mux (bValidReg .&&. not <$> bReady) (pure True) $
+      mux bValidPulse (pure True) (pure False)
 
-    -- Update logic
-    wBeatsNew   :: Signal dom (Unsigned 9)
-    wBeatsNew   = beatsFromLen . awlen <$> awData
-
-    wActiveN =
-      mux awAccepted
-        (pure True)
-      $ mux (wHandsh .&&. (wBeatsLeft .==. 1))
-        (pure False)
-        wActive
-
-    wBeatsLeftN =
-      mux awAccepted
-        wBeatsNew
-      $ mux wHandsh
-        (wBeatsLeft - 1)
-        wBeatsLeft
-
-    wAddrRegN =
-      mux awAccepted
-        (awaddr <$> awData)
-      $ mux wHandsh
-        (incrAddr64B <$> wAddrReg)
-        wAddrReg
-
-    wIDRegN =
-      mux awAccepted
-        (awid <$> awData)
-        wIDReg
-
-    -- Generate a write operation on each accepted W beat
-    wWord :: Signal dom WordData
-    wWord = wdata <$> wData
-
-    writeIx :: Signal dom (Unsigned 16)
-    writeIx = toRamIx <$> wAddrReg
-
-    writeOp :: Signal dom (Maybe (Unsigned 16, WordData))
-    writeOp = mux wHandsh (Just <$> bundle (writeIx, wWord)) (pure Nothing)
-
-    -- bvalid: pulse (and hold until bready) after the last W handshake
-    bValidRegN =
-      mux (bValidReg .&&. not <$> bReady)
-        (pure True)
-      $ mux (wHandsh .&&. (wBeatsLeft .==. 1))
-        (pure True)
-        (pure False)
-
-    bData :: Signal dom AxiB
     bData = AxiB 0 <$> wIDReg   -- BRESP=OKAY
