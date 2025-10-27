@@ -79,20 +79,21 @@ spec = do
           defaultAR = AXITypes.AxiAR 0 0 0 0 0
           defaultAW = AXITypes.AxiAW 0 0 0 0 0
           defaultW  = AXITypes.AxiW  0 0 False
-
-          awvalid = fromList $ False : True : P.repeat False
+          -- AWVALID in cycle 1, WVALID in cycle 2 (1-cycle later)
+          awvalid = fromList $ [False, True] P.++ P.repeat False
           awdata  = fromList $
-                      defaultAW
-                    : AXITypes.AxiAW 0 0 3 1 0   -- addr=0, len=0, size=3 (512-bit), burst=INCR, id=0
-                    : P.repeat defaultAW
+                      [ defaultAW
+                      , AXITypes.AxiAW 0 0 0 1 0   -- addr=0, len=0 (single-beat), size=3, burst=INCR, id=0
+                      ] P.++ P.repeat defaultAW
 
-          wvalid = fromList $ False : True : P.repeat False
+          wvalid = fromList $ [False, False, True] P.++ P.repeat False
           wdata  = fromList $
-                      defaultW
-                    : AXITypes.AxiW 0x123456789ABCDEF0     -- data
-                           (maxBound :: BitVector 64)  -- all bytes enabled
-                           True                        -- wlast
-                    : P.repeat defaultW
+                      [ defaultW
+                      , defaultW
+                      , AXITypes.AxiW 0x123456789ABCDEF0
+                            (maxBound :: BitVector 64)
+                            True
+                      ] P.++ P.repeat defaultW
 
           bready = pure True
 
