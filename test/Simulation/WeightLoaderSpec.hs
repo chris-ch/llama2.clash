@@ -14,7 +14,7 @@ import qualified Prelude as P
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Types as AXITypes
 import qualified Data.ByteString.Lazy as BSL
-import Simulation.RAMBackedAxiSlave (createRAMBackedAxiSlave)
+import Simulation.DRAMBackedAxiSlave (createDRAMBackedAxiSlave)
 import qualified Clash.Sized.Vector as Vec
 import qualified LLaMa2.Memory.AXI.Master as Master
 
@@ -197,7 +197,7 @@ spec = do
             
         let (streamValid, sysState, ddrMaster) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let (ddrSlave, _, _) = createRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
                     (ddrMaster', _, streamValid', _, sysState') =
                       weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
                 in (streamValid', sysState', ddrMaster')
@@ -226,7 +226,7 @@ spec = do
             
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let (ddrSlave, _, _) = createRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
                     (ddrMaster', _, streamValid', _, sysState') =
                       weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
                 in (streamValid', sysState')
@@ -251,7 +251,7 @@ spec = do
             
         let (streamValid, ddrMaster, ddrSlave) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let (ddrSlave', _, _) = createRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave' = createDRAMBackedAxiSlave modelBinary ddrMaster'
                     (ddrMaster', _, streamValid', _, _) =
                       weightManagementSystem ddrSlave' powerOn layerIdx loadTrig sinkRdy
                 in (streamValid', ddrMaster', ddrSlave')
@@ -281,7 +281,7 @@ spec = do
 
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let (ddrSlave, rState, wState) = createRAMBackedAxiSlave modelBinary ddrMaster
+                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster
                     (ddrMaster, _, streamValid', _, sysState') =
                       weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
                 in (streamValid', sysState')
@@ -311,7 +311,7 @@ spec = do
             totalCycles = 100_000 -- need more cycles due to backpressure
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-              let (ddrSlave, _rState, _wState) = createRAMBackedAxiSlave modelBinary ddrMasterOut
+              let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
                   (ddrMasterOut, _weightStream, streamValid, sysReady, _sysState) =
                     weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
               (streamValid, sysReady, sinkRdy)
@@ -355,7 +355,7 @@ spec = do
           totalCycles = 100_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let (ddrSlave, _, _) = createRAMBackedAxiSlave modelBinary ddrMasterOut
+            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
                 (ddrMasterOut, _, streamValid, _, sysState) =
                   weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
             (streamValid, sysState)
@@ -382,7 +382,7 @@ spec = do
             totalCycles = 50_000
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-              let (ddrSlave, _rState, _wState) = createRAMBackedAxiSlave modelBinary ddrMasterOut
+              let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
                   (ddrMasterOut, _weightStream, streamValid, _sysReady, sysState) =
                     weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
               (streamValid, sysState)
@@ -407,7 +407,7 @@ spec = do
           totalCycles = 50_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let (ddrSlave, _rState, _wState) = createRAMBackedAxiSlave modelBinary ddrMasterOut
+            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
                 (ddrMasterOut, _weightStream, _streamValid, _sysReady, sysState) =
                   weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
             sysState
@@ -450,7 +450,7 @@ spec = do
           totalCycles = 1000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let (ddrSlave, _rState, _wState) = createRAMBackedAxiSlave modelBinary ddrMasterOut
+            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
                 (ddrMasterOut, _weightStream, streamValid, _sysReady, sysState) =
                   weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
             (streamValid, sysState)

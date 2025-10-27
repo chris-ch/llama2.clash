@@ -19,7 +19,7 @@ main = hspec $ do
   LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec.spec
   LLaMa2.Numeric.OperationsSpec.spec
   Simulation.AxiWriteMasterSpec.spec
-  --Simulation.WeightLoaderSpec.spec
+  Simulation.WeightLoaderSpec.spec
   LLaMa2.Layer.Attention.LayerWeightBufferSpec.spec
   --LLaMa2.Decoder.MultiTokenSpec.spec
   LLaMa2.Decoder.TimingValidationSpec.spec

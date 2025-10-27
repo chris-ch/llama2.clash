@@ -23,6 +23,7 @@ import Control.Monad (when)
 import qualified Simulation.FileBackedAxiSlave as FileAxi
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified Simulation.DRAMBackedAxiSlave as DRAM
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -219,7 +220,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "--------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
-  let printCycle (cycleIdx, token) = do
+  let printCycle (cycleIdx, token') = do
         let 
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
           ps     = processingStage (statesSampled !! cycleIdx)
@@ -229,14 +230,14 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           wValid = weightValidSampled !! cycleIdx
           wSample = weightSampleSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
-          --token  = coreOutputs !! cycleIdx
+          token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           ddrWValid = ddrWValidSampled !! cycleIdx
           ddrWReady = ddrWReadySampled !! cycleIdx
           ddrBValid = ddrBValidSampled !! cycleIdx
         when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %5s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s | %8s | %8s | %8s | %8s | %8s"
+            printf "%5d | %5d | %-18s | %5s | %8s | %10s | %8s | %9s |  %9d | %8s | %8s | %8s | %8s | %8s | %8s"
               cycleIdx
               li
               (show ps)
