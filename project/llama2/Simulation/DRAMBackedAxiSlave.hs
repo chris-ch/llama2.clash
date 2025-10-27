@@ -92,17 +92,20 @@ readPath masterOut initMem ramConfig ramOp = ReadPathData {
     readData = rData
   }
   where
-    -- Backing RAM (single port, synchronous)
+    -- Backing RAM (single-port, synchronous read)
     ram :: Signal dom (Unsigned 16)
         -> Signal dom (Maybe (Unsigned 16, WordData))
         -> Signal dom WordData
     ram = blockRamPow2 initMem
 
+    -- AXI master inputs (read channels)
     arValid = Master.arvalid masterOut
     arData  = Master.ardata  masterOut
     rReady  = Master.rready  masterOut
 
+    -- =======================
     -- Read channel state
+    -- =======================
     rActive     = register False rActiveN
     rBeatsLeft  = register 0     rBeatsLeftN
     rAddr       = register 0     rAddrN
@@ -163,37 +166,41 @@ readPath masterOut initMem ramConfig ramOp = ReadPathData {
     rLastRegN =
       mux rValidReg (rBeatsLeft .==. 1) (pure False)
 
-    -- RAM and RAW bypass
+    -- =======================
+    -- RAM and sticky RAW bypass
+    -- =======================
     readIx  = toRamIx <$> rIssuedAddr
     ramData = ram readIx ramOp
 
-    -- Keep last write "recent" for readLatency + 3 cycles.
-    -- +1 for BRAM, +1 for rvalid register visibility, +1 off-by-one margin.
-    recentWindow :: Unsigned 8
-    recentWindow = fromIntegral (3 + max 0 (readLatency ramConfig))
+    -- Capture last write (addr,data) on write handshake (ramOp=Just)
+    wJust      = isJust <$> ramOp
+    wIdxData   = fromMaybe (0, 0) <$> ramOp
+    lastWIdx   = regEn 0 wJust (fst <$> wIdxData)
+    lastWData  = regEn 0 wJust (snd <$> wIdxData)
 
-    wJust     = isJust <$> ramOp
-    wIdxData  = fromMaybe (0, 0) <$> ramOp
-    lastWIdx  = regEn 0 wJust (fst <$> wIdxData)
-    lastWData = regEn 0 wJust (snd <$> wIdxData)
+    -- Sticky "pending-bypass" flag:
+    --  - Set on any write handshake.
+    --  - Cleared when we actually present a read beat (rvalid) to the same index
+    --    and the master handshakes it (rready), i.e., when that forwarded data is consumed.
+    pendingBypass :: Signal dom Bool
+    pendingBypass = register False pendingBypassN
 
-    -- Age counter: reload on write, count down to 0 every cycle
-    wAge    = register 0 wAgeN
-    wAgeN   =
+    hitForwardNow = pendingBypass .&&. (readIx .==. lastWIdx)
+    consumeFwd    = hitForwardNow .&&. rHandsh  -- clear only when the beat is consumed
+
+    pendingBypassN =
       mux wJust
-        (pure recentWindow)
-      $ mux (wAge .==. 0)
-        (pure 0)
-        (wAge - 1)
+        (pure True)
+      $ mux consumeFwd
+        (pure False)
+        pendingBypass
 
-    recentW    = wAge ./=. 0
-    hitForward = recentW .&&. (readIx .==. lastWIdx)
+    rPayload = mux hitForwardNow lastWData ramData
 
-    rPayload  = mux hitForward lastWData ramData
-
+    -- R-channel payload
     rData = AxiR
           <$> rPayload
-          <*> pure 0
+          <*> pure 0            -- RRESP = OKAY
           <*> rLastReg
           <*> rIDReg
 

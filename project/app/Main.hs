@@ -21,7 +21,6 @@ import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decode
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import qualified Simulation.FileBackedAxiSlave as FileAxi
-import Simulation.RamBackedAxiSlave (ReadState)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 
@@ -173,7 +172,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
     (coreOutputsSignal, ddrMaster, ddrSlave, weightsReady,
-     introspection, ddrSlaveArHandshakeCount
+     introspection
      ) = bundledOutputs modelBinary inputSignals
 
     -- Sample DDR write signals
@@ -196,7 +195,6 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
     layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
     sysStateSampled = C.sampleN simSteps (Top.sysState introspection)
-    ddrHandshakesSampled = C.sampleN simSteps ddrSlaveArHandshakeCount
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -233,7 +231,6 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           layChg = layerChangeSampled !! cycleIdx
           --token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
-          ddrHS  = ddrHandshakesSampled !! cycleIdx
           ddrWValid = ddrWValidSampled !! cycleIdx
           ddrWReady = ddrWReadySampled !! cycleIdx
           ddrBValid = ddrBValidSampled !! cycleIdx
@@ -252,7 +249,6 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
               (show $ fst token)
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
-              (show ddrHS)
               (show ddrWValid)
               (show ddrWReady)
               (show ddrBValid)
@@ -285,13 +281,11 @@ bundledOutputs
      , Slave.AxiSlaveIn C.System
      , C.Signal C.System Bool
      , Top.DecoderIntrospection C.System
-     , C.Signal C.System ReadState
      )
 bundledOutputs modelBinary bundledInputs =
   (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave
   , weightsReady
   , introspection
-  , ddrReadState
   )
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
@@ -307,7 +301,7 @@ bundledOutputs modelBinary bundledInputs =
       C.enableGen
 
   -- For DDR: also serve from file (simulating that boot already copied data there)
-  (ddrSlave, ddrReadState) = C.exposeClockResetEnable
+  ddrSlave = C.exposeClockResetEnable
     (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
     C.systemClockGen
     C.resetGen

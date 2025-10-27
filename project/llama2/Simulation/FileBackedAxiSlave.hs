@@ -7,7 +7,6 @@ import Clash.Prelude
 import qualified Data.ByteString.Lazy as BSL
 import Data.ByteString.Lazy (ByteString)
 
-import Simulation.RAMBackedAxiSlave (ReadState (..))
 import LLaMa2.Memory.AXI.Slave (AxiSlaveIn (..))
 import LLaMa2.Memory.AXI.Master (AxiMasterOut (..))
 import LLaMa2.Memory.AXI.Types (AxiAR (..), AxiB (..), AxiR (..))
@@ -53,8 +52,8 @@ createFileBackedAxiSlave ::
   (HiddenClockResetEnable dom) =>
   ByteString ->
   AxiMasterOut dom ->
-  (AxiSlaveIn dom, Signal dom ReadState)
-createFileBackedAxiSlave modelBin AxiMasterOut{..} = (slaveOut, readState)
+  AxiSlaveIn dom
+createFileBackedAxiSlave modelBin AxiMasterOut{..} = slaveOut
  where
   -- Handshake: we are always ready
   arHandshake = arvalid .&&. pure True
@@ -107,6 +106,3 @@ createFileBackedAxiSlave modelBin AxiMasterOut{..} = (slaveOut, readState)
       , bvalid  = bvalid
       , bdata   = bdata
       }
-
-  -- Optional exposed read state
-  readState = mux (stateRAM .==. pure SBurst) (pure RBursting) (pure RIdle)

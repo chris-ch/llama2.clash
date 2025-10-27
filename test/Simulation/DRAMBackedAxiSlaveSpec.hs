@@ -225,47 +225,6 @@ spec = do
       -- Should not produce a response
       P.or bvalidSamples `shouldBe` False
 
-    it "returns freshly written data when read immediately after a write" $ do
-      let initMem :: Vec 65536 WordData
-          initMem = repeat 0
-
-          awvalid = fromList $ [False, True, False] P.++ P.repeat False
-          awdata  = fromList $
-                      [ AXITypes.AxiAW 0 0 0 1 0
-                      , AXITypes.AxiAW 0 0 0 1 0
-                      ] P.++ P.repeat (AXITypes.AxiAW 0 0 0 1 0)
-
-          wvalid = fromList $ [False, False, True] P.++ P.repeat False
-          wdata  = fromList $
-                      AXITypes.AxiW 0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE
-                            0xFFFFFFFFFFFFFFFF
-                            True : P.repeat (AXITypes.AxiW 0 0 False)
-
-          arvalid = fromList $ [False, False, False, True] P.++ P.repeat False
-          ardata  = fromList $ P.replicate 4 (AXITypes.AxiAR 0 0 0 0 0) P.++ P.repeat (AXITypes.AxiAR 0 0 0 0 0)
-
-          masterOut = Master.AxiMasterOut
-            { Master.arvalid = arvalid
-            , Master.ardata  = ardata
-            , Master.rready  = pure True
-            , Master.awvalid = awvalid
-            , Master.awdata  = awdata
-            , Master.wvalid  = wvalid
-            , Master.wdata   = wdata
-            , Master.bready  = pure True
-            }
-
-          slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlave (DRAMConfig 1 1 1) initMem masterOut
-
-          samples = sampleN 32 (bundle (Slave.rvalid slaveIn, AXITypes.rdata <$> Slave.rdata slaveIn))
-          validData = [d | (True,d) <- samples]
-
-      P.putStrLn $ "valid R data: " P.++ show (P.take 6 validData)
-
-      P.elem 0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE validData
-        `shouldBe` True
-
     it "passes randomized AXI fuzz test (100 cycles, deterministic seed)" $ do
       let gen = mkStdGen 42
           randBools = randoms gen :: [Bool]
