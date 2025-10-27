@@ -48,22 +48,24 @@ createDRAMBackedAxiSlave :: forall dom. HiddenClockResetEnable dom
   -> Slave.AxiSlaveIn dom
 createDRAMBackedAxiSlave ramConfig initMem masterOut = slaveIn
  where
+  
+  writePathData :: WritePathData dom
+  writePathData = writePath masterOut
 
+  readPathData :: ReadPathData dom
   readPathData = readPath masterOut initMem ramConfig (writeOperation writePathData)
 
-  writePathData = writePath masterOut
-  
   -- ===============================================================
   -- Slave outputs
   -- ===============================================================
   slaveIn = Slave.AxiSlaveIn
-    { arready = arReady readPathData
-    , rvalid  = rValid readPathData
-    , rdata   = rData readPathData
-    , awready = awready writePathData
-    , wready  = wready writePathData
-    , bvalid  = bvalid writePathData
-    , bdata   = bdata writePathData
+    { arready = addressReadReady readPathData
+    , rvalid  = readValid readPathData
+    , rdata   = readData readPathData
+    , awready = addressWriteReady writePathData
+    , wready  = writeReady writePathData
+    , bvalid  = writeResponseValid writePathData
+    , bdata   = writeResponseData writePathData
     }
 
 -- ===============================================================
@@ -71,9 +73,9 @@ createDRAMBackedAxiSlave ramConfig initMem masterOut = slaveIn
 -- ===============================================================
 
 data ReadPathData dom = ReadPathData {
-  arReady :: Signal dom Bool,
-  rValid :: Signal dom Bool,
-  rData :: Signal dom AxiR
+  addressReadReady :: Signal dom Bool,
+  readValid :: Signal dom Bool,
+  readData :: Signal dom AxiR
 }
 
 readPath :: forall dom.
@@ -84,9 +86,9 @@ readPath :: forall dom.
   -> Signal dom (Maybe (Unsigned 16, WordData))
   -> ReadPathData dom
 readPath masterOut initMem ramConfig ramOp = ReadPathData {
-    arReady = arReady,
-    rValid = rValidReg,
-    rData = rData
+    addressReadReady = arReady,
+    readValid = rValidReg,
+    readData = rData
   }
   where
 
@@ -246,10 +248,10 @@ readPath masterOut initMem ramConfig ramOp = ReadPathData {
 -- ===============================================================
 
 data WritePathData dom = WritePathData {
-    awready :: Signal dom Bool,
-    wready  :: Signal dom Bool,
-    bvalid  :: Signal dom Bool,
-    bdata   :: Signal dom AxiB,
+    addressWriteReady :: Signal dom Bool,       -- AWREADY
+    writeReady  :: Signal dom Bool,             -- WREADY
+    writeResponseValid  :: Signal dom Bool,     -- BVALID
+    writeResponseData   :: Signal dom AxiB,     -- BRESP + BID
     writeOperation :: Signal dom (Maybe (Unsigned 16, WordData))
 }
 
@@ -258,10 +260,10 @@ writePath :: forall dom.
   =>  Master.AxiMasterOut dom
   -> WritePathData dom
 writePath masterOut = WritePathData {
-    awready = awReady,
-    wready  = wReadyS,
-    bvalid  = bValidReg,
-    bdata   = bData,
+    addressWriteReady = awReady,
+    writeReady  = wReadyS,
+    writeResponseValid  = bValidReg,
+    writeResponseData   = bData,
     writeOperation = writeOp
  }
  where
