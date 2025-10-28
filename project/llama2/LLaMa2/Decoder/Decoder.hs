@@ -120,7 +120,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
           && rowIx la  == maxBound
 
     useRAM :: Signal dom Bool
-    useRAM = mux loadTrigger (pure False) (fullyLoaded <$> weightBuffer)
+    useRAM = mux loadTrigger (pure False) ((fullyLoaded <$> weightBuffer) .&&. layerDone)
 
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     layerIdx :: Signal dom (Index NumLayers)
