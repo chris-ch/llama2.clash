@@ -162,23 +162,22 @@ weightManagementSystem
   -> Signal dom Bool
   -> Signal dom (Index NumLayers)
   -> Signal dom Bool
-  -> Signal dom Bool
   -> ( Master.AxiMasterOut dom
      , Signal dom (BitVector 512)
      , Signal dom Bool
      , Signal dom WeightSystemState
      )
-weightManagementSystem ddrSlave powerOn layerReq loadTrigger sinkReady =
+weightManagementSystem ddrSlave startStream layerReq sinkReady =
   (ddrMaster, weightStream, streamValid, sysState)
   where
     sysState = register WSReady nextState
 
-    startStream = (sysState .==. pure WSReady) .&&. powerOn .&&. loadTrigger
+    startStreamIfReady = (sysState .==. pure WSReady) .&&. startStream
     (ddrMaster, weightStream, streamValid, streamComplete) =
-      layerWeightStreamer ddrSlave layerReq startStream sinkReady
+      layerWeightStreamer ddrSlave layerReq startStreamIfReady sinkReady
 
     nextState =
       mux (sysState .==. pure WSReady)
-        (mux startStream (pure WSStreaming) (pure WSReady))
+        (mux startStreamIfReady (pure WSStreaming) (pure WSReady))
         (mux streamComplete (pure WSReady) (pure WSStreaming))
 

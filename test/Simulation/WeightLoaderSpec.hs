@@ -93,19 +93,15 @@ spec = do
 
   describe "weightManagementSystem (idle behavior)" $ do
     context "when load is not triggered" $ do
-      let powerOn = pure True
+      let
           layerIdx = pure 0
-          loadTrig = pure False
+          startStream = pure False
           sinkRdy = pure True
-          ( _ddrMaster, _, _, sysReady, sysState
+          ( _ddrMaster, _, _, sysState
             ) =
               withClockResetEnable systemClockGen resetGen enableGen
-                $ weightManagementSystem mockAxiSlave powerOn layerIdx loadTrig sinkRdy
-          readyS = P.drop 2 (sampleN 10 sysReady)
+                $ weightManagementSystem mockAxiSlave startStream layerIdx sinkRdy
           stateS = P.drop 2 (sampleN 10 sysState)
-
-      it "remains ready" $ do
-        P.and readyS `shouldBe` True
 
       it "stays in WSReady state" $ do
         P.all (== WSReady) stateS `shouldBe` True
@@ -167,21 +163,19 @@ spec = do
         layerSize `shouldSatisfy` (< 10_000_000) -- sanity check: < 10MB per layer
 
       it "DIAGNOSTIC: system state responds to trigger" $ do
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False :: Signal System Bool
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False :: Signal System Bool
             sinkRdy = pure True
             
-        let (_ddrMaster, _, _, _sysReady, sysState) =
+        let (_ddrMaster, _, _, sysState) =
               withClockResetEnable systemClockGen resetGen enableGen
-                $ weightManagementSystem mockAxiSlave powerOn layerIdx loadTrig sinkRdy
+                $ weightManagementSystem mockAxiSlave startStream layerIdx sinkRdy
         
         let sampledState = sampleN 100 sysState
-            sampledTrig = sampleN 100 loadTrig
             
         -- Print for debugging
         P.putStrLn $ "First 30 states: " P.++ show (P.take 30 sampledState)
-        P.putStrLn $ "First 30 triggers: " P.++ show (P.take 30 sampledTrig)
         
         -- Check if we ever leave WSReady
         let everStreaming = WSStreaming `P.elem` sampledState
@@ -190,16 +184,16 @@ spec = do
 
       it "DIAGNOSTIC: with real DDR, does streamer start?" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, sysState, ddrMaster) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
                 let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
-                    (ddrMaster', _, streamValid', _, sysState') =
-                      weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                    (ddrMaster', _, streamValid', sysState') =
+                      weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState', ddrMaster')
         
         let sampledValid = sampleN 1000 streamValid
@@ -219,16 +213,16 @@ spec = do
 
       it "DIAGNOSTIC: count valid beats over 50K cycles" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
                 let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
-                    (ddrMaster', _, streamValid', _, sysState') =
-                      weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                    (ddrMaster', _, streamValid', sysState') =
+                      weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState')
         
         let sampledValid = sampleN 50000 streamValid
@@ -244,16 +238,16 @@ spec = do
 
       it "DIAGNOSTIC: check AXI handshake over time" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, ddrMaster, ddrSlave) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
                 let ddrSlave' = createDRAMBackedAxiSlave modelBinary ddrMaster'
-                    (ddrMaster', _, streamValid', _, _) =
-                      weightManagementSystem ddrSlave' powerOn layerIdx loadTrig sinkRdy
+                    (ddrMaster', _, streamValid', _) =
+                      weightManagementSystem ddrSlave' startStream layerIdx sinkRdy
                 in (streamValid', ddrMaster', ddrSlave')
         
         let sampledValid = sampleN 100 streamValid
@@ -272,9 +266,9 @@ spec = do
         
       it "produces consistent stream during burst" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             -- INCREASED: Need more cycles to actually see streaming happen
             totalCycles = 50_000
@@ -282,8 +276,8 @@ spec = do
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
                 let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster
-                    (ddrMaster, _, streamValid', _, sysState') =
-                      weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                    (ddrMaster, _, streamValid', sysState') =
+                      weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState')
         
         let
@@ -303,36 +297,29 @@ spec = do
     context "with backpressure" $ do
       it "respects sinkReady signal" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 0
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             -- Sink ready alternates: ready for 2 cycles, not ready for 2 cycles
             sinkRdy = fromList $ P.cycle [True, True, False, False] :: Signal System Bool
             totalCycles = 100_000 -- need more cycles due to backpressure
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
               let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
-                  (ddrMasterOut, _weightStream, streamValid, sysReady, _sysState) =
-                    weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
-              (streamValid, sysReady, sinkRdy)
+                  (ddrMasterOut, _weightStream, streamValid, _sysState) =
+                    weightManagementSystem ddrSlave startStream layerIdx sinkRdy
+              (streamValid, sinkRdy)
         
-        let (streamValid, sysReady, _sinkRdy) = simulation
+        let (streamValid, _sinkRdy) = simulation
             
             sampledValid :: [Bool]
             sampledValid = sampleN totalCycles streamValid
-            
-            sampledReady :: [Bool]
-            sampledReady = sampleN totalCycles sysReady
 
             sampledSinkRdy :: [Bool]
             sampledSinkRdy = sampleN totalCycles sinkRdy
 
             -- Stream should only be valid when sink is ready (or shortly after)
             streamEverValid = P.or sampledValid
-
-            -- System should eventually complete even with backpressure
-            lastCycles = P.drop (totalCycles - 100) sampledReady
-            systemEventuallyReady = P.or lastCycles
 
             -- Count how many times valid occurs when sink not ready
             -- (should be minimal - only pipeline delays)
@@ -341,23 +328,22 @@ spec = do
               P.zip sampledValid sampledSinkRdy
 
         streamEverValid `shouldBe` True
-        systemEventuallyReady `shouldBe` True
         -- Allow some pipeline delay, but should be < 10% of total valid beats
         let totalValidBeats = P.length $ P.filter id sampledValid
         invalidWhileNotReady `shouldSatisfy` (< (totalValidBeats `P.div` 10))
 
     it "completes successfully with backpressure" $ do
       modelBinary <- BSL.readFile "data/stories260K.bin"
-      let powerOn = pure True
+      let
           layerIdx = pure 0
-          loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+          startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
           sinkRdy = fromList $ P.cycle [True, False]
           totalCycles = 100_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
             let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
-                (ddrMasterOut, _, streamValid, _, sysState) =
-                  weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                (ddrMasterOut, _, streamValid, sysState) =
+                  weightManagementSystem ddrSlave startStream layerIdx sinkRdy
             (streamValid, sysState)
 
       let (streamValid, sysState) = simulation
@@ -375,16 +361,16 @@ spec = do
     context "loading different layers" $ do
       it "loads layer 1 successfully" $ do
         modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
+        let
             layerIdx = pure 1
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+            startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             totalCycles = 50_000
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
               let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
-                  (ddrMasterOut, _weightStream, streamValid, _sysReady, sysState) =
-                    weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                  (ddrMasterOut, _weightStream, streamValid, sysState) =
+                    weightManagementSystem ddrSlave startStream layerIdx sinkRdy
               (streamValid, sysState)
         
         let (streamValid, sysState) = simulation
@@ -400,16 +386,16 @@ spec = do
   describe "state transitions" $ do
     it "transitions from Ready -> Streaming -> Ready" $ do
       modelBinary <- BSL.readFile "data/stories260K.bin"
-      let powerOn = pure True
+      let
           layerIdx = pure 0
-          loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
+          startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
           sinkRdy = pure True
           totalCycles = 50_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
             let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
-                (ddrMasterOut, _weightStream, _streamValid, _sysReady, sysState) =
-                  weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
+                (ddrMasterOut, _weightStream, _streamValid, sysState) =
+                  weightManagementSystem ddrSlave startStream layerIdx sinkRdy
             sysState
       
       let sysState = simulation
@@ -426,41 +412,17 @@ spec = do
       eventuallyReady `shouldBe` True
 
     it "does not start streaming without trigger" $ do
-      let powerOn = pure True
+      let
           layerIdx = pure 0
-          loadTrig = pure False -- Never trigger
+          startStream = pure False -- Never trigger
           sinkRdy = pure True
           totalCycles = 1000
 
-      let (_ddrMaster, _, _, _sysReady, sysState) =
+      let (_ddrMaster, _, _, sysState) =
             withClockResetEnable systemClockGen resetGen enableGen
-              $ weightManagementSystem mockAxiSlave powerOn layerIdx loadTrig sinkRdy
+              $ weightManagementSystem mockAxiSlave startStream layerIdx sinkRdy
 
       let sampledState = sampleN totalCycles sysState
           allReady = P.all (== WSReady) sampledState
 
       allReady `shouldBe` True
-
-    it "requires powerOn to be true" $ do
-      modelBinary <- BSL.readFile "data/stories260K.bin"
-      let powerOn = pure False -- Power off
-          layerIdx = pure 0
-          loadTrig = pure True
-          sinkRdy = pure True
-          totalCycles = 1000
-
-      let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
-                (ddrMasterOut, _weightStream, streamValid, _sysReady, sysState) =
-                  weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
-            (streamValid, sysState)
-      
-      let (streamValid, sysState) = simulation
-          sampledValid = sampleN totalCycles streamValid
-          sampledState = sampleN totalCycles sysState
-
-          noValidData = P.not $ P.or sampledValid
-          staysReady = P.all (== WSReady) sampledState
-
-      noValidData `shouldBe` True
-      staysReady `shouldBe` True

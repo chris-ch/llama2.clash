@@ -67,18 +67,20 @@ decoder :: forall dom. HiddenClockResetEnable dom
 decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
   (outputToken, readyPulse, ddrMaster, introspection)
   where
-    -- WEIGHT MANAGEMENT SYSTEM (extended, robust)
+    -- WEIGHT MANAGEMENT SYSTEM
     firstCycle = register True (pure False)
     prevLayer  = register 0 layerIdx
     layerChanged = layerIdx ./=. prevLayer
     loadTrigger = firstCycle .||. layerChanged
+
+    startStream = powerOn .&&. loadTrigger
 
     -- Real weight manager backpressured by sinkReady (defined below)
     (  ddrMaster
      , weightStream
      , streamValid
      , sysState
-     ) = weightManagementSystem ddrSlave powerOn layerIdx loadTrigger sinkReady
+     ) = weightManagementSystem ddrSlave startStream layerIdx sinkReady
 
     -- One real address generator, advanced by rowDoneExt from the rower
     (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger

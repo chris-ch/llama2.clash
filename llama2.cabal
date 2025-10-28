@@ -129,7 +129,6 @@ library
       LLaMa2.Types.ModelConfig
       Parser
       Simulation.FileBackedAxiSlave
-      Simulation.RAMBackedAxiSlave
       Simulation.DRAMBackedAxiSlave
       Simulation.MatVecSim
       Simulation.Parameters
