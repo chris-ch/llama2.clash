@@ -30,7 +30,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enable =
+multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
     isStage1ThisLayer =
@@ -55,11 +55,11 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer en
         mha
         processingState
         weightBuffer
-        enable
+        useRAM
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3 unchanged
+    -- Stage2/3
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
@@ -76,7 +76,7 @@ multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer en
         allBanksDone
     writeDone = writeValidOutNew
 
-    -- WO projection unchanged
+    -- WO projection
     (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
     gatedHeads =

@@ -55,7 +55,7 @@ transformerLayer ::
     Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
-transformerLayer layer layerIndex processingState layerData weightBuffer enable =
+transformerLayer layer layerIndex processingState layerData weightBuffer useRAM =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -69,7 +69,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer enable 
     ffn = PARAM.feedforwardNetwork layer
 
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enable
+      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
 
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)

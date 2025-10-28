@@ -6,7 +6,6 @@ module LLaMa2.Numeric.Quantization
   ) where
 import Clash.Prelude
 import LLaMa2.Numeric.Types
-import LLaMa2.Types.LayerData (CArray2D(..))
 
 -- ===========================
 -- expF using 2^x decomposition with LUT-256

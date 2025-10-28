@@ -119,8 +119,8 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
           && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
           && rowIx la  == maxBound
 
-    layerEnable :: Signal dom Bool
-    layerEnable = mux loadTrigger (pure False) ((fullyLoaded <$> weightBuffer) .&&. layerDone)
+    useRAM :: Signal dom Bool
+    useRAM = mux loadTrigger (pure False) (fullyLoaded <$> weightBuffer)
 
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     layerIdx :: Signal dom (Index NumLayers)
@@ -140,7 +140,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
                    <*> embeddedVector
 
     (nextLayerData, doneFlags) =
-      LayerStack.processLayers processingState layerIdx layerInput weightBuffer layerEnable (PARAM.modelLayers params)
+      LayerStack.processLayers processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
 
     (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone

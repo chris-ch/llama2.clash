@@ -155,14 +155,14 @@ qkvProjector :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom QKVProjectionWeightBuffer               -- ^ RAM weight buffer
-  -> Signal dom Bool                          -- ^ enable (fully loaded)
+  -> Signal dom Bool                          -- ^ useRAM (fully loaded)
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool                        -- ^ validOut
      , Signal dom Bool                        -- ^ readyOut
      )
-qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer enable =
+qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
   (qkvOut, allValid, allReady)
  where
   xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaQ)
@@ -176,7 +176,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer enable =
              , Signal dom Bool )
     qHead hIx headQ =
       let ramQ = extractQWeight <$> weightBuffer <*> pure hIx
-      in queryHeadProjector validIn readyIn headQ seqPosSig xNorm ramQ enable
+      in queryHeadProjector validIn readyIn headQ seqPosSig xNorm ramQ useRAM
 
   -- Map KV heads to their corresponding SingleHeadComponentQ (for rotary params)
   queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
@@ -194,7 +194,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer enable =
       let headQ = PARAM.headsQ mhaQ !! qIx
           ramK  = extractKWeight <$> weightBuffer <*> pure kvIx
           ramV  = extractVWeight <$> weightBuffer <*> pure kvIx
-      in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV enable
+      in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV useRAM
 
   qVecs    = map (\(q, _, _) -> q) qResults
   qValids  = map (\(_, v, _) -> v) qResults
@@ -227,7 +227,7 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController inValid outReady input mhaQ psSig weightBuf enable =
+qkvProjectionController inValid outReady input mhaQ psSig weightBuf useRAM =
   (result, validOut, inReady)
  where
   (projectorEnable, validOut, inReady) =
@@ -238,4 +238,4 @@ qkvProjectionController inValid outReady input mhaQ psSig weightBuf enable =
                         (sequencePosition <$> psSig)
                         input
                         weightBuf
-                        enable
+                        useRAM
