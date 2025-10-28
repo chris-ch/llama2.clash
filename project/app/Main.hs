@@ -24,6 +24,7 @@ import qualified Simulation.FileBackedAxiSlave as FileAxi
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
+import qualified Simulation.DRAMBackedAxiSlave as DDR
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -211,10 +212,8 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn $ "\nCycle | Layer | Stage              | Boot  | Ready    "
-    ++ "| FFNDone  | WeightsRdy | WgtValid | LayerChange | WgtSample | Token ID | Token"
-    ++ "| SYS State | Boot State | EMMC Handshaking | DDR Handshaking | EMMC Master RReady| EMMC Slave RValid | ddrWValid | ddrWReady| ddrBValid"
-  putStrLn "--------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn $ "\nCycle | Layer | Stage              | Boot  | Tok Ready | FFNDone  | WgtValid | LayerChg | WgtSample | TokID | Tok | SsyState | ddrWValid | ddrWReady| ddrBValid"
+  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
@@ -224,8 +223,8 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           rdy    = readiesSampled !! cycleIdx
           ffn    = ffnDonesSampled !! cycleIdx
           wValid = weightValidSampled !! cycleIdx
-          wSample = weightSampleSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
+          wSample = weightSampleSampled !! cycleIdx
           token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           ddrWValid = ddrWValidSampled !! cycleIdx
@@ -295,6 +294,7 @@ bundledOutputs modelBinary bundledInputs =
   -- For DDR: also serve from file (simulating that boot already copied data there)
   ddrSlave = C.exposeClockResetEnable
     (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
+    --(DDR.createDRAMBackedAxiSlave modelBinary ddrMaster)
     C.systemClockGen
     C.resetGen
     C.enableGen
