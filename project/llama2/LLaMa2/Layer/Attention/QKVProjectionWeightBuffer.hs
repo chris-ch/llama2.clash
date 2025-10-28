@@ -102,7 +102,7 @@ qkvWeightBufferController ::
   -> Signal dom QKVProjectionWeightBuffer            -- ^ buffered weights
 qkvWeightBufferController streamValid addr row allDone reset = bufS
   where
-    stepEn = streamValid .||. reset
+    stepEn = streamValid .||. allDone .||. reset
 
     bufNext =
       mux reset
@@ -111,7 +111,8 @@ qkvWeightBufferController streamValid addr row allDone reset = bufS
 
     apply en a r done prev =
       let updated   = if en then updateQKVBufferOnce a r prev else prev
-          loadedLat = fullyLoaded prev || done
+          -- Only set True on done edge, never via OR logic
+          loadedLat = (done || fullyLoaded prev)
       in updated { fullyLoaded = loadedLat }
 
     bufS = regEn emptyQKVBuffer stepEn bufNext
