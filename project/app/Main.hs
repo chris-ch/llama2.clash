@@ -20,11 +20,9 @@ import qualified LLaMa2.Top as Top ( DecoderIntrospection (..), topEntityWithAxi
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
-import qualified Simulation.FileBackedAxiSlave as FileAxi
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
-import qualified Simulation.DRAMBackedAxiSlave as DDR
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -212,7 +210,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn $ "\nCycle | Layer | Stage              | Boot  | Tok Ready | FFNDone  | WgtValid | LayerChg | WgtSample | TokID | Tok | SsyState | ddrWValid | ddrWReady| ddrBValid"
+  putStrLn "\nCycle | Layer | Stage              | Boot  | Tok Rdy  | FFNDone  | WgtValid  | LayerChg  | WgtSample | TokID   |   Tok   | SsyState | ddrWValid | ddrWReady| ddrBValid"
   putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
@@ -283,6 +281,14 @@ bundledOutputs modelBinary bundledInputs =
 
   powerOn = C.pure True
 
+  -- For DDR: also serve from file (simulating that boot already copied data there)
+  ddrSlave = C.exposeClockResetEnable
+    --(FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
+    (DRAM.createDRAMBackedAxiSlave modelBinary ddrMaster)
+    C.systemClockGen
+    C.resetGen
+    C.enableGen
+
   -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
   (tokenOut, validOut, ddrMaster, introspection) =
     C.exposeClockResetEnable
@@ -291,10 +297,3 @@ bundledOutputs modelBinary bundledInputs =
       C.resetGen
       C.enableGen
 
-  -- For DDR: also serve from file (simulating that boot already copied data there)
-  ddrSlave = C.exposeClockResetEnable
-    (FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
-    --(DDR.createDRAMBackedAxiSlave modelBinary ddrMaster)
-    C.systemClockGen
-    C.resetGen
-    C.enableGen

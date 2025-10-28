@@ -120,11 +120,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
           && rowIx la  == maxBound
 
     layerEnable :: Signal dom Bool
-    layerEnable = mux loadTrigger (pure False) (fullyLoaded <$> weightBuffer)
-
-    -- Token gating and sampling
-    (mantissasH, expH) = unbundle parsedWeightsHold
-    firstMantissa = fmap (bitCoerce . head) mantissasH
+    layerEnable = mux loadTrigger (pure False) ((fullyLoaded <$> weightBuffer) .&&. layerDone)
 
     (seqState, readyPulse) = SequenceController.sequenceController ffnDoneThisLayer
     layerIdx :: Signal dom (Index NumLayers)
@@ -158,6 +154,9 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
     feedbackToken = regEn 0 logitsValid sampledToken
 
+    -- monitoring
+    (mantissasH, _expH) = unbundle parsedWeightsHold
+    firstMantissa = fmap (bitCoerce . head) mantissasH
     introspection = DecoderIntrospection
       { state               = processingState
       , layerIndex          = layerIdx
