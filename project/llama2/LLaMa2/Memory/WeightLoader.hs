@@ -14,7 +14,7 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Numeric.Types (Exponent, Mantissa)
-import LLaMa2.Memory.AxiReadMaster (axiBurstReadMaster)
+import qualified LLaMa2.Memory.AxiReadMaster as Reader (axiBurstReadMaster)
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut (..))
 
@@ -94,9 +94,9 @@ layerWeightStreamer ddrSlave layerIdx startLoad sinkReady =
     currentBurst = register (0 :: Unsigned 32) nextBurst
     burstAddr    = layerBaseAddr + (currentBurst * pure burstBytes)
 
-    startBurst = state .==. pure StreamBursting
-    (axiMaster, weightData, dataValid, ready) =
-      axiBurstReadMaster ddrSlave burstAddr (pure burstLen) startBurst sinkReady
+    startBurst = state .==. pure StreamBursting .&&. masterReady
+    (axiMaster, weightData, dataValid, masterReady) =
+      Reader.axiBurstReadMaster ddrSlave burstAddr (pure burstLen) startBurst sinkReady
 
     transfersInBurst = register (0 :: Unsigned 8) nextTransferCount
     burstComplete = register False $
