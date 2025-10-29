@@ -59,7 +59,7 @@ data ProcessingState = ProcessingState
     processingLayer :: Index NumLayers,
     sequencePosition :: Index SequenceLength
   }
-  deriving (Show, Generic, NFDataX)
+  deriving (Show, Generic, NFDataX, Eq)
 
 -- ============================================================================
 -- Intermediate Data Storage

@@ -167,10 +167,13 @@ test-suite llama2-test
       LLaMa2.Layer.Attention.LayerWeightBufferSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Decoder.EnableAttentionTimingSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.WeightLoaderSpec
-      Simulation.DRAMBackedAxiSlaveSpec 
+      Simulation.DRAMBackedAxiSlaveSpec
+      Simulation.WeightLoadingDiagnosticSpec
+      Simulation.DecoderRAMWeightSpec
   hs-source-dirs:
       test
   build-depends:

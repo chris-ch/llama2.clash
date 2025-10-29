@@ -12,6 +12,9 @@ import qualified Simulation.WeightLoaderSpec (spec)
 import qualified LLaMa2.Decoder.MultiTokenSpec (spec)
 import qualified LLaMa2.Decoder.TimingValidationSpec (spec)
 import qualified Simulation.DRAMBackedAxiSlaveSpec  (spec)
+import qualified Simulation.WeightLoadingDiagnosticSpec (spec)
+import qualified Simulation.DecoderRAMWeightSpec (spec)
+import qualified LLaMa2.Decoder.EnableAttentionTimingSpec (spec)
 
 main :: IO ()
 main = hspec $ do
@@ -24,3 +27,6 @@ main = hspec $ do
   --LLaMa2.Decoder.MultiTokenSpec.spec
   LLaMa2.Decoder.TimingValidationSpec.spec
   Simulation.DRAMBackedAxiSlaveSpec.spec
+  Simulation.WeightLoadingDiagnosticSpec.spec
+  Simulation.DecoderRAMWeightSpec.spec
+  LLaMa2.Decoder.EnableAttentionTimingSpec.spec

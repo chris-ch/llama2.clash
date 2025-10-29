@@ -210,7 +210,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Boot  | Tok Rdy  | FFNDone  | WgtValid  | LayerChg  | WgtSample | TokID   |   Tok   | SsyState | ddrWValid | ddrWReady| ddrBValid"
+  putStrLn "\nCycle | Layer | Stage              | Boot  | Tok Rdy  | FFNDone  | WgtValid  | LayerChg   | WgtSmpl  | TokID    |   Tok    | SsyState | ddrWValid | ddrWReady| ddrBValid"
   putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals

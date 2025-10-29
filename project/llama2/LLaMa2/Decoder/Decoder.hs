@@ -119,18 +119,19 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
           && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
           && rowIx la  == maxBound
 
-    weightLoadComplete :: Signal dom Bool
-    weightLoadComplete = register False nextLoadComplete
+    -- Track load completion with proper reset
+    loadComplete :: Signal dom Bool
+    loadComplete = register False nextLoadComplete
       where
         nextLoadComplete = 
-          mux loadTrigger 
-            (pure False)  -- Clear on new load
+          mux loadTrigger
+            (pure False)  -- Clear immediately on new load
             (mux (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
-              (pure True)   -- Set when done loading
-              weightLoadComplete)  -- Hold state
+              (pure True)   -- Set when loading completes
+              loadComplete)  -- Maintain state
 
-    enableAttention = weightLoadComplete .&&. (fullyLoaded <$> weightBuffer)
-
+    enableAttention = loadComplete .&&. (fullyLoaded <$> weightBuffer)
+    -- TODO replace useRAM with enableAttention
     useRAM :: Signal dom Bool
     useRAM = mux loadTrigger (pure False) ((fullyLoaded <$> weightBuffer) .&&. layerDone)
     
