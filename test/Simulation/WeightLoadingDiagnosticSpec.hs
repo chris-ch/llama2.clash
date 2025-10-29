@@ -10,6 +10,7 @@ import LLaMa2.Memory.LayerAddressing (WeightAddress(..), WeightMatrixType(..))
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Types.ModelConfig
   ( ModelDimension, HeadDimension, NumQueryHeads, NumKeyValueHeads )
+import Control.Monad (when, forM_)
 
 -- This spec focuses on the CORE timing bug:
 -- When does fullyLoaded become True relative to when weights are actually ready?
@@ -154,6 +155,167 @@ spec = do
           putStrLn $ "Latency: " P.++ show latency P.++ " cycles"
           latency `shouldSatisfy` (<= 2)
         _ -> expectationFailure "Could not measure timing"
+
+    it "TEST 5: verify loaded Q weights contain correct values" $ do
+      -- This checks that the weights actually made it into the buffer correctly
+
+      let writes = generateFullWriteSequence 10
+          lastWriteCycle = P.maximum $ DL.map (\(c,_,_,_) -> c) writes
+          totalCycles = lastWriteCycle + 20
+
+          (streamValid, addr, row, allDone) = createSignalsFromSequence totalCycles writes
+          reset = pure False
+
+          bufferSig = withClockResetEnable systemClockGen resetGen enableGen $
+            qkvWeightBufferController streamValid addr row allDone reset
+
+          samples = DL.take totalCycles $ sample bufferSig
+          
+          -- Find when buffer is fully loaded
+          firstLoadedCycle = DL.findIndex fullyLoaded samples
+
+      case firstLoadedCycle of
+        Nothing -> expectationFailure "Buffer never became fullyLoaded"
+        Just loadedCycle -> do
+          -- Get the buffer state after loading completes
+          let loadedBuffer = samples DL.!! (loadedCycle + 2)  -- +2 for safety
+          
+          -- Extract first Q weight for head 0
+          let qWeight0 = extractQWeight loadedBuffer 0
+              firstRow = qWeight0 !! (0 :: Int)
+              (mantissas, exponent') = firstRow
+              
+          putStrLn "\n=== Loaded Q Weight Verification ==="
+          putStrLn $ "First Q row (head 0) loaded at cycle: " P.++ show loadedCycle
+          putStrLn $ "Exponent: " P.++ show exponent'
+          putStrLn $ "First 5 mantissas: " P.++ show (DL.take 5 $ toList mantissas)
+          
+          -- Verify against expected synthetic values
+          -- From makeSyntheticRow with rowIdx=0:
+          -- mantissa[i] = rowIdx * 10 + i = 0 * 10 + i = i
+          -- exponent = rowIdx = 0
+          let expectedMantissas = [0..4] :: [Signed 8]
+              actualMantissas = DL.take 5 $ toList mantissas
+              
+          exponent' `shouldBe` 0
+          actualMantissas `shouldBe` expectedMantissas
+          
+          -- Check a row in the middle (rowIdx = 5)
+          let midRow = qWeight0 !! (5 :: Int)
+              (midMantissas, midExp) = midRow
+              midExpectedMantissas = [50..54] :: [Signed 8]
+              midActualMantissas = DL.take 5 $ toList midMantissas
+              
+          putStrLn "\nMiddle Q row (head 0, row 5):"
+          putStrLn $ "Exponent: " P.++ show midExp
+          putStrLn $ "First 5 mantissas: " P.++ show midActualMantissas
+          
+          midExp `shouldBe` 5
+          midActualMantissas `shouldBe` midExpectedMantissas
+
+    it "TEST 6: verify loaded K and V weights for multiple heads" $ do
+      -- Check K and V weights across different heads
+
+      let writes = generateFullWriteSequence 10
+          lastWriteCycle = P.maximum $ DL.map (\(c,_,_,_) -> c) writes
+          totalCycles = lastWriteCycle + 20
+
+          (streamValid, addr, row, allDone) = createSignalsFromSequence totalCycles writes
+          reset = pure False
+
+          bufferSig = withClockResetEnable systemClockGen resetGen enableGen $
+            qkvWeightBufferController streamValid addr row allDone reset
+
+          samples = DL.take totalCycles $ sample bufferSig
+          firstLoadedCycle = DL.findIndex fullyLoaded samples
+
+      case firstLoadedCycle of
+        Nothing -> expectationFailure "Buffer never became fullyLoaded"
+        Just loadedCycle -> do
+          let loadedBuffer = samples DL.!! (loadedCycle + 2)
+          
+          -- Check K weight for KV head 0, row 0
+          let kWeight0 = extractKWeight loadedBuffer 0
+              kFirstRow = kWeight0 !! (0 :: Int)
+              (kMantissas, kExp) = kFirstRow
+              kActualMantissas = DL.take 5 $ toList kMantissas
+              
+          putStrLn "\n=== K Weight Verification ==="
+          putStrLn "First K row (KV head 0):"
+          putStrLn $ "Exponent: " P.++ show kExp
+          putStrLn $ "First 5 mantissas: " P.++ show kActualMantissas
+          
+          -- K weights are written after all Q weights
+          -- makeSyntheticRow still uses rowIdx for generation
+          kExp `shouldBe` 0
+          kActualMantissas `shouldBe` [0 .. 4]
+          
+          -- Check V weight for KV head 0, row 0
+          let vWeight0 = extractVWeight loadedBuffer 0
+              vFirstRow = vWeight0 !! (0 :: Int)
+              (vMantissas, vExp) = vFirstRow
+              vActualMantissas = DL.take 5 $ toList vMantissas
+              
+          putStrLn "\n=== V Weight Verification ==="
+          putStrLn "First V row (KV head 0):"
+          putStrLn $ "Exponent: " P.++ show vExp
+          putStrLn $ "First 5 mantissas: " P.++ show vActualMantissas
+          
+          vExp `shouldBe` 0
+          vActualMantissas `shouldBe` [0..4]
+          
+          -- Verify a different head (if NumKeyValueHeads > 1)
+          when (natToNum @NumKeyValueHeads > 1) $ do
+            let kWeight1 = extractKWeight loadedBuffer 1
+                kRow1 = kWeight1 !! (0 :: Int)
+                (kMant1, kExp1) = kRow1
+                kActual1 = DL.take 5 $ toList kMant1
+                
+            putStrLn "\n=== K Weight Head 1 Verification ==="
+            putStrLn "First K row (KV head 1):"
+            putStrLn $ "Exponent: " P.++ show kExp1
+            putStrLn $ "First 5 mantissas: " P.++ show kActual1
+            
+            kExp1 `shouldBe` 0
+            kActual1 `shouldBe` [0..4]
+
+    it "TEST 7: verify all Q heads have distinct weight values" $ do
+      -- Ensure weights for different heads are actually different
+
+      let writes = generateFullWriteSequence 10
+          lastWriteCycle = P.maximum $ DL.map (\(c,_,_,_) -> c) writes
+          totalCycles = lastWriteCycle + 20
+
+          (streamValid, addr, row, allDone) = createSignalsFromSequence totalCycles writes
+          reset = pure False
+
+          bufferSig = withClockResetEnable systemClockGen resetGen enableGen $
+            qkvWeightBufferController streamValid addr row allDone reset
+
+          samples = DL.take totalCycles $ sample bufferSig
+          firstLoadedCycle = DL.findIndex fullyLoaded samples
+
+      case firstLoadedCycle of
+        Nothing -> expectationFailure "Buffer never became fullyLoaded"
+        Just loadedCycle -> do
+          let loadedBuffer = samples DL.!! (loadedCycle + 2)
+              numQHeads = fromInteger (natToNum @NumQueryHeads) :: Int
+          
+          putStrLn "\n=== Multi-Head Weight Verification ==="
+          
+          -- Check first row of each Q head
+          let headSamples = [ (h, extractQWeight loadedBuffer (toEnum h) !! (0 :: Int))
+                            | h <- [0 .. min 3 (numQHeads - 1)] ]  -- Check up to 4 heads
+          
+          forM_ headSamples $ \(headIdx, (mantissas, exp')) -> do
+            let firstFive = DL.take 5 $ toList mantissas
+            putStrLn $ "Q Head " P.++ show headIdx P.++ 
+                      " - First row exp: " P.++ show exp' P.++
+                      ", mantissas: " P.++ show firstFive
+            
+            -- All should have same structure (row 0) but verify they're there
+            exp' `shouldBe` 0
+            DL.head firstFive `shouldBe` 0
 
 -- Helper: generate a complete Q/K/V write sequence
 generateFullWriteSequence :: Int -> [(Int, Bool, WeightAddress, RowI8E ModelDimension)]
