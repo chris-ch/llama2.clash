@@ -114,7 +114,7 @@ optionsParser =
     <> OA.help "Tokenizer binary file")
     <*> OA.strOption (OA.long "model-file" <> OA.value
 #if defined(MODEL_260K)
-      "./data/stories260K.bin" 
+      "./data/stories260K.bin"
 #elif defined(MODEL_15M)
       "./data/stories15M.bin" 
 #else
@@ -138,6 +138,22 @@ decodeToken tokenizer tokenId = T.decodePiece tokenizer (fromIntegral tokenId)
 --------------------------------------------------------------------------------
 
 type DecoderInputState = (Token, [Token], Bool)
+
+fromSFixed :: C.SFixed 12 20 -> Float
+fromSFixed x = realToFrac (toRational x)
+
+-- | Convert a Clash vector of signed fixed-point numbers to a list of Float.
+vecToFloatList :: C.Vec n (C.SFixed 12 20) -> [Float]
+vecToFloatList = map fromSFixed . C.toList
+--   fromSFixed :: SFixed a b -> Rational
+--   Rational → Float via implicit conversion
+
+-- | Euclidean (L2) norm of a fixed-point vector, returned as Float.
+normVec :: C.KnownNat n => C.Vec n (C.SFixed 12 20) -> Float
+normVec v = sqrt (sum squares)
+          where
+            floats = vecToFloatList v
+            squares = map (\x -> x * x) floats
 
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
@@ -192,6 +208,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
     layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
     sysStateSampled = C.sampleN simSteps (Top.sysState introspection)
+    layerOutputSampled =  C.sampleN simSteps (Top.layerOutput introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -210,12 +227,12 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Boot  | Tok Rdy  | FFNDone  | WgtValid  | LayerChg   | WgtSmpl  | TokID    |   Tok    | SsyState | ddrWValid | ddrWReady| ddrBValid"
+  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | FFNDone  | WgtValid | LayerChg | WgtSmpl | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
   putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
-        let 
+        let
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
           ps     = processingStage (statesSampled !! cycleIdx)
           rdy    = readiesSampled !! cycleIdx
@@ -223,14 +240,15 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
           wValid = weightValidSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
           wSample = weightSampleSampled !! cycleIdx
+          layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
           token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           ddrWValid = ddrWValidSampled !! cycleIdx
           ddrWReady = ddrWReadySampled !! cycleIdx
           ddrBValid = ddrBValidSampled !! cycleIdx
-        when (cycleIdx `mod` 1000 == 0 || rdy || ffn) $
+        when (cycleIdx `mod` 10000 == 0 || rdy || ffn || layChg) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %5s | %8s | %8s | %9s |  %9d | %8s | %8s | %8s | %8s | %8s | %8s"
+            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %7d | %9s | %8s | %11s | %9s | %9s | %9s"
               cycleIdx
               li
               (show ps)
@@ -239,7 +257,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
               (show wValid)
               (show layChg)
               wSample
-              (show $ fst token)
+              (show layerOutputNorm)
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
               (show ddrWValid)

@@ -146,188 +146,63 @@ cabal exec -- clash --verilog \
 | **Working Memory** | DDR4 DRAM | Fast random access for KV cache, affordable |
 | **Layer Strategy** | One at a time + prefetch | Fits in available memory, hides ROM latency |
 | **KV Cache** | External DDR4 | Too large for on-chip, needs fast random access |
-# Few first cycles (combinational multiplier)
+
+# Few first cycles
 
 ```text
-
 Prepending BOS to prompt tokens: [1,320,417]
 ✅ model loaded successfully
 ✅ Prompt: [1,320,417]
+Simulating 259000 cycles...
+This may take a moment...
 
-Cycle | Layer | Stage | Ready | AttnDone | FFNDone | Token
------------------------------------------------------------
-    0 |     0 | Stage1_ProjectQKV                | False |     True |    False |     1
-   19 |     0 | Stage4_FeedForward               | False |    False |     True |     1
-   38 |     1 | Stage4_FeedForward               | False |    False |     True |     1
-   57 |     2 | Stage4_FeedForward               | False |    False |     True |     1
-   76 |     3 | Stage4_FeedForward               | False |    False |     True |     1
-   95 |     4 | Stage4_FeedForward               | False |    False |     True |     1
-   96 |     4 | Stage5_Classifier                |  True |    False |     True |     1
-  117 |     0 | Stage4_FeedForward               | False |    False |     True |   320
-  137 |     1 | Stage4_FeedForward               | False |    False |     True |   320
-  157 |     2 | Stage4_FeedForward               | False |    False |     True |   320
-  177 |     3 | Stage4_FeedForward               | False |    False |     True |   320
-  197 |     4 | Stage4_FeedForward               | False |    False |     True |   320
-  198 |     4 | Stage5_Classifier                |  True |    False |     True |   320
-  220 |     0 | Stage4_FeedForward               | False |    False |     True |   417
-  241 |     1 | Stage4_FeedForward               | False |    False |     True |   417
-  262 |     2 | Stage4_FeedForward               | False |    False |     True |   417
-  283 |     3 | Stage4_FeedForward               | False |    False |     True |   417
-  304 |     4 | Stage4_FeedForward               | False |    False |     True |   417
-  305 |     4 | Stage5_Classifier                |  True |    False |     True |   417
-  328 |     0 | Stage4_FeedForward               | False |    False |     True |   430
-  350 |     1 | Stage4_FeedForward               | False |    False |     True |   430
-  372 |     2 | Stage4_FeedForward               | False |    False |     True |   430
-  394 |     3 | Stage4_FeedForward               | False |    False |     True |   430
-  416 |     4 | Stage4_FeedForward               | False |    False |     True |   430
-  417 |     4 | Stage5_Classifier                |  True |    False |     True |   430
-  441 |     0 | Stage4_FeedForward               | False |    False |     True |   414
-  464 |     1 | Stage4_FeedForward               | False |    False |     True |   414
-  487 |     2 | Stage4_FeedForward               | False |    False |     True |   414
-  510 |     3 | Stage4_FeedForward               | False |    False |     True |   414
-  533 |     4 | Stage4_FeedForward               | False |    False |     True |   414
-  534 |     4 | Stage5_Classifier                |  True |    False |     True |   414
-  559 |     0 | Stage4_FeedForward               | False |    False |     True |   269
-  583 |     1 | Stage4_FeedForward               | False |    False |     True |   269
-  607 |     2 | Stage4_FeedForward               | False |    False |     True |   269
-  631 |     3 | Stage4_FeedForward               | False |    False |     True |   269
-  655 |     4 | Stage4_FeedForward               | False |    False |     True |   269
-  656 |     4 | Stage5_Classifier                |  True |    False |     True |   269
-  682 |     0 | Stage4_FeedForward               | False |    False |     True |   410
-  707 |     1 | Stage4_FeedForward               | False |    False |     True |   410
-  732 |     2 | Stage4_FeedForward               | False |    False |     True |   410
-  757 |     3 | Stage4_FeedForward               | False |    False |     True |   410
-  782 |     4 | Stage4_FeedForward               | False |    False |     True |   410
-  783 |     4 | Stage5_Classifier                |  True |    False |     True |   410
-  810 |     0 | Stage4_FeedForward               | False |    False |     True |   447
-  836 |     1 | Stage4_FeedForward               | False |    False |     True |   447
-  862 |     2 | Stage4_FeedForward               | False |    False |     True |   447
-  888 |     3 | Stage4_FeedForward               | False |    False |     True |   447
-  914 |     4 | Stage4_FeedForward               | False |    False |     True |   447
-  915 |     4 | Stage5_Classifier                |  True |    False |     True |   447
-  943 |     0 | Stage4_FeedForward               | False |    False |     True |   416
-  970 |     1 | Stage4_FeedForward               | False |    False |     True |   416
-  997 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 1000 |     3 | Stage1_ProjectQKV                | False |    False |    False |   416
- 1024 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 1051 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 1052 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 1081 |     0 | Stage4_FeedForward               | False |    False |     True |   416
- 1109 |     1 | Stage4_FeedForward               | False |    False |     True |   416
- 1137 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 1165 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 1193 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 1194 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 1224 |     0 | Stage4_FeedForward               | False |    False |     True |   412
- 1253 |     1 | Stage4_FeedForward               | False |    False |     True |   412
- 1282 |     2 | Stage4_FeedForward               | False |    False |     True |   412
- 1311 |     3 | Stage4_FeedForward               | False |    False |     True |   412
- 1340 |     4 | Stage4_FeedForward               | False |    False |     True |   412
- 1341 |     4 | Stage5_Classifier                |  True |    False |     True |   412
- 1372 |     0 | Stage4_FeedForward               | False |    False |     True |   432
- 1402 |     1 | Stage4_FeedForward               | False |    False |     True |   432
- 1432 |     2 | Stage4_FeedForward               | False |    False |     True |   432
- 1462 |     3 | Stage4_FeedForward               | False |    False |     True |   432
- 1492 |     4 | Stage4_FeedForward               | False |    False |     True |   432
- 1493 |     4 | Stage5_Classifier                |  True |    False |     True |   432
- 1525 |     0 | Stage4_FeedForward               | False |    False |     True |   410
- 1556 |     1 | Stage4_FeedForward               | False |    False |     True |   410
- 1587 |     2 | Stage4_FeedForward               | False |    False |     True |   410
- 1618 |     3 | Stage4_FeedForward               | False |    False |     True |   410
- 1649 |     4 | Stage4_FeedForward               | False |    False |     True |   410
- 1650 |     4 | Stage5_Classifier                |  True |    False |     True |   410
- 1683 |     0 | Stage4_FeedForward               | False |    False |     True |   447
- 1715 |     1 | Stage4_FeedForward               | False |    False |     True |   447
- 1747 |     2 | Stage4_FeedForward               | False |    False |     True |   447
- 1779 |     3 | Stage4_FeedForward               | False |    False |     True |   447
- 1811 |     4 | Stage4_FeedForward               | False |    False |     True |   447
- 1812 |     4 | Stage5_Classifier                |  True |    False |     True |   447
- 1846 |     0 | Stage4_FeedForward               | False |    False |     True |   416
- 1879 |     1 | Stage4_FeedForward               | False |    False |     True |   416
- 1912 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 1945 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 1978 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 1979 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 2000 |     0 | Stage3_Attend                    | False |    False |    False |   416
- 2014 |     0 | Stage4_FeedForward               | False |    False |     True |   416
- 2048 |     1 | Stage4_FeedForward               | False |    False |     True |   416
- 2082 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 2116 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 2150 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 2151 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 2187 |     0 | Stage4_FeedForward               | False |    False |     True |   412
- 2222 |     1 | Stage4_FeedForward               | False |    False |     True |   412
- 2257 |     2 | Stage4_FeedForward               | False |    False |     True |   412
- 2292 |     3 | Stage4_FeedForward               | False |    False |     True |   412
- 2327 |     4 | Stage4_FeedForward               | False |    False |     True |   412
- 2328 |     4 | Stage5_Classifier                |  True |    False |     True |   412
- 2365 |     0 | Stage4_FeedForward               | False |    False |     True |   432
- 2401 |     1 | Stage4_FeedForward               | False |    False |     True |   432
- 2437 |     2 | Stage4_FeedForward               | False |    False |     True |   432
- 2473 |     3 | Stage4_FeedForward               | False |    False |     True |   432
- 2509 |     4 | Stage4_FeedForward               | False |    False |     True |   432
- 2510 |     4 | Stage5_Classifier                |  True |    False |     True |   432
- 2548 |     0 | Stage4_FeedForward               | False |    False |     True |   410
- 2585 |     1 | Stage4_FeedForward               | False |    False |     True |   410
- 2622 |     2 | Stage4_FeedForward               | False |    False |     True |   410
- 2659 |     3 | Stage4_FeedForward               | False |    False |     True |   410
- 2696 |     4 | Stage4_FeedForward               | False |    False |     True |   410
- 2697 |     4 | Stage5_Classifier                |  True |    False |     True |   410
- 2736 |     0 | Stage4_FeedForward               | False |    False |     True |   447
- 2774 |     1 | Stage4_FeedForward               | False |    False |     True |   447
- 2812 |     2 | Stage4_FeedForward               | False |    False |     True |   447
- 2850 |     3 | Stage4_FeedForward               | False |    False |     True |   447
- 2888 |     4 | Stage4_FeedForward               | False |    False |     True |   447
- 2889 |     4 | Stage5_Classifier                |  True |    False |     True |   447
- 2929 |     0 | Stage4_FeedForward               | False |    False |     True |   416
- 2968 |     1 | Stage4_FeedForward               | False |    False |     True |   416
- 3000 |     2 | Stage4_FeedForward               | False |    False |    False |   416
- 3007 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 3046 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 3085 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 3086 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 3127 |     0 | Stage4_FeedForward               | False |    False |     True |   416
- 3167 |     1 | Stage4_FeedForward               | False |    False |     True |   416
- 3207 |     2 | Stage4_FeedForward               | False |    False |     True |   416
- 3247 |     3 | Stage4_FeedForward               | False |    False |     True |   416
- 3287 |     4 | Stage4_FeedForward               | False |    False |     True |   416
- 3288 |     4 | Stage5_Classifier                |  True |    False |     True |   416
- 3330 |     0 | Stage4_FeedForward               | False |    False |     True |   412
- 3371 |     1 | Stage4_FeedForward               | False |    False |     True |   412
- 3412 |     2 | Stage4_FeedForward               | False |    False |     True |   412
- 3453 |     3 | Stage4_FeedForward               | False |    False |     True |   412
- 3494 |     4 | Stage4_FeedForward               | False |    False |     True |   412
- 3495 |     4 | Stage5_Classifier                |  True |    False |     True |   412
- 3538 |     0 | Stage4_FeedForward               | False |    False |     True |   432
- 3580 |     1 | Stage4_FeedForward               | False |    False |     True |   432
- 3622 |     2 | Stage4_FeedForward               | False |    False |     True |   432
- 3664 |     3 | Stage4_FeedForward               | False |    False |     True |   432
- 3706 |     4 | Stage4_FeedForward               | False |    False |     True |   432
- 3707 |     4 | Stage5_Classifier                |  True |    False |     True |   432
- 3751 |     0 | Stage4_FeedForward               | False |    False |     True |   280
- 3794 |     1 | Stage4_FeedForward               | False |    False |     True |   280
- 3837 |     2 | Stage4_FeedForward               | False |    False |     True |   280
- 3880 |     3 | Stage4_FeedForward               | False |    False |     True |   280
- 3923 |     4 | Stage4_FeedForward               | False |    False |     True |   280
- 3924 |     4 | Stage5_Classifier                |  True |    False |     True |   280
- 3969 |     0 | Stage4_FeedForward               | False |    False |     True |   314
- 4000 |     1 | Stage3_Attend                    | False |    False |    False |   314
- 4013 |     1 | Stage4_FeedForward               | False |    False |     True |   314
- 4057 |     2 | Stage4_FeedForward               | False |    False |     True |   314
- 4101 |     3 | Stage4_FeedForward               | False |    False |     True |   314
- 4145 |     4 | Stage4_FeedForward               | False |    False |     True |   314
- 4146 |     4 | Stage5_Classifier                |  True |    False |     True |   314
- 4192 |     0 | Stage4_FeedForward               | False |    False |     True |   411
- 4237 |     1 | Stage4_FeedForward               | False |    False |     True |   411
- 4282 |     2 | Stage4_FeedForward               | False |    False |     True |   411
- 4327 |     3 | Stage4_FeedForward               | False |    False |     True |   411
- 4372 |     4 | Stage4_FeedForward               | False |    False |     True |   411
- 4373 |     4 | Stage5_Classifier                |  True |    False |     True |   411
- 4420 |     0 | Stage4_FeedForward               | False |    False |     True |   267
- 4466 |     1 | Stage4_FeedForward               | False |    False |     True |   267
- 4512 |     2 | Stage4_FeedForward               | False |    False |     True |   267
- 4558 |     3 | Stage4_FeedForward               | False |    False |     True |   267
- 4604 |     4 | Stage4_FeedForward               | False |    False |     True |   267
- 4605 |     4 | Stage5_Classifier                |  True |    False |     True |   267
-
+Cycle | Layer | Stage              | Tok Rdy | FFNDone  | WgtValid | LayerChg | WgtSmpl | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    0 |     0 | Stage1_ProjectQKV  |   False |    False |    False |    False |       0 |       0.0 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 1588 |     0 | Stage4_FeedForward |   False |     True |    False |    False |       0 |  8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 1589 |     1 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 |  8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 3176 |     1 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 3177 |     2 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 4764 |     2 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 4765 |     3 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 6352 |     3 | Stage4_FeedForward |   False |     True |    False |    False |      25 | 16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 6353 |     4 | Stage1_ProjectQKV  |   False |    False |    False |     True |      25 | 16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 7940 |     4 | Stage4_FeedForward |    True |     True |    False |    False |       0 | 18.754534 | "\n<s>\n" |     WSReady |     False |     False |     False
+ 7941 |     0 | Stage5_Classifier  |   False |    False |    False |     True |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
+10000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
+11067 |     0 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 3.8518157 |     " H" |     WSReady |     False |     False |     False
+11068 |     1 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 3.8518157 |     " H" |     WSReady |     False |     False |     False
+12656 |     1 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 5.3426757 |     " H" |     WSReady |     False |     False |     False
+12657 |     2 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 5.3426757 |     " H" |     WSReady |     False |     False |     False
+14245 |     2 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 6.8089294 |     " H" |     WSReady |     False |     False |     False
+14246 |     3 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 6.8089294 |     " H" |     WSReady |     False |     False |     False
+15834 |     3 | Stage4_FeedForward |   False |     True |    False |    False |      81 |   9.42028 |     " H" |     WSReady |     False |     False |     False
+15835 |     4 | Stage1_ProjectQKV  |   False |    False |    False |     True |      81 |   9.42028 |     " H" |     WSReady |     False |     False |     False
+17423 |     4 | Stage4_FeedForward |    True |     True |    False |    False |       0 | 13.655915 |     " H" |     WSReady |     False |     False |     False
+17424 |     0 | Stage5_Classifier  |   False |    False |    False |     True |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
+20000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
+20551 |     0 | Stage4_FeedForward |   False |     True |    False |    False |       0 |  2.822887 |      "i" |     WSReady |     False |     False |     False
+20552 |     1 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 |  2.822887 |      "i" |     WSReady |     False |     False |     False
+22141 |     1 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 4.6433043 |      "i" |     WSReady |     False |     False |     False
+22142 |     2 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 4.6433043 |      "i" |     WSReady |     False |     False |     False
+23731 |     2 | Stage4_FeedForward |   False |     True |    False |    False |       0 |  6.180796 |      "i" |     WSReady |     False |     False |     False
+23732 |     3 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 |  6.180796 |      "i" |     WSReady |     False |     False |     False
+25321 |     3 | Stage4_FeedForward |   False |     True |    False |    False |     -47 |  9.746549 |      "i" |     WSReady |     False |     False |     False
+25322 |     4 | Stage1_ProjectQKV  |   False |    False |    False |     True |     -47 |  9.746549 |      "i" |     WSReady |     False |     False |     False
+26911 |     4 | Stage4_FeedForward |    True |     True |    False |    False |       0 | 12.8256645 |      "i" |     WSReady |     False |     False |     False
+26912 |     0 | Stage5_Classifier  |   False |    False |    False |     True |       0 | 12.8256645 |      "i" |     WSReady |     False |     False |     False
+30000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |       0 | 12.8256645 |      "b" |     WSReady |     False |     False |     False
+30040 |     0 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 2.9710772 |      "b" |     WSReady |     False |     False |     False
+30041 |     1 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 2.9710772 |      "b" |     WSReady |     False |     False |     False
+31631 |     1 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 4.1651764 |      "b" |     WSReady |     False |     False |     False
+31632 |     2 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 4.1651764 |      "b" |     WSReady |     False |     False |     False
+33222 |     2 | Stage4_FeedForward |   False |     True |    False |    False |       0 |  6.642122 |      "b" |     WSReady |     False |     False |     False
+33223 |     3 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 |  6.642122 |      "b" |     WSReady |     False |     False |     False
+34813 |     3 | Stage4_FeedForward |   False |     True |    False |    False |      38 |  9.784572 |      "b" |     WSReady |     False |     False |     False
+34814 |     4 | Stage1_ProjectQKV  |   False |    False |    False |     True |      38 |  9.784572 |      "b" |     WSReady |     False |     False |     False
+36404 |     4 | Stage4_FeedForward |    True |     True |    False |    False |       0 | 11.553102 |      "b" |     WSReady |     False |     False |     False
+36405 |     0 | Stage5_Classifier  |   False |    False |    False |     True |       0 | 11.553102 |      "b" |     WSReady |     False |     False |     False
+39534 |     0 | Stage4_FeedForward |   False |     True |    False |    False |       0 | 2.8445544 |      "o" |     WSReady |     False |     False |     False
+39535 |     1 | Stage1_ProjectQKV  |   False |    False |    False |     True |       0 | 2.8445544 |      "o" |     WSReady |     False |     False |     False
+40000 |     1 | Stage4_FeedForward |   False |    False |    False |    False |       0 | 2.8445544 |      "o" | WSStreaming |     False |     False |     False
 ```

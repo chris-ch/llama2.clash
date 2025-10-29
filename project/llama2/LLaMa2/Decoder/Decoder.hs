@@ -9,8 +9,8 @@ import LLaMa2.Types.LayerData
   ( LayerData(..), ProcessingState (..), Temperature, Seed, Token )
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
-  ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
-import LLaMa2.Numeric.Types (Mantissa)
+  ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension, VocabularySize )
+import LLaMa2.Numeric.Types (Mantissa, FixedPoint)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
 import qualified LLaMa2.Decoder.SequenceController as SequenceController
@@ -50,6 +50,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerChangeDetected :: Signal dom Bool
   , sysState            :: Signal dom WeightSystemState
   , weightBufferState   :: Signal dom QKVProjectionWeightBuffer
+  , layerOutput :: Signal dom (Vec ModelDimension FixedPoint)
   } deriving (Generic, NFDataX)
 
 decoder :: forall dom. HiddenClockResetEnable dom
@@ -163,8 +164,15 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     layerOutput = feedForwardOutput <$> nextLayerData
     lastLayerComplete = (layerIdx .==. pure maxBound) .&&. ffnDoneThisLayer
+
+    logits :: Signal dom (Vec VocabularySize FixedPoint)
+    logitsValid :: Signal dom Bool
     (logits, logitsValid) = OutputProjection.outputProjection params lastLayerComplete layerOutput
+
+    sampledToken :: Signal dom Token
     sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
+
+    feedbackToken :: Signal dom Token
     feedbackToken = regEn 0 logitsValid sampledToken
 
     -- monitoring
@@ -181,4 +189,5 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       , layerChangeDetected = layerChanged
       , sysState            = sysState
       , weightBufferState   = weightBuffer
+      , layerOutput         = layerOutput
       }

@@ -48,7 +48,6 @@ categoricalSampler u probs =
       idxM = findIndex (>= u) cdf
   in fromIntegral (fromEnum (fromMaybe maxBound idxM))
 
--- Fixed softmax
 softmax :: forall n. KnownNat (n + 1) => FixedPoint -> Vec (n + 1) FixedPoint -> Vec (n + 1) FixedPoint
 softmax t xs =
   let m    = maximum xs
@@ -56,7 +55,7 @@ softmax t xs =
       s    = sum exps
   in map (/ s) exps
 
--- argmax unchanged (returns Token)
+-- argmax (returns Token)
 argMax :: forall n. (KnownNat (n + 1)) => Vec (n+1) FixedPoint -> Unsigned 32
 argMax vec =
   let (ix, _) = foldl (\(iBest, vBest) (i, v) -> if v > vBest then (i, v) else (iBest, vBest))
