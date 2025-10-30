@@ -237,7 +237,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           ddrBValid = ddrBValidSampled !! cycleIdx
         when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %9s | %8s | %11s | %9s | %9s | %9s"
+            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %7d | %9s | %8s | %11s | %9s | %9s | %9s"
               cycleIdx
               li
               (show ps)

@@ -39,7 +39,6 @@ data CycleStage
   | Stage3_Attend -- read 0..pos and attend (Q uses current pos)
   | Stage4_FeedForward -- FFN and residual
   | Stage5_Classifier
-  | Stage6_Bookkeeping -- layer+pos bookkeeping; raises readyPulse at last layer
   deriving (Show, Eq, Enum, Bounded, Generic)
 
 instance NFDataX CycleStage where

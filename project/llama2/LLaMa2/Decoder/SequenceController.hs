@@ -38,11 +38,11 @@ pipelineController
   procState = register initialProcessingState
     ((\s done -> if done then nextProcessingState s else s) <$> procState <*> stageFinished)
 
-  stageSig = processingStage <$> procState
+  stage = processingStage <$> procState
   layerIx  = processingLayer <$> procState
   posIx    = sequencePosition <$> procState
 
-  isStage st = (== st) <$> stageSig
+  isStage st = (== st) <$> stage
 
   stageFinished =
     mux (isStage Stage1_ProjectQKV)
@@ -55,7 +55,7 @@ pipelineController
         ffnDoneThisLayer $
     mux (isStage Stage5_Classifier)
         classifierDone $
-    isStage Stage6_Bookkeeping
+    pure False
 
   readyPulseRaw =
     let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
@@ -64,7 +64,7 @@ pipelineController
 
   outs = PipelineOutputs
       { processingState = procState
-      , stageSignal     = stageSig
+      , stageSignal     = stage
       , layerIndex      = layerIx
       , seqPos          = posIx
       , readyPulse      = readyPulseRaw
@@ -89,9 +89,7 @@ nextProcessingState state = case processingStage state of
       else state { processingStage  = Stage1_ProjectQKV
                  , processingLayer  = succ (processingLayer state)
                  }
-  Stage5_Classifier -> state { processingStage = Stage6_Bookkeeping }
-  Stage6_Bookkeeping ->
-    state { processingStage  = Stage1_ProjectQKV
+  Stage5_Classifier -> state { processingStage  = Stage1_ProjectQKV
           , processingLayer  = 0
           , sequencePosition = if sequencePosition state == maxBound
                                 then 0 else succ (sequencePosition state)
