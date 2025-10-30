@@ -51,8 +51,6 @@ transformerLayer ::
     Signal dom Bool, -- writeDone
     Signal dom Bool, -- attentionDone
     Signal dom Bool, -- qkvDone
-    Signal dom LayerData, -- layerDataAfterAttention
-    Signal dom Bool, -- qkvInReady
     Signal dom Bool -- ffnDone
   )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM =
@@ -60,8 +58,6 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     writeDone,
     attentionDone,
     qkvDone,
-    layerDataAfterAttention,
-    qkvInReady,
     ffnValidOut
   )
   where

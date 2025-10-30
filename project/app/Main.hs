@@ -15,7 +15,7 @@ import System.IO (hFlush, stdout)
 import Text.Printf (printf)
 import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..), LayerData (..) )
 
-import LLaMa2.Types.ModelConfig ( VocabularySize, NumQueryHeads, HeadDimension, ModelDimension )
+import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
@@ -23,7 +23,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
-import qualified LLaMa2.Decoder.Decoder as Decoder
+import qualified LLaMa2.Decoder.SimplifiedDecoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 
 --------------------------------------------------------------------------------
@@ -183,9 +183,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
-
-    layerData :: C.Signal C.System LayerData
-    layerData = Decoder.layerData introspection
 
     -- Sample introspection fields separately
     statesSampled         = C.sampleN simSteps (Decoder.state introspection)

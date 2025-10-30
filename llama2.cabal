@@ -92,9 +92,9 @@ common project-defaults
 library
   import: project-defaults
   exposed-modules:
-      LLaMa2.Decoder.Decoder
-      LLaMa2.Decoder.LayerStack
-      LLaMa2.Decoder.SequenceController
+      LLaMa2.Decoder.SimplifiedDecoder
+      LLaMa2.Decoder.SimplifiedLayerStack
+      LLaMa2.Decoder.SimplifiedSequenceController
       LLaMa2.Embedding.InputEmbedding
       LLaMa2.Embedding.OutputProjection
       LLaMa2.Layer.Attention.AttentionHead
@@ -128,7 +128,6 @@ library
       LLaMa2.Types.LayerData
       LLaMa2.Types.ModelConfig
       Parser
-      Simulation.FileBackedAxiSlave
       Simulation.DRAMBackedAxiSlave
       Simulation.MatVecSim
       Simulation.Parameters
