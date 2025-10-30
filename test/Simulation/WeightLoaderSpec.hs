@@ -13,10 +13,10 @@ import Test.Hspec
 import qualified Prelude as P
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Types as AXITypes
-import qualified Data.ByteString.Lazy as BSL
 import Simulation.DRAMBackedAxiSlave (createDRAMBackedAxiSlave)
 import qualified Clash.Sized.Vector as Vec
 import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified Simulation.ParamsPlaceholder as PARAM
 
 -- ============================================================================
 -- MOCKS
@@ -135,15 +135,15 @@ spec = do
         everStreaming `shouldBe` True
 
       it "DIAGNOSTIC: with real DDR, does streamer start?" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 0
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, sysState, ddrMaster) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave = createDRAMBackedAxiSlave params ddrMaster'
                     (ddrMaster', _, streamValid', sysState') =
                       weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState', ddrMaster')
@@ -164,15 +164,15 @@ spec = do
         axiActive `shouldBe` True
 
       it "DIAGNOSTIC: count valid beats over 50K cycles" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 0
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave = createDRAMBackedAxiSlave params ddrMaster'
                     (ddrMaster', _, streamValid', sysState') =
                       weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState')
@@ -189,15 +189,15 @@ spec = do
         validCount `shouldSatisfy` (> 0)
 
       it "DIAGNOSTIC: check AXI handshake over time" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 0
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             
         let (streamValid, ddrMaster, ddrSlave) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let ddrSlave' = createDRAMBackedAxiSlave modelBinary ddrMaster'
+                let ddrSlave' = createDRAMBackedAxiSlave params ddrMaster'
                     (ddrMaster', _, streamValid', _) =
                       weightManagementSystem ddrSlave' startStream layerIdx sinkRdy
                 in (streamValid', ddrMaster', ddrSlave')
@@ -217,8 +217,8 @@ spec = do
         True `shouldBe` True
         
       it "produces consistent stream during burst" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 0
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
@@ -227,7 +227,7 @@ spec = do
 
         let (streamValid, sysState) = 
               withClockResetEnable systemClockGen resetGen enableGen $ 
-                let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMaster
+                let ddrSlave = createDRAMBackedAxiSlave params ddrMaster
                     (ddrMaster, _, streamValid', sysState') =
                       weightManagementSystem ddrSlave startStream layerIdx sinkRdy
                 in (streamValid', sysState')
@@ -248,8 +248,8 @@ spec = do
 
     context "with backpressure" $ do
       it "respects sinkReady signal" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 0
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             -- Sink ready alternates: ready for 2 cycles, not ready for 2 cycles
@@ -257,7 +257,7 @@ spec = do
             totalCycles = 100_000 -- need more cycles due to backpressure
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-              let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
+              let ddrSlave = createDRAMBackedAxiSlave params ddrMasterOut
                   (ddrMasterOut, _weightStream, streamValid, _sysState) =
                     weightManagementSystem ddrSlave startStream layerIdx sinkRdy
               (streamValid, sinkRdy)
@@ -285,15 +285,15 @@ spec = do
         invalidWhileNotReady `shouldSatisfy` (< (totalValidBeats `P.div` 10))
 
     it "completes successfully with backpressure" $ do
-      modelBinary <- BSL.readFile "data/stories260K.bin"
       let
+          params = PARAM.decoderConst
           layerIdx = pure 0
           startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
           sinkRdy = fromList $ P.cycle [True, False]
           totalCycles = 100_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
+            let ddrSlave = createDRAMBackedAxiSlave params ddrMasterOut
                 (ddrMasterOut, _, streamValid, sysState) =
                   weightManagementSystem ddrSlave startStream layerIdx sinkRdy
             (streamValid, sysState)
@@ -312,15 +312,15 @@ spec = do
 
     context "loading different layers" $ do
       it "loads layer 1 successfully" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
         let
+            params = PARAM.decoderConst
             layerIdx = pure 1
             startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
             sinkRdy = pure True
             totalCycles = 50_000
 
         let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-              let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
+              let ddrSlave = createDRAMBackedAxiSlave params ddrMasterOut
                   (ddrMasterOut, _weightStream, streamValid, sysState) =
                     weightManagementSystem ddrSlave startStream layerIdx sinkRdy
               (streamValid, sysState)
@@ -337,15 +337,15 @@ spec = do
 
   describe "state transitions" $ do
     it "transitions from Ready -> Streaming -> Ready" $ do
-      modelBinary <- BSL.readFile "data/stories260K.bin"
       let
+          params = PARAM.decoderConst
           layerIdx = pure 0
           startStream = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
           sinkRdy = pure True
           totalCycles = 50_000
 
       let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-            let ddrSlave = createDRAMBackedAxiSlave modelBinary ddrMasterOut
+            let ddrSlave = createDRAMBackedAxiSlave params ddrMasterOut
                 (ddrMasterOut, _weightStream, _streamValid, sysState) =
                   weightManagementSystem ddrSlave startStream layerIdx sinkRdy
             sysState

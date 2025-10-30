@@ -8,7 +8,6 @@ module Simulation.DRAMBackedAxiSlave
   ) where
 
 import Clash.Prelude
-import Data.ByteString.Lazy (ByteString)
 import Data.Maybe (fromMaybe, isJust)
 
 import LLaMa2.Memory.AXI.Types
@@ -16,8 +15,6 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave  as Slave
 import qualified Prelude as P
 
-import qualified Data.Binary.Get as BG
-import qualified Parser
 import qualified Simulation.Parameters as PARAM
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, HeadDimension, HiddenDimension
@@ -59,16 +56,12 @@ toRamIx = truncateB
 createDRAMBackedAxiSlave ::
   forall dom.
   HiddenClockResetEnable dom =>
-  ByteString ->
+  DecoderParameters ->
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlave modelBin = createDRAMBackedAxiSlaveFromVec defaultCfg initMem
+createDRAMBackedAxiSlave params = createDRAMBackedAxiSlaveFromVec defaultCfg initMem
   where
     defaultCfg = DRAMConfig { readLatency = 1, writeLatency = 0, numBanks = 1 }
-    
-    -- Parse the model using legacy parser
-    params :: DecoderParameters
-    params = BG.runGet Parser.parseLLaMa2ConfigFile modelBin
     
     -- Convert to address-indexed memory
     initMem = buildMemoryFromParams params

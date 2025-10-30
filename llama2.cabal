@@ -22,12 +22,12 @@ source-repository head
 -- Define flags for model sizes
 flag model-260k
   description: Build with MODEL_260K configuration
-  default: False
+  default: True
   manual: True
 
 flag model-15m
   description: Build with MODEL_15M configuration
-  default: True
+  default: False
   manual: True
 
 -- package-wide defaults
@@ -81,7 +81,7 @@ common project-defaults
     , clash-prelude
     , clash-lib
     , containers
-    , ghc-typelits-knownnat
+    , directory
     , mtl
     , random
     , vector

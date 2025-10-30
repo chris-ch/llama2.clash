@@ -3,13 +3,10 @@ module Parser (parseLLaMa2ConfigFile) where
 import Prelude
 
 import qualified Data.Binary.Get as BG
-import qualified Data.ByteString as BS
-import qualified Foreign as F
 import qualified Data.Vector.Unboxed as V
 import qualified Clash.Sized.Vector as CV
 import qualified Clash.Prelude as C
 
-import GHC.IO (unsafePerformIO)
 import Control.Monad (replicateM_)
 import LLaMa2.Types.LayerData
     (

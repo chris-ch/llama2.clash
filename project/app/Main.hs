@@ -32,14 +32,13 @@ import Simulation.Parameters (DecoderParameters)
 
 main :: IO ()
 main = do
-  Options {seed, tokenizerFile, modelFile, temperature, steps,
+  Options {seed, tokenizerFile, temperature, steps,
          prompt} <- OA.execParser $ OA.info (optionsParser OA.<**> OA.helper) OA.fullDesc
-  modelFileContent <- BSL.readFile modelFile
   tokenizerFileContent <- BSL.readFile tokenizerFile
-  runLLaMa2 modelFileContent tokenizerFileContent (realToFrac temperature) steps prompt seed
+  runLLaMa2 tokenizerFileContent (realToFrac temperature) steps prompt seed
 
-runLLaMa2 :: BSL.ByteString -> BSL.ByteString -> Float -> Int -> Maybe String -> Maybe Int -> IO ()
-runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSeed = do
+runLLaMa2 :: BSL.ByteString -> Float -> Int -> Maybe String -> Maybe Int -> IO ()
+runLLaMa2 tokenizerBinary temperature stepCount maybePrompt maybeSeed = do
   currentTime <- getPOSIXTime
   let
     randomSeed = fromIntegral $ fromMaybe (round currentTime) maybeSeed
@@ -65,15 +64,11 @@ runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSee
           -- Doesn't start with BOS, prepend it
           putStrLn $ "Prepending BOS to prompt tokens: " ++ show (1 : tokenIds)
           return (1 : tokenIds)
-  let firstBytes = take 100 (BSL.unpack modelBinary)
-  putStrLn $ "First 100 bytes of model file: " ++ show firstBytes
-  putStrLn "✅ model loaded successfully"
   startTime <- getPOSIXTime
 
   countTokens <-
     generateTokensSimAutoregressive
       tokenizer
-      modelBinary
       stepCount
       initialTokens
       temperature
@@ -94,7 +89,6 @@ runLLaMa2 modelBinary tokenizerBinary temperature stepCount maybePrompt maybeSee
 data Options = Options
   { seed :: Maybe Int,
     tokenizerFile :: FilePath,
-    modelFile :: FilePath,
     temperature :: Double,
     steps :: Int,
     prompt :: Maybe String
@@ -114,15 +108,6 @@ optionsParser =
       "./data/tokenizer.bin"
 #endif
     <> OA.help "Tokenizer binary file")
-    <*> OA.strOption (OA.long "model-file" <> OA.value
-#if defined(MODEL_260K)
-      "./data/stories260K.bin"
-#elif defined(MODEL_15M)
-      "./data/stories15M.bin" 
-#else
-      "./data/stories260K.bin" 
-#endif
-    <> OA.metavar "MODEL_FILE" <> OA.help "LLaMa2 binary file")
     <*> OA.option OA.auto (OA.long "temperature" <> OA.value 0.0 <> OA.metavar "TEMPERATURE" <> OA.help "Temperature")
     <*> OA.option OA.auto (OA.long "steps" <> OA.value 256 <> OA.metavar "STEPS" <> OA.help "Number of steps")
     <*> OA.optional (OA.strArgument (OA.metavar "PROMPT" <> OA.help "Initial prompt"))
@@ -160,13 +145,12 @@ normVec v = sqrt (sum squares)
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
   :: T.Tokenizer
-  -> BSL.ByteString
   -> Int             -- ^ Number of tokens to generate
   -> [Token]         -- ^ Prompt tokens
   -> Float
   -> Seed
   -> IO Int
-generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens temperature seed = do
+generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature seed = do
   putStrLn $ "✅ Prompt: " ++ show promptTokens
   hFlush stdout
 
@@ -189,7 +173,7 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, ddrMaster, ddrSlave, introspection) = bundledOutputs modelBinary inputSignals
+    (coreOutputsSignal, ddrMaster, ddrSlave, introspection) = bundledOutputs inputSignals
 
     -- Sample DDR write signals
     ddrWValidSampled = C.sampleN simSteps (Master.wvalid ddrMaster)
@@ -272,29 +256,15 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
   putStrLn ""
   pure (length sampledTokens)
 
--- | Boot and DDR simulation overview
--- 
--- During boot, the system copies model weights from the eMMC (AXI slave)
--- into DDR (AXI slave) using the weight loader. Once boot completes, all
--- parameters reside in DDR, and the decoder streams weights directly from
--- there for inference.
---
--- In simulation, both eMMC and DDR are modeled using 'FileAxi.createFileBackedAxiSlave',
--- which serves data directly from the same model binary. This means no actual
--- data movement occurs; the eMMC→DDR copy is functionally simulated through AXI
--- transactions backed by an in-memory ByteString.
---
--- The 'bypassBoot' signal skips the boot sequence entirely, causing the system to
--- assume DDR is already loaded and ready. Useful for fast functional simulation.
+-- | DDR simulation overview
 bundledOutputs
-  :: BSL.ByteString
-  -> C.Signal C.System (Token, Bool, Temperature, Seed)
+  :: C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
      , Master.AxiMasterOut C.System
      , Slave.AxiSlaveIn C.System
      , Decoder.DecoderIntrospection C.System
      )
-bundledOutputs modelBinary bundledInputs =
+bundledOutputs bundledInputs =
   (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave, introspection)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
@@ -306,7 +276,7 @@ bundledOutputs modelBinary bundledInputs =
 
   -- For DDR: also serve from file (simulating that boot already copied data there)
   ddrSlave = C.exposeClockResetEnable
-    (DRAM.createDRAMBackedAxiSlave modelBinary ddrMaster)
+    (DRAM.createDRAMBackedAxiSlave params ddrMaster)
     C.systemClockGen
     C.resetGen
     C.enableGen

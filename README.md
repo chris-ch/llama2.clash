@@ -63,6 +63,12 @@ cabal run llama2 --flag model-260k -- --temperature 0 --seed 123 "Hi"
  Hibo and Anna, Anna, Anna, came to visit her. She saw a big box and asked Anna. [...]
 ```
 
+## Running a single test
+
+```shell
+cabal test --test-show-details=direct --test-options='--match "Layer 0 output norm"'
+```
+
 ## C Version
 
 ```shell

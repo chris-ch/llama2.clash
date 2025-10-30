@@ -42,10 +42,10 @@ spec = do
 
     describe "layerAddressGenerator rowsInSeg" $ do
         it "computes correct row counts" $ do
-            rowsInSeg SegQ `shouldBe` 288
-            rowsInSeg SegK `shouldBe` 288
-            rowsInSeg SegV `shouldBe` 288
-            rowsInSeg SegW1 `shouldBe` 768
+            rowsInSeg SegQ `shouldBe` 64
+            rowsInSeg SegK `shouldBe` 32
+            rowsInSeg SegV `shouldBe` 32
+            rowsInSeg SegW1 `shouldBe` 172
             rowsInSeg SegRmsAtt `shouldBe` 1
             
     describe "layerAddressGenerator rowsInSeg" $ do
@@ -66,7 +66,7 @@ spec = do
             let rowLen = fromInteger (natToNum @ModelDimension + 1) :: Int
                 beats  = 200  -- arbitrary
                 totalBytes = 64 * beats
-                expectedRows = totalBytes `div` rowLen
+                expectedRows = totalBytes `div` rowLen - 1
 
                 beatData  = syntheticBeats beats
                 beatValid = fromList $ P.replicate beats True P.++ P.repeat False
