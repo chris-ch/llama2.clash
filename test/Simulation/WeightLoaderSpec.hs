@@ -108,54 +108,6 @@ spec = do
 
   describe "weightManagementSystem (loading behavior)" $ do
     context "using full model from file" $ do
-{-       it "loads layer 0 from DDR and streams data" $ do
-        modelBinary <- BSL.readFile "data/stories260K.bin"
-        let powerOn = pure True
-            layerIdx = pure 0
-            -- Trigger load at cycle 5, hold for several cycles
-            loadTrig = fromList $ P.replicate 5 False P.++ P.replicate 10 True P.++ P.repeat False
-            sinkRdy = pure True
-            totalCycles = 50_000 -- sufficient for layer 0 to complete
-
-        -- Create the signals in the correct scope
-        let simulation = withClockResetEnable systemClockGen resetGen enableGen $ do
-              let (ddrSlave, rState, _wState) = createRamBackedAxiSlave modelBinary ddrMasterOut
-                  (ddrMasterOut, weightStream, streamValid, sysReady, sysState) =
-                    weightManagementSystem ddrSlave powerOn layerIdx loadTrig sinkRdy
-              
-              -- Return all signals we need to sample
-              (rState, streamValid, sysReady, sysState, weightStream)
-        
-        let (rState, streamValid, sysReady, sysState, weightStream) = simulation
-            
-        let sampledRead = sampleN totalCycles rState
-            sampledValid = sampleN totalCycles streamValid
-            sampledReady = sampleN totalCycles sysReady
-            sampledState = sampleN totalCycles sysState
-            sampledStream = sampleN totalCycles weightStream
-
-            -- Check that DDR read activity occurred
-            ddrReadBurstObserved = RBursting `P.elem` sampledRead
-
-            -- Check that stream produced valid data
-            streamEverValid = P.or sampledValid
-
-            -- Check that we got non-zero data
-            streamHasData = P.any (/= 0) sampledStream
-
-            -- Check that system transitioned to streaming state
-            systemWentStreaming = WSStreaming `P.elem` sampledState
-
-            -- Check that system eventually returns to ready
-            lastHalf = P.drop (totalCycles `P.div` 2) sampledReady
-            systemReturnsReady = P.or lastHalf
-
-        ddrReadBurstObserved `shouldBe` True
-        streamEverValid `shouldBe` True
-        streamHasData `shouldBe` True
-        systemWentStreaming `shouldBe` True
-        systemReturnsReady `shouldBe` True
- -}
       it "correctly calculates layer size" $ do
         let layerSize = calculateLayerSizeBytes
         -- Layer size should be non-zero and reasonable

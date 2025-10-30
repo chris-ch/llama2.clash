@@ -40,11 +40,8 @@ import Simulation.Parameters (DecoderParameters (..), TransformerLayerComponent 
 
 readVector :: Int -> BG.Get (V.Vector Float)
 readVector count = do
-  byteData <- BG.getByteString (count * 4)
-  return $! unsafePerformIO $ do
-    BS.useAsCString byteData $ \ptr -> do
-      let floatPtr = F.castPtr ptr :: F.Ptr Float
-      V.generateM count (F.peekElemOff floatPtr)
+  ws <- V.replicateM count BG.getFloatle
+  return $! ws
 
 readVec1D :: forall n. C.KnownNat n => BG.Get (C.Vec n Float)
 readVec1D = do

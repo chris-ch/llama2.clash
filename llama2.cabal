@@ -125,7 +125,6 @@ library
       Simulation.ParamsPlaceholder 
       LLaMa2.Sampling.Distribution
       LLaMa2.Sampling.Sampler
-      LLaMa2.Top
       LLaMa2.Types.LayerData
       LLaMa2.Types.ModelConfig
       Parser
@@ -174,6 +173,7 @@ test-suite llama2-test
       Simulation.WeightLoaderSpec
       Simulation.DRAMBackedAxiSlaveSpec
       Simulation.WeightLoadingDiagnosticSpec
+      Simulation.SingleLayerOutputSpec
   hs-source-dirs:
       test
   build-depends:

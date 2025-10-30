@@ -1,3 +1,4 @@
+{-# LANGUAGE NoStarIsType #-}
 module Simulation.DRAMBackedAxiSlaveSpec (spec) where
 
 import Clash.Prelude
@@ -8,6 +9,12 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified  LLaMa2.Memory.AXI.Types as AXITypes
 import System.Random (mkStdGen, randoms)
+import qualified Simulation.Parameters as PARAM
+import qualified Data.ByteString.Lazy as BSL
+import qualified Parser
+import qualified Data.Binary.Get as BG
+import LLaMa2.Numeric.Quantization (RowI8E)
+import qualified Data.ByteString as BS
 
 spec :: Spec
 spec = do

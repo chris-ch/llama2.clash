@@ -16,13 +16,15 @@ import Text.Printf (printf)
 import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..) )
 
 import LLaMa2.Types.ModelConfig ( VocabularySize )
-import qualified LLaMa2.Top as Top ( DecoderIntrospection (..), topEntityWithAxi )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
+import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
+import qualified LLaMa2.Decoder.Decoder as Decoder
+import Simulation.Parameters (DecoderParameters)
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -149,7 +151,7 @@ vecToFloatList = map fromSFixed . C.toList
 --   Rational → Float via implicit conversion
 
 -- | Euclidean (L2) norm of a fixed-point vector, returned as Float.
-normVec :: C.KnownNat n => C.Vec n (C.SFixed 12 20) -> Float
+normVec :: C.Vec n (C.SFixed 12 20) -> Float
 normVec v = sqrt (sum squares)
           where
             floats = vecToFloatList v
@@ -199,16 +201,16 @@ generateTokensSimAutoregressive tokenizer modelBinary stepCount promptTokens tem
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
     -- Sample introspection fields separately
-    statesSampled         = C.sampleN simSteps (Top.state introspection)
-    layerIndicesSampled   = C.sampleN simSteps (Top.layerIndex introspection)
-    readiesSampled        = C.sampleN simSteps (Top.ready introspection)
+    statesSampled         = C.sampleN simSteps (Decoder.state introspection)
+    layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
+    readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
     --attnDonesSampled      = C.sampleN simSteps (Top.attnDone introspection)
-    ffnDonesSampled       = C.sampleN simSteps (Top.ffnDone introspection)
-    weightValidSampled = C.sampleN simSteps (Top.weightStreamValid introspection)
-    weightSampleSampled = C.sampleN simSteps (Top.parsedWeightSample introspection)
-    layerChangeSampled = C.sampleN simSteps (Top.layerChangeDetected introspection)
-    sysStateSampled = C.sampleN simSteps (Top.sysState introspection)
-    layerOutputSampled =  C.sampleN simSteps (Top.layerOutput introspection)
+    ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
+    weightValidSampled = C.sampleN simSteps (Decoder.weightStreamValid introspection)
+    weightSampleSampled = C.sampleN simSteps (Decoder.parsedWeightSample introspection)
+    layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
+    sysStateSampled = C.sampleN simSteps (Decoder.sysState introspection)
+    layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -290,7 +292,7 @@ bundledOutputs
   -> ( C.Signal C.System (Token, Bool)
      , Master.AxiMasterOut C.System
      , Slave.AxiSlaveIn C.System
-     , Top.DecoderIntrospection C.System
+     , Decoder.DecoderIntrospection C.System
      )
 bundledOutputs modelBinary bundledInputs =
   (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave, introspection)
@@ -299,9 +301,11 @@ bundledOutputs modelBinary bundledInputs =
 
   powerOn = C.pure True
 
+  params :: DecoderParameters
+  params = PARAM.decoderConst
+
   -- For DDR: also serve from file (simulating that boot already copied data there)
   ddrSlave = C.exposeClockResetEnable
-    --(FileAxi.createFileBackedAxiSlave modelBinary ddrMaster)
     (DRAM.createDRAMBackedAxiSlave modelBinary ddrMaster)
     C.systemClockGen
     C.resetGen
@@ -310,8 +314,7 @@ bundledOutputs modelBinary bundledInputs =
   -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
   (tokenOut, validOut, ddrMaster, introspection) =
     C.exposeClockResetEnable
-      (Top.topEntityWithAxi ddrSlave powerOn token isValid temperature seed)
+      (Decoder.decoder ddrSlave powerOn params token isValid temperature seed)
       C.systemClockGen
       C.resetGen
       C.enableGen
-

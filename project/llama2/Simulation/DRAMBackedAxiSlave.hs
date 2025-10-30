@@ -2,6 +2,7 @@
 module Simulation.DRAMBackedAxiSlave
   ( createDRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
+  , buildMemoryFromParams
   , WordData
   , DRAMConfig(..)
   ) where
@@ -24,6 +25,7 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Memory.LayerAddressing (LayerSeg(..))
 import LLaMa2.Numeric.Quantization (RowI8E)
 import LLaMa2.Numeric.Types (Mantissa)
+import Simulation.Parameters (DecoderParameters)
 
 -- ===============================================================
 -- Configuration
@@ -65,6 +67,7 @@ createDRAMBackedAxiSlave modelBin = createDRAMBackedAxiSlaveFromVec defaultCfg i
     defaultCfg = DRAMConfig { readLatency = 1, writeLatency = 0, numBanks = 1 }
     
     -- Parse the model using legacy parser
+    params :: DecoderParameters
     params = BG.runGet Parser.parseLLaMa2ConfigFile modelBin
     
     -- Convert to address-indexed memory
@@ -184,7 +187,6 @@ buildMemoryFromParams params = map addressToWord indicesI
               in w3Mat !! rowIdx  -- Already ModelDimension wide
          else (repeat 0, 0)  -- Padding
     
-    -- Pad a smaller row to ModelDimension by zero-filling
     -- Pad a smaller row to ModelDimension by zero-filling
     padRow :: forall n. KnownNat n => RowI8E n -> RowI8E ModelDimension
     padRow (mantissas, expon) = 
