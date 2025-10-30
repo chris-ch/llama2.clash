@@ -44,6 +44,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
   , attnDone            :: Signal dom Bool
+  , qkvDone             :: Signal dom Bool
   , ffnDone             :: Signal dom Bool
   , weightStreamValid   :: Signal dom Bool
   , parsedWeightSample  :: Signal dom Mantissa
@@ -144,7 +145,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     processingState = SequenceController.processingState
       (SequenceController.pipelineController
         attnDoneThisLayer writeDoneThisLayer qkvDoneThisLayer
-        ffnDoneThisLayer logitsValid inputTokenValid)
+        ffnDoneThisLayer logitsValid)
 
     outputToken = mux inputTokenValid inputToken feedbackToken
     embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
@@ -153,10 +154,12 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
                    <*> register initialLayerData nextLayerData
                    <*> embeddedVector
 
+    nextLayerData :: Signal dom LayerData
+    doneFlags :: Vec NumLayers (LayerStack.LayerDoneFlags dom)
     (nextLayerData, doneFlags) =
       LayerStack.processLayers processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
 
-    (writeDone, attnDone, qkvDone, _, ffnDone) = unzip5 doneFlags
+    (writeDone, attnDone, qkvDone, qkvReady, ffnDone) = unzip5 doneFlags
     writeDoneThisLayer = LayerStack.getCurrentLayerFlag layerIdx writeDone
     attnDoneThisLayer  = LayerStack.getCurrentLayerFlag layerIdx attnDone
     qkvDoneThisLayer   = LayerStack.getCurrentLayerFlag layerIdx qkvDone
@@ -183,6 +186,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       , layerIndex          = layerIdx
       , ready               = readyPulse
       , attnDone            = attnDoneThisLayer
+      , qkvDone             = qkvDoneThisLayer
       , ffnDone             = ffnDoneThisLayer
       , weightStreamValid   = streamValid
       , parsedWeightSample  = firstMantissa

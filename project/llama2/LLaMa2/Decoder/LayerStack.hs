@@ -1,7 +1,7 @@
 -- | Layer Stack - Processes all transformer layers sequentially
 -- Extracted from Decoder to separate layer processing concerns
 module LLaMa2.Decoder.LayerStack (
-  processLayers, getCurrentLayerFlag, prepareLayerInput
+  processLayers, getCurrentLayerFlag, prepareLayerInput, LayerDoneFlags
 ) where
 
 import Clash.Prelude

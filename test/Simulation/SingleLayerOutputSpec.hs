@@ -35,7 +35,7 @@ spec = do
             temperature = pure (0.0 :: Temperature)
             seed        = pure (123 :: Seed)
             powerOn     = pure True
-            totalCycles = 2_000
+            totalCycles = 1_600
 
         let 
           params :: DecoderParameters

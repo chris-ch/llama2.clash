@@ -30,15 +30,13 @@ pipelineController ::
   -> Signal dom Bool  -- ^ qkvValidThisLayer
   -> Signal dom Bool  -- ^ ffnDoneThisLayer
   -> Signal dom Bool  -- ^ classifierDone
-  -> Signal dom Bool  -- ^ inputTokenValid
   -> PipelineOutputs dom
 pipelineController
   attnDoneThisLayer writeDoneThisLayer qkvValidThisLayer
-  ffnDoneThisLayer classifierDone inputTokenValid = outs
+  ffnDoneThisLayer classifierDone = outs
  where
-  -- Simplified: stageCanAdvance is always True, so advance when done
   procState = register initialProcessingState
-    ((\s done -> if done then nextProcessingState s else s) <$> procState <*> stageFinishedSig)
+    ((\s done -> if done then nextProcessingState s else s) <$> procState <*> stageFinished)
 
   stageSig = processingStage <$> procState
   layerIx  = processingLayer <$> procState
@@ -46,19 +44,9 @@ pipelineController
 
   isStage st = (== st) <$> stageSig
 
-  isFirstStage :: ProcessingState -> Bool
-  isFirstStage ps = processingStage ps == Stage1_ProjectQKV
-                  && processingLayer ps == 0
-                  && sequencePosition ps == 0
-
-  atFirstStage1 = isFirstStage <$> procState
-
-  -- Simplified: removed all ".&&. pure True" occurrences
-  stageFinishedSig =
+  stageFinished =
     mux (isStage Stage1_ProjectQKV)
-        (mux atFirstStage1
-             (inputTokenValid .&&. qkvValidThisLayer)
-             qkvValidThisLayer) $
+        qkvValidThisLayer $
     mux (isStage Stage2_WriteKV)
         writeDoneThisLayer $
     mux (isStage Stage3_Attend)
@@ -69,7 +57,6 @@ pipelineController
         classifierDone $
     isStage Stage6_Bookkeeping
 
-  -- Simplified: removed ".&&. pure True"
   readyPulseRaw =
     let isClassifierDone = isStage Stage5_Classifier .&&. classifierDone
         rising now prev = now && not prev
@@ -81,7 +68,7 @@ pipelineController
       , layerIndex      = layerIx
       , seqPos          = posIx
       , readyPulse      = readyPulseRaw
-      , stageFinished   = stageFinishedSig
+      , stageFinished   = stageFinished
       }
 
 initialProcessingState :: ProcessingState
