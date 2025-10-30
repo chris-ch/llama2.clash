@@ -1,6 +1,6 @@
 module LLaMa2.Decoder.SequenceController
  (
-  processingState
+  PipelineOutputs(..)
   , pipelineController
   , sequenceController
   , SequenceState(..)

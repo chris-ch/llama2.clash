@@ -33,16 +33,18 @@ multiHeadAttentionStage :: forall dom.
 multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enableAttention =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
+
+    isStage1ThisLayer :: Signal dom Bool
     isStage1ThisLayer =
-      ( \ps ->
-          processingStage ps == Stage1_ProjectQKV &&
-          processingLayer ps == layerIndex
-      ) <$> processingState
+      ((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure layerIndex)
+
+    qkvOutReady :: Signal dom Bool
     qkvOutReady =
-      ( \ps ->
-          processingStage ps == Stage2_WriteKV &&
-          processingLayer ps == layerIndex
-      ) <$> processingState
+      ((processingStage <$> processingState) .==. pure Stage2_WriteKV)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure layerIndex)
 
     input = inputVector <$> layerData
 

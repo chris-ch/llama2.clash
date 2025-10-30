@@ -28,11 +28,18 @@ kvBankController layerIndex processingState layerData qkvValid (headOutAcc, head
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
   -- Stage signals
-  isStage2Write = liftA2 (\ps _ -> processingStage ps == Stage2_WriteKV &&
-                                   processingLayer ps == layerIndex) processingState (pure ())
-  isStage3Attn  = liftA2 (\ps _ -> processingStage ps == Stage3_Attend &&
-                                   processingLayer ps == layerIndex) processingState (pure ())
+  isStage2Write :: Signal dom Bool
+  isStage2Write =
+    ((processingStage <$> processingState) .==. pure Stage2_WriteKV)
+      .&&.
+    ((processingLayer <$> processingState) .==. pure layerIndex)
 
+  isStage3Attn :: Signal dom Bool
+  isStage3Attn =
+    ((processingStage <$> processingState) .==. pure Stage3_Attend)
+      .&&.
+    ((processingLayer <$> processingState) .==. pure layerIndex)
+  
   seqPos = sequencePosition <$> processingState
 
   -- Query indices

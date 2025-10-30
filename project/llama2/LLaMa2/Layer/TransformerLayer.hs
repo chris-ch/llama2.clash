@@ -68,51 +68,52 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     mha = PARAM.multiHeadAttention layer
     ffn = PARAM.feedforwardNetwork layer
 
+    xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
+    qProj :: Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
+    kProj :: Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+    vProj :: Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
 
+    layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
         <*> layerData
         <*> xAfterAttn
         <*> attentionDone
 
+    baseNextLayerData :: Signal dom LayerData
     baseNextLayerData =
       updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
     -- Stage 4 FFN
+    isStage4ThisLayer :: Signal dom Bool
     isStage4ThisLayer =
-      ( \ps ->
-          processingStage ps
-            == Stage4_FeedForward
-            && processingLayer ps
-            == layerIndex
-      )
-        <$> processingState
+      ((processingStage <$> processingState) .==. pure Stage4_FeedForward)
+      .&&.
+      ((processingLayer <$> processingState) .==. pure layerIndex)
+
     ffnInput = attentionOutput <$> layerDataAfterAttention
+
+    ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      ( \ps -> case () of
-          _
-            | processingStage ps
-                == Stage1_ProjectQKV
-                && processingLayer ps
-                == layerIndex
-                + 1 ->
-                True
-            | processingStage ps
-                == Stage5_Classifier
-                && processingLayer ps
-                == maxBound ->
-                True
-            | otherwise -> False
-      )
-        <$> processingState
+      (((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure (layerIndex + 1)))
+      .||.
+      (((processingStage <$> processingState) .==. pure Stage5_Classifier)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure maxBound))
+
+    ffnOutput :: Signal dom (Vec ModelDimension FixedPoint)
     (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController
         isStage4ThisLayer
         ffnOutReady
         ffnInput
         ffn
+
+    nextLayerData :: Signal dom LayerData
     nextLayerData =
       (layerDataWithFFN layerIndex <$> processingState)
         <*> baseNextLayerData

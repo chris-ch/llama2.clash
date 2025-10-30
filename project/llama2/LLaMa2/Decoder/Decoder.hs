@@ -52,6 +52,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , sysState            :: Signal dom WeightSystemState
   , weightBufferState   :: Signal dom QKVProjectionWeightBuffer
   , layerOutput :: Signal dom (Vec ModelDimension FixedPoint)
+  , layerData :: Signal dom LayerData
   } deriving (Generic, NFDataX)
 
 decoder :: forall dom. HiddenClockResetEnable dom
@@ -194,4 +195,5 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       , sysState            = sysState
       , weightBufferState   = weightBuffer
       , layerOutput         = layerOutput
+      , layerData = nextLayerData
       }

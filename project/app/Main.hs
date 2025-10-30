@@ -13,9 +13,9 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..) )
+import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..), LayerData (..) )
 
-import LLaMa2.Types.ModelConfig ( VocabularySize )
+import LLaMa2.Types.ModelConfig ( VocabularySize, NumQueryHeads, HeadDimension, ModelDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
@@ -184,6 +184,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
+    layerData :: C.Signal C.System LayerData
+    layerData = Decoder.layerData introspection
+
     -- Sample introspection fields separately
     statesSampled         = C.sampleN simSteps (Decoder.state introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
@@ -196,6 +199,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
     sysStateSampled = C.sampleN simSteps (Decoder.sysState introspection)
     layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
+    layerDataSampled :: [LayerData]
+    layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -214,12 +219,16 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | WgtSmpl | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
+  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
   putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
         let
+
+          attnOut :: C.Vec ModelDimension FixedPoint
+          attnOut = attentionOutput (layerDataSampled !! cycleIdx)
+
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
           ps     = processingStage (statesSampled !! cycleIdx)
           rdy    = readiesSampled !! cycleIdx
@@ -230,14 +239,16 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           layChg = layerChangeSampled !! cycleIdx
           wSample = weightSampleSampled !! cycleIdx
           layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
+          attnOutNorm = normVec attnOut
           token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           ddrWValid = ddrWValidSampled !! cycleIdx
           ddrWReady = ddrWReadySampled !! cycleIdx
           ddrBValid = ddrBValidSampled !! cycleIdx
+
         when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %7d | %9s | %8s | %11s | %9s | %9s | %9s"
+            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s | %9s | %9s"
               cycleIdx
               li
               (show ps)
@@ -247,7 +258,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show ffn)
               (show wValid)
               (show layChg)
-              wSample
+              (show attnOutNorm)
               (show layerOutputNorm)
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
