@@ -30,7 +30,7 @@ spec = do
         unless fileExists $ 
           expectationFailure "Model file not found at ./data/stories260K.bin"
       
-        let inputToken  = fromList (1 : P.repeat 0) :: Signal System Token
+        let inputToken  = fromList (1 : P.repeat 1) :: Signal System Token
             inputValid  = fromList (True : P.repeat True) :: Signal System Bool
             temperature = pure (0.0 :: Temperature)
             seed        = pure (123 :: Seed)
