@@ -74,6 +74,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
 
     processingState = Controller.processingState controller
+    seqPos          = Controller.seqPosition controller  -- Extract directly
     layerIdx        = Controller.currentLayer controller
     readyPulse      = Controller.readyPulse controller
 
@@ -129,7 +130,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV enableWriteKV enableAttend enableFFN 
+      enableQKV enableWriteKV enableAttend enableFFN enableClassifier 
 
     nextLayerData   = LayerStack.outputData layerOutput
     layerWriteDone  = LayerStack.writeDone layerOutput

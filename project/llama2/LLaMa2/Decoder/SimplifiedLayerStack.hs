@@ -28,13 +28,14 @@ processActiveLayer :: forall dom.
   -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
-  -> Signal dom Bool  -- NEW: enableQKV
-  -> Signal dom Bool  -- NEW: enableWriteKV
-  -> Signal dom Bool  -- NEW: enableAttend
-  -> Signal dom Bool  -- NEW: enableFFN
+  -> Signal dom Bool  -- enableQKV
+  -> Signal dom Bool  -- enableWriteKV
+  -> Signal dom Bool  -- enableAttend
+  -> Signal dom Bool  -- enableFFN
+  -> Signal dom Bool  -- enableClassifier
   -> LayerOutput dom
 processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
-                   enableQKV enableWriteKV enableAttend enableFFN =
+                   enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -43,16 +44,15 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
     , ffnDone    = selectedFfnDone
     }
   where
-    -- Pass enables through to layers
-    layerOutputs = imap (createLayerOutput inputData) layers
-
-        -- Select outputs from the active layer
+    -- Create outputs for all layers (only active one will compute)
+    layerOutputs = imap createLayerOutput layers
+    
+    -- Select outputs from the active layer
     (outputLayerData, selectedWriteDone, selectedAttnDone, selectedQkvDone, selectedFfnDone) =
       unbundle $ selectActiveLayer activeLayerIdx layerOutputs
-
+    
     -- Create output for a single layer
-    createLayerOutput :: Signal dom LayerData
-                      -> Index NumLayers
+    createLayerOutput :: Index NumLayers
                       -> PARAM.TransformerLayerComponent
                       -> ( Signal dom LayerData
                          , Signal dom Bool
@@ -60,7 +60,7 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
                          , Signal dom Bool
                          , Signal dom Bool
                          )
-    createLayerOutput inputData' layerIdx layerParams =
+    createLayerOutput layerIdx layerParams =
       ( outputData'
       , writeDone'
       , attnDone'
@@ -77,10 +77,14 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
                 layerParams
                 layerIdx
                 processingState
-                inputData'
+                inputData
                 weightBuffer
                 useRAM
-                enableQKV enableWriteKV enableAttend enableFFN  -- NEW
+                enableQKV
+                enableWriteKV
+                enableAttend
+                enableFFN
+                enableClassifier
 
     -- Select the output from the active layer using a multiplexer tree
     selectActiveLayer :: Signal dom (Index NumLayers)

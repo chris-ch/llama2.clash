@@ -47,10 +47,11 @@ transformerLayer ::
    -> Signal dom LayerData
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
-   -> Signal dom Bool  -- NEW: enableQKV
-   -> Signal dom Bool  -- NEW: enableWriteKV
-   -> Signal dom Bool  -- NEW: enableAttend
-   -> Signal dom Bool  -- NEW: enableFFN
+   -> Signal dom Bool  -- enableQKV
+   -> Signal dom Bool  -- enableWriteKV
+   -> Signal dom Bool  -- enableAttend
+   -> Signal dom Bool  -- enableFFN
+   -> Signal dom Bool  -- enableClassifier
    -> ( Signal dom LayerData,
         Signal dom Bool,
         Signal dom Bool,
@@ -58,7 +59,7 @@ transformerLayer ::
         Signal dom Bool
       )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableWriteKV enableAttend enableFFN =
+                 enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -68,11 +69,12 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
   where
     mha = PARAM.multiHeadAttention layer
     ffn = PARAM.feedforwardNetwork layer
+    
+    currentLayer = processingLayer <$> processingState
 
-    -- Pass enables to multiHeadAttentionStage
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
-                              enableQKV enableWriteKV enableAttend  -- NEW
+                              enableQKV enableWriteKV enableAttend
 
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =
@@ -85,24 +87,20 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     baseNextLayerData =
       updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
-    -- Stage 4 FFN
+    -- REFACTORED: Stage 4 FFN using enable signals
     isStage4ThisLayer :: Signal dom Bool
-    isStage4ThisLayer =
-      ((processingStage <$> processingState) .==. pure Stage4_FeedForward)
-      .&&.
-      ((processingLayer <$> processingState) .==. pure layerIndex)
+    isStage4ThisLayer = enableFFN .&&. (currentLayer .==. pure layerIndex)
 
     ffnInput = attentionOutput <$> layerDataAfterAttention
 
+    -- REFACTORED: FFN output ready detection using enable signals
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      (((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure (layerIndex + 1)))
+      -- Next layer is starting QKV
+      (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
       .||.
-      (((processingStage <$> processingState) .==. pure Stage5_Classifier)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure maxBound))
+      -- Last layer and classifier is active
+      (enableClassifier .&&. (currentLayer .==. pure maxBound))
 
     ffnOutput :: Signal dom (Vec ModelDimension FixedPoint)
     (ffnOutput, ffnValidOut, ffnInReady) =
