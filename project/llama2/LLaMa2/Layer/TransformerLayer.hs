@@ -96,19 +96,14 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     -- - Or we're at last layer and classifier is starting
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      -- Check if we're ready for next layer or classifier
-      -- Note: These checks use currentLayer to coordinate between layers
-      (((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure (layerIndex + 1)))
-      .||.
-      (((processingStage <$> processingState) .==. pure Stage5_Classifier)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure maxBound))
+      let currentLayer = processingLayer <$> processingState
+      in (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
+        .||.
+        (enableClassifier .&&. (currentLayer .==. pure maxBound))
 
     (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController
-        enableFFN       -- Already layer-specific
+        enableFFN
         ffnOutReady
         ffnInput
         ffn

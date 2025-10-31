@@ -65,30 +65,34 @@ spec = do
 
     it "should have exactly one stage enabled at a time" $ do
       let totalCycles = 40
-
+          
           qkvDone = pure True
           writeDone = pure True
           attnDone = pure True
           ffnDone = pure True
           classifierDone = pure True
-
+          
           controller = exposeClockResetEnable
             (Controller.unifiedController qkvDone writeDone attnDone ffnDone classifierDone)
             systemClockGen
             resetGen
             enableGen
-
+          
           sampledEnableQKV = sampleN totalCycles (Controller.enableQKV controller)
           sampledEnableWriteKV = sampleN totalCycles (Controller.enableWriteKV controller)
           sampledEnableAttend = sampleN totalCycles (Controller.enableAttend controller)
           sampledEnableFFN = sampleN totalCycles (Controller.enableFFN controller)
-
-          cyclesWithEnables = zip4'
+          sampledEnableClassifier = sampleN totalCycles (Controller.enableClassifier controller)  -- ADD THIS
+          
+          cyclesWithEnables = zip5'  -- Change from zip4' to zip5'
             sampledEnableQKV sampledEnableWriteKV sampledEnableAttend
-            sampledEnableFFN
-
-          countActive (q, w, a, f) =
-            P.length $ P.filter id [q, w, a, f]
+            sampledEnableFFN sampledEnableClassifier  -- ADD THIS
+          
+          countActive (q, w, a, f, c) =  -- Add 'c' parameter
+            P.length $ P.filter id [q, w, a, f, c]  -- Add 'c' to list
+      
+      -- Verify exactly one enable signal is active per cycle
+      P.all (\enables -> countActive enables == 1) cyclesWithEnables `shouldBe` True
 
       -- Verify exactly one enable signal is active per cycle
       P.all (\enables -> countActive enables == 1) cyclesWithEnables `shouldBe` True
@@ -128,9 +132,11 @@ spec = do
         then (sampledSeqPos P.!! checkCycle) `shouldSatisfy` (> 0)
         else P.putStrLn "Not enough cycles to check sequence advancement"
 
-zip4' :: [a] -> [b] -> [c] -> [d] -> [(a, b, c, d)]
-zip4' (a:as) (b:bs) (c:cs) (d:ds) = (a, b, c, d) : zip4' as bs cs ds
-zip4' [] _ _ _ = []
-zip4' _ [] _ _ = []
-zip4' _ _ [] _ = []
-zip4' _ _ _ [] = []
+zip5' :: [a] -> [b] -> [c] -> [d] -> [e] -> [(a, b, c, d, e)]
+zip5' (a:as) (b:bs) (c:cs) (d:ds) (e:es) = (a, b, c, d, e) : zip5' as bs cs ds es
+zip5' [] _ _ _ _ = []
+zip5' _ [] _ _ _ = []
+zip5' _ _ [] _ _ = []
+zip5' _ _ _ [] _ = []
+zip5' _ _ _ _ [] = []
+
