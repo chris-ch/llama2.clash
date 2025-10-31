@@ -1,4 +1,4 @@
-module LLaMa2.Decoder.SimplifiedSequenceController
+module LLaMa2.Decoder.SequenceController
  ( UnifiedController(..)
  , unifiedController
  , UnifiedState(..)

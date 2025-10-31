@@ -1,4 +1,4 @@
-module LLaMa2.Decoder.SimplifiedLayerStack (
+module LLaMa2.Decoder.LayerStack (
   processActiveLayer, prepareLayerInput, LayerOutput(..)
 ) where
 

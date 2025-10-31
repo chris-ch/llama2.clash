@@ -72,7 +72,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
 
     seqPos = sequencePosition <$> processingState
 
-    -- Enables are already layer-specific from SimplifiedLayerStack
+    -- Enables are already layer-specific from LayerStack
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM
                               enableQKV enableWriteKV enableAttend 

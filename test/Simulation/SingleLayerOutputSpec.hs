@@ -7,7 +7,7 @@ import qualified Prelude as P
 import           LLaMa2.Types.LayerData (Temperature, Seed, Token, LayerData (..))
 import           LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
-import qualified LLaMa2.Decoder.SimplifiedDecoder as Decoder
+import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 import qualified Simulation.ParamsPlaceholder as PARAM
 import Control.Monad (unless, when)

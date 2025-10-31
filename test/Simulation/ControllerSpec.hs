@@ -3,7 +3,7 @@ module Simulation.ControllerSpec (spec) where
 import Test.Hspec
 import Clash.Prelude
 import qualified Prelude as P
-import qualified LLaMa2.Decoder.SimplifiedSequenceController as Controller
+import qualified LLaMa2.Decoder.SequenceController as Controller
 import LLaMa2.Types.ModelConfig (NumLayers)
 
 spec :: Spec

@@ -23,7 +23,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
-import qualified LLaMa2.Decoder.SimplifiedDecoder as Decoder
+import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 
 --------------------------------------------------------------------------------

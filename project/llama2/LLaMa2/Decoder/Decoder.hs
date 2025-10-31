@@ -1,4 +1,4 @@
-module LLaMa2.Decoder.SimplifiedDecoder (
+module LLaMa2.Decoder.Decoder (
     decoder, DecoderIntrospection(..)
 ) where
 
@@ -10,8 +10,8 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (Mantissa, FixedPoint)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
-import qualified LLaMa2.Decoder.SimplifiedSequenceController as Controller
-import qualified LLaMa2.Decoder.SimplifiedLayerStack as LayerStack
+import qualified LLaMa2.Decoder.SequenceController as Controller
+import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
