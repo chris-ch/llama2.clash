@@ -45,15 +45,20 @@ transformerLayer ::
    -> Index NumLayers
    -> Signal dom ProcessingState
    -> Signal dom LayerData
-   -> Signal dom QKVProjectionWeightBuffer             -- full RAM buffer
-   -> Signal dom Bool                        --
+   -> Signal dom QKVProjectionWeightBuffer
+   -> Signal dom Bool
+   -> Signal dom Bool  -- NEW: enableQKV
+   -> Signal dom Bool  -- NEW: enableWriteKV
+   -> Signal dom Bool  -- NEW: enableAttend
+   -> Signal dom Bool  -- NEW: enableFFN
    -> ( Signal dom LayerData,
-    Signal dom Bool, -- writeDone
-    Signal dom Bool, -- attentionDone
-    Signal dom Bool, -- qkvDone
-    Signal dom Bool -- ffnDone
-  )
-transformerLayer layer layerIndex processingState layerData weightBuffer useRAM =
+        Signal dom Bool,
+        Signal dom Bool,
+        Signal dom Bool,
+        Signal dom Bool
+      )
+transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
+                 enableQKV enableWriteKV enableAttend enableFFN =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -64,12 +69,10 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     mha = PARAM.multiHeadAttention layer
     ffn = PARAM.feedforwardNetwork layer
 
-    xAfterAttn :: Signal dom (Vec ModelDimension FixedPoint)
-    qProj :: Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
-    kProj :: Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-    vProj :: Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+    -- Pass enables to multiHeadAttentionStage
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
+                              enableQKV enableWriteKV enableAttend  -- NEW
 
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =

@@ -21,6 +21,9 @@ multiHeadAttentionStage :: forall dom.
   Signal dom LayerData ->
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->
+  Signal dom Bool ->  -- NEW: enableQKV
+  Signal dom Bool ->  -- NEW: enableWriteKV  
+  Signal dom Bool ->  -- NEW: enableAttend
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -30,46 +33,45 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enableAttention =
+multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enableAttention
+                        enableQKV enableWriteKV enableAttend =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
-
+    -- SIMPLIFIED: Use enable signals directly
+    currentLayer = processingLayer <$> processingState
+    
     isStage1ThisLayer :: Signal dom Bool
-    isStage1ThisLayer =
-      ((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure layerIndex)
+    isStage1ThisLayer = enableQKV .&&. (currentLayer .==. pure layerIndex)
 
     qkvOutReady :: Signal dom Bool
-    qkvOutReady =
-      ((processingStage <$> processingState) .==. pure Stage2_WriteKV)
-        .&&.
-      ((processingLayer <$> processingState) .==. pure layerIndex)
+    qkvOutReady = enableWriteKV .&&. (currentLayer .==. pure layerIndex)
 
     input = inputVector <$> layerData
 
-    -- RAM-aware controller
+    -- Pass enable signals through
     (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
-        (isStage1ThisLayer) -- .&&. enableAttention)
+        isStage1ThisLayer
         qkvOutReady
         input
         mha
         processingState
         weightBuffer
-        enableAttention --(pure True)
+        enableAttention
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3
+    -- Stage2/3 - pass enable signals to KV cache
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
-        (kvBankController layerIndex processingState layerData qkvDone)
+        (kvBankController layerIndex processingState layerData qkvDone 
+                         enableWriteKV enableAttend)  -- NEW: pass enables
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
+    
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeValidOutNew, writeReadyIn, writeEnable) =
       kvWriteControllerFSM

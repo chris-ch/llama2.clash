@@ -72,11 +72,18 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- =======================================================================
     controller = Controller.unifiedController
       layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
-    
+
     processingState = Controller.processingState controller
     layerIdx        = Controller.currentLayer controller
     readyPulse      = Controller.readyPulse controller
 
+    -- NEW: Extract enable signals from controller
+    enableQKV       = Controller.enableQKV controller
+    enableWriteKV   = Controller.enableWriteKV controller
+    enableAttend    = Controller.enableAttend controller
+    enableFFN       = Controller.enableFFN controller
+    enableClassifier = Controller.enableClassifier controller
+    
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
     -- =======================================================================
@@ -122,6 +129,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
+      enableQKV enableWriteKV enableAttend enableFFN 
 
     nextLayerData   = LayerStack.outputData layerOutput
     layerWriteDone  = LayerStack.writeDone layerOutput

@@ -28,8 +28,13 @@ processActiveLayer :: forall dom.
   -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
+  -> Signal dom Bool  -- NEW: enableQKV
+  -> Signal dom Bool  -- NEW: enableWriteKV
+  -> Signal dom Bool  -- NEW: enableAttend
+  -> Signal dom Bool  -- NEW: enableFFN
   -> LayerOutput dom
-processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers =
+processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
+                   enableQKV enableWriteKV enableAttend enableFFN =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -38,10 +43,10 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
     , ffnDone    = selectedFfnDone
     }
   where
-    -- Create outputs for all layers (only active one will compute)
+    -- Pass enables through to layers
     layerOutputs = imap (createLayerOutput inputData) layers
 
-    -- Select outputs from the active layer
+        -- Select outputs from the active layer
     (outputLayerData, selectedWriteDone, selectedAttnDone, selectedQkvDone, selectedFfnDone) =
       unbundle $ selectActiveLayer activeLayerIdx layerOutputs
 
@@ -75,6 +80,7 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
                 inputData'
                 weightBuffer
                 useRAM
+                enableQKV enableWriteKV enableAttend enableFFN  -- NEW
 
     -- Select the output from the active layer using a multiplexer tree
     selectActiveLayer :: Signal dom (Index NumLayers)
