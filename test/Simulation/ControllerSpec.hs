@@ -82,14 +82,13 @@ spec = do
           sampledEnableWriteKV = sampleN totalCycles (Controller.enableWriteKV controller)
           sampledEnableAttend = sampleN totalCycles (Controller.enableAttend controller)
           sampledEnableFFN = sampleN totalCycles (Controller.enableFFN controller)
-          sampledEnableClassifier = sampleN totalCycles (Controller.enableClassifier controller)
 
-          cyclesWithEnables = zip5'
+          cyclesWithEnables = zip4'
             sampledEnableQKV sampledEnableWriteKV sampledEnableAttend
-            sampledEnableFFN sampledEnableClassifier
+            sampledEnableFFN
 
-          countActive (q, w, a, f, c) =
-            P.length $ P.filter id [q, w, a, f, c]
+          countActive (q, w, a, f) =
+            P.length $ P.filter id [q, w, a, f]
 
       -- Verify exactly one enable signal is active per cycle
       P.all (\enables -> countActive enables == 1) cyclesWithEnables `shouldBe` True
@@ -113,20 +112,8 @@ spec = do
             resetGen
             enableGen
 
-          sampledEnableClassifier = sampleN totalCycles (Controller.enableClassifier controller)
-          sampledLayer = sampleN totalCycles (Controller.currentLayer controller)
           sampledReady = sampleN totalCycles (Controller.readyPulse controller)
           sampledSeqPos = sampleN totalCycles (Controller.seqPosition controller)
-
-      -- Find when classifier first activates
-      let classifierCycles = P.filter (sampledEnableClassifier P.!!) [0..totalCycles-1]
-
-      -- Should reach classifier
-      P.length classifierCycles `shouldSatisfy` (> 0)
-
-      -- When classifier runs, should be at max layer
-      let firstClassifierCycle = P.head classifierCycles
-      sampledLayer P.!! firstClassifierCycle `shouldBe` maxBound
 
       -- Should generate ready pulse after classifier completes
       let readyCycles = P.filter (sampledReady P.!!) [0..totalCycles-1]
@@ -141,10 +128,9 @@ spec = do
         then (sampledSeqPos P.!! checkCycle) `shouldSatisfy` (> 0)
         else P.putStrLn "Not enough cycles to check sequence advancement"
 
-zip5' :: [a] -> [b] -> [c] -> [d] -> [e] -> [(a, b, c, d, e)]
-zip5' (a:as) (b:bs) (c:cs) (d:ds) (e:es) = (a, b, c, d, e) : zip5' as bs cs ds es
-zip5' [] _ _ _ _ = []
-zip5' _ [] _ _ _ = []
-zip5' _ _ [] _ _ = []
-zip5' _ _ _ [] _ = []
-zip5' _ _ _ _ [] = []
+zip4' :: [a] -> [b] -> [c] -> [d] -> [(a, b, c, d)]
+zip4' (a:as) (b:bs) (c:cs) (d:ds) = (a, b, c, d) : zip4' as bs cs ds
+zip4' [] _ _ _ = []
+zip4' _ [] _ _ = []
+zip4' _ _ [] _ = []
+zip4' _ _ _ [] = []

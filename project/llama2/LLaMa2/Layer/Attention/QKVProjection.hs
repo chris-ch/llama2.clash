@@ -16,7 +16,6 @@ import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
-import LLaMa2.Types.LayerData (ProcessingState(..))
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
   ( QKVProjectionWeightBuffer(..)
   , extractQWeight, extractKWeight, extractVWeight

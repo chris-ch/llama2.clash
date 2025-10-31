@@ -3,8 +3,8 @@ module LLaMa2.Layer.Attention.KVCache (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength)
-import LLaMa2.Types.LayerData (ProcessingState (..), LayerData (..), CycleStage (..))
+import LLaMa2.Types.ModelConfig (NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength)
+import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Memory.KVCacheBank as Cache
 import LLaMa2.Memory.DualPortRAM (trueDualPortRam)
@@ -13,8 +13,7 @@ import LLaMa2.Layer.Attention.AttentionHead (attentionHead)
 kvBankController ::
   forall dom.
   HiddenClockResetEnable dom =>
-  Index NumLayers ->
-  Signal dom (Index SequenceLength) ->      -- seqPos (not ProcessingState)
+  Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
   Signal dom Bool ->
   Signal dom Bool ->  -- enableWriteKV
@@ -26,15 +25,18 @@ kvBankController ::
   ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Vec NumKeyValueHeads (Signal dom Bool) )
-kvBankController layerIndex seqPos layerData qkvValid 
+kvBankController seqPos layerData qkvValid 
                  enableWriteKV enableAttend
                  (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
-  -- Use enable signals directly (already done in Step 2)
+  -- SIMPLIFIED: No layer index checks needed - enables are already layer-specific!
+  isStage2Write :: Signal dom Bool
   isStage2Write = enableWriteKV
-  isStage3Attn = enableAttend
 
+  isStage3Attn :: Signal dom Bool
+  isStage3Attn = enableAttend
+  
   -- Query indices
   qIdx0 = queryHeadIndex0 kvIx
   hasQ1 = hasSecondQueryHead kvIx

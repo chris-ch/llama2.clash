@@ -24,12 +24,11 @@ data UnifiedController dom = UnifiedController
   , readyPulse      :: Signal dom Bool
   , stageComplete   :: Signal dom Bool
   
-  -- NEW: Centralized enable signals (one per stage)
+  -- Centralized enable signals (one per stage)
   , enableQKV        :: Signal dom Bool  -- Stage1_ProjectQKV is active
   , enableWriteKV    :: Signal dom Bool  -- Stage2_WriteKV is active
   , enableAttend     :: Signal dom Bool  -- Stage3_Attend is active
   , enableFFN        :: Signal dom Bool  -- Stage4_FeedForward is active
-  , enableClassifier :: Signal dom Bool  -- Stage5_Classifier is active
   }
 
 -- | Single controller
@@ -49,12 +48,11 @@ unifiedController qkvDone writeDone attnDone ffnDone classifierDone =
     , readyPulse      = readyPulse'
     , stageComplete   = stageDone
     
-    -- NEW: Generate enable signals directly from current stage
+    -- Generate enable signals directly from current stage
     , enableQKV        = (stage <$> state) .==. pure Stage1_ProjectQKV
     , enableWriteKV    = (stage <$> state) .==. pure Stage2_WriteKV
     , enableAttend     = (stage <$> state) .==. pure Stage3_Attend
     , enableFFN        = (stage <$> state) .==. pure Stage4_FeedForward
-    , enableClassifier = (stage <$> state) .==. pure Stage5_Classifier
     }
   where
     initialState = UnifiedState

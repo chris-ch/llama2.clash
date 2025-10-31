@@ -43,15 +43,14 @@ transformerLayer ::
   (HiddenClockResetEnable dom)
    => PARAM.TransformerLayerComponent
    -> Index NumLayers
-   -> Signal dom ProcessingState        -- Keep this for helpers
+   -> Signal dom ProcessingState
    -> Signal dom LayerData
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
-   -> Signal dom Bool  -- enableQKV
-   -> Signal dom Bool  -- enableWriteKV
-   -> Signal dom Bool  -- enableAttend
-   -> Signal dom Bool  -- enableFFN
-   -> Signal dom Bool  -- enableClassifier
+   -> Signal dom Bool  -- enableQKV (layer-specific)
+   -> Signal dom Bool  -- enableWriteKV (layer-specific)
+   -> Signal dom Bool  -- enableAttend (layer-specific)
+   -> Signal dom Bool  -- enableFFN (layer-specific)
    -> ( Signal dom LayerData,
         Signal dom Bool,
         Signal dom Bool,
@@ -59,7 +58,7 @@ transformerLayer ::
         Signal dom Bool
       )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
+                 enableQKV enableWriteKV enableAttend enableFFN =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -69,16 +68,14 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
   where
     mha = PARAM.multiHeadAttention layer
     ffn = PARAM.feedforwardNetwork layer
-    
-    currentLayer = processingLayer <$> processingState
-    seqPos = sequencePosition <$> processingState  -- Extract for passing down
 
-    -- Pass seqPos to MHA (it needs it for rotary encoding and KV addressing)
+    seqPos = sequencePosition <$> processingState
+
+    -- Enables are already layer-specific from SimplifiedLayerStack
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerIndex layerData weightBuffer useRAM
+      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM
                               enableQKV enableWriteKV enableAttend
 
-    -- Keep original helper function calls with ProcessingState
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
@@ -90,20 +87,30 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     baseNextLayerData =
       updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
-    -- FFN stage
-    isStage4ThisLayer :: Signal dom Bool
-    isStage4ThisLayer = enableFFN .&&. (currentLayer .==. pure layerIndex)
-
+    -- FFN stage - enableFFN is already layer-specific
     ffnInput = attentionOutput <$> layerDataAfterAttention
 
+    -- FFN output ready when:
+    -- - Next layer is starting QKV (need to check which layer is active)
+    -- - Or we're at last layer and classifier is starting
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
+      -- Check if we're ready for next layer or classifier
+      -- Note: These checks use currentLayer to coordinate between layers
+      (((processingStage <$> processingState) .==. pure Stage1_ProjectQKV)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure (layerIndex + 1)))
       .||.
-      (enableClassifier .&&. (currentLayer .==. pure maxBound))
+      (((processingStage <$> processingState) .==. pure Stage5_Classifier)
+        .&&.
+      ((processingLayer <$> processingState) .==. pure maxBound))
 
     (ffnOutput, ffnValidOut, ffnInReady) =
-      ffnController isStage4ThisLayer ffnOutReady ffnInput ffn
+      ffnController
+        enableFFN       -- Already layer-specific
+        ffnOutReady
+        ffnInput
+        ffn
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =
@@ -114,7 +121,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         <*> ffnOutput
         <*> ffnValidOut
 
--- Keep original helper functions unchanged - they work!
+-- Helper functions remain unchanged
 layerDataWithFFN ::
   Index NumLayers ->
   ProcessingState ->
