@@ -17,11 +17,19 @@ data UnifiedState = UnifiedState
 
 -- | All controller outputs in one record
 data UnifiedController dom = UnifiedController
-  { processingState :: Signal dom ProcessingState
+  { -- Legacy outputs (keep for backward compatibility during transition)
+    processingState :: Signal dom ProcessingState
   , currentLayer    :: Signal dom (Index NumLayers)
   , seqPosition     :: Signal dom (Index SequenceLength)
-  , readyPulse      :: Signal dom Bool  -- Token generation complete
-  , stageComplete   :: Signal dom Bool  -- Current stage finished
+  , readyPulse      :: Signal dom Bool
+  , stageComplete   :: Signal dom Bool
+  
+  -- NEW: Centralized enable signals (one per stage)
+  , enableQKV        :: Signal dom Bool  -- Stage1_ProjectQKV is active
+  , enableWriteKV    :: Signal dom Bool  -- Stage2_WriteKV is active
+  , enableAttend     :: Signal dom Bool  -- Stage3_Attend is active
+  , enableFFN        :: Signal dom Bool  -- Stage4_FeedForward is active
+  , enableClassifier :: Signal dom Bool  -- Stage5_Classifier is active
   }
 
 -- | Single controller
@@ -40,6 +48,13 @@ unifiedController qkvDone writeDone attnDone ffnDone classifierDone =
     , seqPosition     = seqPos <$> state
     , readyPulse      = readyPulse'
     , stageComplete   = stageDone
+    
+    -- NEW: Generate enable signals directly from current stage
+    , enableQKV        = (stage <$> state) .==. pure Stage1_ProjectQKV
+    , enableWriteKV    = (stage <$> state) .==. pure Stage2_WriteKV
+    , enableAttend     = (stage <$> state) .==. pure Stage3_Attend
+    , enableFFN        = (stage <$> state) .==. pure Stage4_FeedForward
+    , enableClassifier = (stage <$> state) .==. pure Stage5_Classifier
     }
   where
     initialState = UnifiedState
@@ -47,7 +62,7 @@ unifiedController qkvDone writeDone attnDone ffnDone classifierDone =
       , layer  = 0
       , seqPos = 0
       }
-
+    
     state = register initialState nextState
 
     -- Determine if current stage is complete based on stage type
