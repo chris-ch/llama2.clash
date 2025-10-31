@@ -30,9 +30,10 @@ processActiveLayer :: forall dom.
   -> Signal dom Bool  -- enableWriteKV (global)
   -> Signal dom Bool  -- enableAttend (global)
   -> Signal dom Bool  -- enableFFN (global)
+  -> Signal dom Bool  -- enableClassifier (global)
   -> LayerOutput dom
 processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
-                   enableQKV enableWriteKV enableAttend enableFFN =
+                   enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -85,6 +86,7 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
             enableWriteKVThisLayer
             enableAttendThisLayer
             enableFFNThisLayer
+            enableClassifier
 
     selectActiveLayer :: Signal dom (Index NumLayers)
                       -> Vec NumLayers ( Signal dom LayerData

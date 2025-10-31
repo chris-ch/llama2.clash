@@ -82,6 +82,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     enableWriteKV   = Controller.enableWriteKV controller
     enableAttend    = Controller.enableAttend controller
     enableFFN       = Controller.enableFFN controller
+    enableClassifier = Controller.enableClassifier controller
     
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
@@ -129,7 +130,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- Extract seqPos for modules that need it, but keep processingState too
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV enableWriteKV enableAttend enableFFN
+      enableQKV enableWriteKV enableAttend enableFFN enableClassifier
     
     nextLayerData   = LayerStack.outputData layerOutput
     layerWriteDone  = LayerStack.writeDone layerOutput
