@@ -142,9 +142,9 @@ layerDataAttnDone ::
   Vec ModelDimension FixedPoint ->
   Bool ->
   LayerData
-layerDataAttnDone layerIndex stage cur attOut attnDone =
-  if processingLayer stage == layerIndex
-    && processingStage stage == Stage3_Attend
+layerDataAttnDone layerIndex state cur attOut attnDone =
+  if processingLayer state == layerIndex
+    && processingStage state == Stage3_Attend
     && attnDone
     then cur {attentionOutput = attOut}
     else cur

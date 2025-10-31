@@ -1,6 +1,6 @@
 module LLaMa2.Decoder.SequenceController
- ( UnifiedController(..)
- , unifiedController
+ ( SequenceController(..)
+ , sequenceController
  , UnifiedState(..)
  ) where
 
@@ -16,38 +16,38 @@ data UnifiedState = UnifiedState
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- | All controller outputs in one record
-data UnifiedController dom = UnifiedController
+data SequenceController dom = SequenceController
   { -- Legacy outputs (keep for backward compatibility during transition)
-    processingState :: Signal dom ProcessingState
-  , currentLayer    :: Signal dom (Index NumLayers)
-  , seqPosition     :: Signal dom (Index SequenceLength)
-  , readyPulse      :: Signal dom Bool
-  , stageComplete   :: Signal dom Bool
+    processingState :: Signal dom ProcessingState,
+  currentLayer    :: Signal dom (Index NumLayers),
+  seqPosition     :: Signal dom (Index SequenceLength),
+  readyPulse      :: Signal dom Bool,
+  stageComplete   :: Signal dom Bool,
   
   -- Centralized enable signals (one per stage)
-  , enableQKV        :: Signal dom Bool  -- Stage1_ProjectQKV is active
-  , enableWriteKV    :: Signal dom Bool  -- Stage2_WriteKV is active
-  , enableAttend     :: Signal dom Bool  -- Stage3_Attend is active
-  , enableFFN        :: Signal dom Bool  -- Stage4_FeedForward is active
-  , enableClassifier :: Signal dom Bool  -- Stage5_Classifier is active
+  enableQKV        :: Signal dom Bool,  -- Stage1_ProjectQKV is active
+  enableWriteKV    :: Signal dom Bool,  -- Stage2_WriteKV is active
+  enableAttend     :: Signal dom Bool,  -- Stage3_Attend is active
+  enableFFN        :: Signal dom Bool,  -- Stage4_FeedForward is active
+  enableClassifier :: Signal dom Bool  -- Stage5_Classifier is active
   }
 
 -- | Single controller
-unifiedController ::
+sequenceController ::
   HiddenClockResetEnable dom
   => Signal dom Bool  -- ^ qkvDone
   -> Signal dom Bool  -- ^ writeDone
   -> Signal dom Bool  -- ^ attnDone
   -> Signal dom Bool  -- ^ ffnDone
   -> Signal dom Bool  -- ^ classifierDone
-  -> UnifiedController dom
-unifiedController qkvDone writeDone attnDone ffnDone classifierDone = 
-  UnifiedController
-    { processingState = toProcessingState <$> state
-    , currentLayer    = layer <$> state
-    , seqPosition     = seqPos <$> state
-    , readyPulse      = readyPulse'
-    , stageComplete   = stageDone
+  -> SequenceController dom
+sequenceController qkvDone writeDone attnDone ffnDone classifierDone = 
+  SequenceController
+    { processingState = toProcessingState <$> state,
+    currentLayer    = layer <$> state,
+    seqPosition     = seqPos <$> state,
+    readyPulse      = readyPulse',
+    stageComplete   = stageDone
     
     -- Generate enable signals directly from current stage
     , enableQKV        = (stage <$> state) .==. pure Stage1_ProjectQKV

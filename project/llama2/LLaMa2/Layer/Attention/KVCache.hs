@@ -30,13 +30,7 @@ kvBankController seqPos layerData qkvValid
                  (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
-  -- SIMPLIFIED: No layer index checks needed - enables are already layer-specific!
-  isStage2Write :: Signal dom Bool
-  isStage2Write = enableWriteKV
 
-  isStage3Attn :: Signal dom Bool
-  isStage3Attn = enableAttend
-  
   -- Query indices
   qIdx0 = queryHeadIndex0 kvIx
   hasQ1 = hasSecondQueryHead kvIx
@@ -48,7 +42,7 @@ kvBankController seqPos layerData qkvValid
   valVec = getValueVector layerData kvIx
 
   -- KV Write controller
-  (wrPulse, wrDone) = Cache.writePulseGenerator (isStage2Write .&&. qkvValid)
+  (wrPulse, wrDone) = Cache.writePulseGenerator (enableWriteKV .&&. qkvValid)
   wrKVRowK = mux wrPulse (Just <$> bundle (seqPos, keyVec)) (pure Nothing)
   wrKVRowV = mux wrPulse (Just <$> bundle (seqPos, valVec)) (pure Nothing)
 
@@ -57,9 +51,9 @@ kvBankController seqPos layerData qkvValid
   writeDoneAcc1 = replace kvIx wrDone writeDoneAcc
 
   -- Attention row sequencer
-  attnPrev = register False isStage3Attn
-  clearS3  = liftA2 (\now prev -> now && not prev) isStage3Attn attnPrev
-  (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 isStage3Attn seqPos
+  attnPrev = register False enableAttend
+  clearS3  = liftA2 (\now prev -> now && not prev) enableAttend attnPrev
+  (tAddrRow, stepEnRow, lastTRow) = attentionRowSequencer clearS3 enableAttend seqPos
 
   -- Per-head attention
   (out0, done0) = attentionHead clearS3 stepEnRow query0 kRow vRow lastTRow
@@ -81,10 +75,10 @@ attentionRowSequencer ::
   -> ( Signal dom (Index SequenceLength)
      , Signal dom Bool
      , Signal dom Bool )
-attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
+attentionRowSequencer clearS3 enableAttend seqPosSignal =
   let
     rowCounter :: Signal dom (Index SequenceLength)
-    rowCounter = mealy rowCounterT 0 (bundle (clearS3, isStage3Attention, seqPosSignal))
+    rowCounter = mealy rowCounterT 0 (bundle (clearS3, enableAttend, seqPosSignal))
 
     rowCounterT :: Index SequenceLength -> (Bool, Bool, Index SequenceLength)
                 -> (Index SequenceLength, Index SequenceLength)
@@ -97,7 +91,7 @@ attentionRowSequencer clearS3 isStage3Attention seqPosSignal =
       in (tNext, tStart)
 
     stepNow :: Signal dom Bool
-    stepNow = const <$> isStage3Attention <*> rowCounter
+    stepNow = const <$> enableAttend <*> rowCounter
 
     stepEnRow :: Signal dom Bool
     stepEnRow = register False stepNow

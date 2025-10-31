@@ -36,9 +36,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
                         enableQKV enableWriteKV enableAttend =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
-    -- SIMPLIFIED: No layer index checks needed - enables are already layer-specific!
-    isStage1ThisLayer :: Signal dom Bool
-    isStage1ThisLayer = enableQKV
 
     qkvOutReady :: Signal dom Bool
     qkvOutReady = enableWriteKV
@@ -47,7 +44,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
 
     (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
-        isStage1ThisLayer
+        enableQKV
         qkvOutReady
         input
         mha

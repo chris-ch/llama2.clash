@@ -165,7 +165,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
   (qkvOut, allValid, allReady)
  where
   xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaQ)
-
+  useRAM' = useRAM -- should be pure True for disabling legacy wired weights completely for QKV
   -- Q heads
   qResults = imap qHead (PARAM.headsQ mhaQ)
    where
@@ -175,7 +175,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
              , Signal dom Bool )
     qHead hIx headQ =
       let ramQ = extractQWeight <$> weightBuffer <*> pure hIx
-      in queryHeadProjector validIn readyIn headQ seqPosSig xNorm ramQ useRAM
+      in queryHeadProjector validIn readyIn headQ seqPosSig xNorm ramQ useRAM'
 
   -- Map KV heads to their corresponding SingleHeadComponentQ (for rotary params)
   queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
@@ -193,7 +193,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
       let headQ = PARAM.headsQ mhaQ !! qIx
           ramK  = extractKWeight <$> weightBuffer <*> pure kvIx
           ramV  = extractVWeight <$> weightBuffer <*> pure kvIx
-      in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV useRAM
+      in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV useRAM'
 
   qVecs    = map (\(q, _, _) -> q) qResults
   qValids  = map (\(_, v, _) -> v) qResults

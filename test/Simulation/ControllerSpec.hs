@@ -21,7 +21,7 @@ spec = do
           classifierDone = pure True
 
           controller = exposeClockResetEnable
-            (Controller.unifiedController qkvDone writeDone attnDone ffnDone classifierDone)
+            (Controller.sequenceController qkvDone writeDone attnDone ffnDone classifierDone)
             systemClockGen
             resetGen
             enableGen
@@ -73,7 +73,7 @@ spec = do
           classifierDone = pure True
           
           controller = exposeClockResetEnable
-            (Controller.unifiedController qkvDone writeDone attnDone ffnDone classifierDone)
+            (Controller.sequenceController qkvDone writeDone attnDone ffnDone classifierDone)
             systemClockGen
             resetGen
             enableGen
@@ -111,7 +111,7 @@ spec = do
           classifierDone = pure True
 
           controller = exposeClockResetEnable
-            (Controller.unifiedController qkvDone writeDone attnDone ffnDone classifierDone)
+            (Controller.sequenceController qkvDone writeDone attnDone ffnDone classifierDone)
             systemClockGen
             resetGen
             enableGen

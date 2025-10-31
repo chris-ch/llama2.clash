@@ -70,7 +70,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
-    controller = Controller.unifiedController
+    controller = Controller.sequenceController
       layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
 
     processingState = Controller.processingState controller
