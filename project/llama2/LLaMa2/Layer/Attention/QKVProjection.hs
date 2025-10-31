@@ -215,19 +215,19 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
 --------------------------------------------------------------------------------
 qkvProjectionController ::
   HiddenClockResetEnable dom
-  => Signal dom Bool                             -- ^ validIn
-  -> Signal dom Bool                             -- ^ readyIn
+  => Signal dom Bool
+  -> Signal dom Bool
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> PARAM.MultiHeadAttentionComponentQ
-  -> Signal dom ProcessingState
-  -> Signal dom QKVProjectionWeightBuffer                 -- ^ RAM weights
-  -> Signal dom Bool                            -- ^ useRAM
+  -> Signal dom (Index SequenceLength)          -- seqPos (not ProcessingState)
+  -> Signal dom QKVProjectionWeightBuffer
+  -> Signal dom Bool
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController inValid outReady input mhaQ psSig weightBuf useRAM =
+qkvProjectionController inValid outReady input mhaQ seqPosSig weightBuf useRAM =
   (result, validOut, inReady)
  where
   (projectorEnable, validOut, inReady) =
@@ -235,7 +235,7 @@ qkvProjectionController inValid outReady input mhaQ psSig weightBuf useRAM =
 
   (result, matVecValid, ready) =
     qkvProjector projectorEnable (pure True) mhaQ
-                        (sequencePosition <$> psSig)
-                        input
-                        weightBuf
-                        useRAM
+                 seqPosSig       -- Pass seqPos directly
+                 input
+                 weightBuf
+                 useRAM

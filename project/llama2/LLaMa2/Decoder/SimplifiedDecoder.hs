@@ -128,10 +128,11 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       <*> register initialLayerData nextLayerData 
       <*> embeddedVector
 
+    -- Extract seqPos for modules that need it, but keep processingState too
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV enableWriteKV enableAttend enableFFN enableClassifier 
-
+      enableQKV enableWriteKV enableAttend enableFFN enableClassifier
+    
     nextLayerData   = LayerStack.outputData layerOutput
     layerWriteDone  = LayerStack.writeDone layerOutput
     layerAttnDone   = LayerStack.attnDone layerOutput

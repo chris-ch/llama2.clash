@@ -4,7 +4,7 @@ module LLaMa2.Layer.Attention.MultiHeadAttention (
 import Clash.Prelude
 import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..))
 import LLaMa2.Types.LayerData (LayerData (..), ProcessingState (..), CycleStage (..))
-import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads)
+import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
@@ -16,14 +16,14 @@ import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuff
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
   PARAM.MultiHeadAttentionComponentQ ->
-  Signal dom ProcessingState ->
+  Signal dom (Index SequenceLength) ->      -- seqPos (NEW - just for rotary & addressing)
   Index NumLayers ->
   Signal dom LayerData ->
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->
-  Signal dom Bool ->  -- NEW: enableQKV
-  Signal dom Bool ->  -- NEW: enableWriteKV  
-  Signal dom Bool ->  -- NEW: enableAttend
+  Signal dom Bool ->  -- enableQKV
+  Signal dom Bool ->  -- enableWriteKV  
+  Signal dom Bool ->  -- enableAttend
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -33,45 +33,39 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer enableAttention
+multiHeadAttentionStage mha seqPos layerIndex layerData weightBuffer enableAttention
                         enableQKV enableWriteKV enableAttend =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
-    -- SIMPLIFIED: Use enable signals directly
-    currentLayer = processingLayer <$> processingState
-    
-    isStage1ThisLayer :: Signal dom Bool
-    isStage1ThisLayer = enableQKV .&&. (currentLayer .==. pure layerIndex)
-
-    qkvOutReady :: Signal dom Bool
-    qkvOutReady = enableWriteKV .&&. (currentLayer .==. pure layerIndex)
+    -- Use enable signals (already done in Step 2)
+    isStage1ThisLayer = enableQKV
+    qkvOutReady = enableWriteKV
+    -- Note: We removed the layerIndex check here in Step 2, assuming it's handled externally
 
     input = inputVector <$> layerData
 
-    -- Pass enable signals through
     (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
         isStage1ThisLayer
         qkvOutReady
         input
         mha
-        processingState
+        seqPos           -- Pass seqPos directly (no ProcessingState needed)
         weightBuffer
         enableAttention
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3 - pass enable signals to KV cache
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
-        (kvBankController layerIndex processingState layerData qkvDone 
-                         enableWriteKV enableAttend)  -- NEW: pass enables
+        (kvBankController layerIndex seqPos layerData qkvDone 
+                         enableWriteKV enableAttend)  -- Pass seqPos
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
-    
+        
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeValidOutNew, writeReadyIn, writeEnable) =
       kvWriteControllerFSM

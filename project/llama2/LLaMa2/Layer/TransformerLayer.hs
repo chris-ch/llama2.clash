@@ -43,7 +43,7 @@ transformerLayer ::
   (HiddenClockResetEnable dom)
    => PARAM.TransformerLayerComponent
    -> Index NumLayers
-   -> Signal dom ProcessingState
+   -> Signal dom ProcessingState        -- Keep this for helpers
    -> Signal dom LayerData
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
@@ -71,11 +71,14 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     ffn = PARAM.feedforwardNetwork layer
     
     currentLayer = processingLayer <$> processingState
+    seqPos = sequencePosition <$> processingState  -- Extract for passing down
 
+    -- Pass seqPos to MHA (it needs it for rotary encoding and KV addressing)
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha processingState layerIndex layerData weightBuffer useRAM
+      multiHeadAttentionStage mha seqPos layerIndex layerData weightBuffer useRAM
                               enableQKV enableWriteKV enableAttend
 
+    -- Keep original helper function calls with ProcessingState
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
@@ -87,28 +90,20 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     baseNextLayerData =
       updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
-    -- REFACTORED: Stage 4 FFN using enable signals
+    -- FFN stage
     isStage4ThisLayer :: Signal dom Bool
     isStage4ThisLayer = enableFFN .&&. (currentLayer .==. pure layerIndex)
 
     ffnInput = attentionOutput <$> layerDataAfterAttention
 
-    -- REFACTORED: FFN output ready detection using enable signals
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      -- Next layer is starting QKV
       (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
       .||.
-      -- Last layer and classifier is active
       (enableClassifier .&&. (currentLayer .==. pure maxBound))
 
-    ffnOutput :: Signal dom (Vec ModelDimension FixedPoint)
     (ffnOutput, ffnValidOut, ffnInReady) =
-      ffnController
-        isStage4ThisLayer
-        ffnOutReady
-        ffnInput
-        ffn
+      ffnController isStage4ThisLayer ffnOutReady ffnInput ffn
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =
@@ -119,6 +114,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         <*> ffnOutput
         <*> ffnValidOut
 
+-- Keep original helper functions unchanged - they work!
 layerDataWithFFN ::
   Index NumLayers ->
   ProcessingState ->
@@ -130,10 +126,8 @@ layerDataWithFFN ::
   LayerData
 layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
   let withAttn = layerDataAttnDone layerIndex ps baseData attnOut attnDone
-   in if processingLayer ps
-        == layerIndex
-        && processingStage ps
-        == Stage4_FeedForward
+   in if processingLayer ps == layerIndex
+        && processingStage ps == Stage4_FeedForward
         && ffnValid
         then withAttn {feedForwardOutput = ffnOut}
         else withAttn
@@ -146,10 +140,8 @@ layerDataAttnDone ::
   Bool ->
   LayerData
 layerDataAttnDone layerIndex stage cur attOut attnDone =
-  if processingLayer stage
-    == layerIndex
-    && processingStage stage
-    == Stage3_Attend
+  if processingLayer stage == layerIndex
+    && processingStage stage == Stage3_Attend
     && attnDone
     then cur {attentionOutput = attOut}
     else cur

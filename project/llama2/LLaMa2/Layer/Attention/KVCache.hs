@@ -14,11 +14,11 @@ kvBankController ::
   forall dom.
   HiddenClockResetEnable dom =>
   Index NumLayers ->
-  Signal dom ProcessingState ->
+  Signal dom (Index SequenceLength) ->      -- seqPos (not ProcessingState)
   Signal dom LayerData ->
   Signal dom Bool ->
-  Signal dom Bool ->  -- NEW: enableWriteKV
-  Signal dom Bool ->  -- NEW: enableAttend
+  Signal dom Bool ->  -- enableWriteKV
+  Signal dom Bool ->  -- enableAttend
   ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Vec NumKeyValueHeads (Signal dom Bool) ) ->
@@ -26,23 +26,14 @@ kvBankController ::
   ( Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Vec NumKeyValueHeads (Signal dom Bool) )
-kvBankController layerIndex processingState layerData qkvValid 
+kvBankController layerIndex seqPos layerData qkvValid 
                  enableWriteKV enableAttend
                  (headOutAcc, headDoneAcc, writeDoneAcc) kvIx =
   (headOutAcc2, headDoneAcc2, writeDoneAcc1)
  where
-  currentLayer = processingLayer <$> processingState
-  
-  -- SIMPLIFIED: Use enable signals directly
-  isStage2Write :: Signal dom Bool
-  isStage2Write = enableWriteKV .&&. (currentLayer .==. pure layerIndex)
-
-  isStage3Attn :: Signal dom Bool
-  isStage3Attn = enableAttend .&&. (currentLayer .==. pure layerIndex)
-  
-  -- Rest remains the same...
-  
-  seqPos = sequencePosition <$> processingState
+  -- Use enable signals directly (already done in Step 2)
+  isStage2Write = enableWriteKV
+  isStage3Attn = enableAttend
 
   -- Query indices
   qIdx0 = queryHeadIndex0 kvIx
