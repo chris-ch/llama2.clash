@@ -48,23 +48,23 @@ tokenReferences =
       }
   , TokenReference  -- Token 320
       { refToken        = 320
-      , refQNorm        = 4.0   -- TODO: Update with actual
-      , refKNorm        = 4.0   -- TODO: Update with actual
-      , refVNorm        = 4.0   -- TODO: Update with actual
-      , refAttnNorm     = 5.0   -- TODO: Update with actual  
-      , refFFNOutNorm   = 10.0  -- TODO: Update with actual
-      , refLayerOutNorm = 10.0  -- TODO: Update with actual
-      , tolerance       = 0.1
+      , refQNorm        = 4.251084
+      , refKNorm        = 12.635413
+      , refVNorm        = 1.1689112
+      , refAttnNorm     = 2.7742534  
+      , refFFNOutNorm   = 3.8518157
+      , refLayerOutNorm = 3.8518157
+      , tolerance       = 0.0001
       }
   , TokenReference  -- Token 417
       { refToken        = 417
-      , refQNorm        = 4.2   -- TODO: Update with actual
-      , refKNorm        = 4.2   -- TODO: Update with actual
-      , refVNorm        = 4.2   -- TODO: Update with actual
-      , refAttnNorm     = 5.5   -- TODO: Update with actual
-      , refFFNOutNorm   = 11.0  -- TODO: Update with actual
-      , refLayerOutNorm = 11.0  -- TODO: Update with actual
-      , tolerance       = 0.1
+      , refQNorm        = 17.01927
+      , refKNorm        = 4.388498
+      , refVNorm        = 0.8723053
+      , refAttnNorm     = 2.7814713
+      , refFFNOutNorm   = 2.822887
+      , refLayerOutNorm = 2.822887
+      , tolerance       = 0.0001
       }
   ]
 
@@ -83,7 +83,7 @@ spec = do
             temperature = pure (0.0 :: Temperature)
             seed        = pure (123 :: Seed)
             powerOn     = pure True
-            totalCycles = 1_600  -- Need more cycles to process the full prompt
+            totalCycles = 20_600  -- Need more cycles to process the full prompt
 
         let
           params :: DecoderParameters
