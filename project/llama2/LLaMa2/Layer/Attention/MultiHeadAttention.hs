@@ -13,81 +13,120 @@ import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
+-- | Self-contained multi-head attention stage
+-- Internally manages: QKV projection → KV cache write → Attention computation
+-- External interface: enableAttention in, attentionDone out
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
   PARAM.MultiHeadAttentionComponentQ ->
   Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
   Signal dom QKVProjectionWeightBuffer ->
-  Signal dom Bool ->
-  Signal dom Bool ->  -- enableQKV
-  Signal dom Bool ->  -- enableWriteKV
-  Signal dom Bool ->  -- enableAttend
-  ( Signal dom Bool,
-    Signal dom (Vec ModelDimension FixedPoint),
-    Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
-    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
-    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
-    Signal dom Bool,
-    Signal dom Bool,
-    Signal dom Bool
+  Signal dom Bool ->  -- useRAM (weights loaded)
+  Signal dom Bool ->  -- enableAttention (external enable from SequenceController)
+  ( Signal dom Bool,  -- attentionDone (entire attention mechanism complete)
+    Signal dom (Vec ModelDimension FixedPoint),  -- attention output (immediate, for storage)
+    Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),  -- Q vectors (latched for introspection)
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),  -- K vectors (latched for introspection)
+    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))   -- V vectors (latched for introspection)
   )
-multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
-                        enableQKV enableWriteKV enableAttend =
-  (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
+multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableAttention =
+  (attentionDone, xAfterAttn, qLatched, kLatched, vLatched)  -- Return immediate xAfterAttn, not latched
   where
-
-    qkvOutReady :: Signal dom Bool
-    qkvOutReady = enableWriteKV
-
     input = inputVector <$> layerData
+
+    -- ==========================================================================
+    -- Internal Stage 1: QKV Projection
+    -- ==========================================================================
+    -- QKV starts when enableAttention is high and we're ready
+    -- QKV outputs are ready when qkvDone goes high
+    
+    qkvOutReady :: Signal dom Bool
+    qkvOutReady = pure True  -- KV write controller will handle backpressure
 
     (qkvProjected, qkvDone, qkvInReady) =
       qkvProjectionController
-        enableQKV
-        qkvOutReady
+        enableAttention  -- Start QKV when attention is enabled
+        qkvOutReady      -- Always ready to accept QKV output
         input
         mha
         seqPos
         weightBuffer
-        enableAttention
+        useRAM
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3
+    -- CRITICAL: Latch Q/K/V when qkvDone pulses (for introspection)
+    -- These values need to be captured immediately before they're lost
+    qLatched = regEn (repeat (repeat 0)) qkvDone q
+    kLatched = regEn (repeat (repeat 0)) qkvDone k
+    vLatched = regEn (repeat (repeat 0)) qkvDone v
+
+    -- ==========================================================================
+    -- Internal Stage 2: KV Cache Write
+    -- ==========================================================================
+    -- Write starts automatically when QKV completes
+    -- Write is complete when all banks have written
+    
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
+    
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
         (kvBankController seqPos layerData qkvDone 
-                         enableWriteKV enableAttend)
+                         writeEnable attendEnable)  -- Internal enables derived from FSM
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
+    
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-    (writeValidOutNew, writeReadyIn, writeEnable) =
+    
+    -- KV write FSM: manages transition from QKV → Write → Attend
+    (writeValidOut, writeReadyIn, writeEnable) =
       kvWriteControllerFSM
-        qkvDone
-        (pure True)
-        allBanksDone
-    writeDone = writeValidOutNew
+        qkvDone          -- Start write when QKV completes
+        (pure True)      -- Attention stage always ready to consume write completion
+        allBanksDone     -- Write complete when all banks done
 
-    -- WO projection (unchanged)
+    writeDone = writeValidOut
+
+    -- ==========================================================================
+    -- Internal Stage 3: Attention Computation
+    -- ==========================================================================
+    -- Attention starts automatically when write completes
+    -- Attention computation uses the per-head outputs from KV cache
+    
+    attendEnable = writeDone  -- Start attention when write completes
+
+    -- WO projection (per-head processing)
     (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
+    
     gatedHeads =
       zipWith3
         (\proj valid ready -> mux ready proj (pure (repeat 0)))
         perHeadProjected
         perHeadValidOuts
         perHeadReadyOuts
+    
     woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
     validProjected = and <$> sequenceA perHeadReadyOuts
+    
+    -- Add residual connection
     xAfterAttn = residualAdder <$> layerData <*> woHeads
-    attentionDone =
-      let prevReady = register False validProjected
-       in validProjected .&&. (not <$> prevReady)
+    
+    -- CRITICAL: Define edge detector first (outer scope)
+    prevReady = register False validProjected
+    attentionDonePulse = validProjected .&&. (not <$> prevReady)
+    
+    -- CRITICAL: Latch attention output when it completes (before stage advances)
+    xAfterAttnLatched = regEn (repeat 0) attentionDonePulse xAfterAttn
+    
+    -- Attention done: rising edge of validProjected
+    -- This signals completion of the entire attention mechanism
+    attentionDone = attentionDonePulse
 
+-- | Per-head WO projection controller (unchanged)
 perHeadWOController ::
   forall dom.
   (HiddenClockResetEnable dom) =>
@@ -107,9 +146,11 @@ perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
     perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
     perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
 
+-- | Residual connection (unchanged)
 residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 residualAdder layerData = zipWith (+) (inputVector layerData)
 
+-- | Single head WO projection controller (unchanged)
 singleHeadController ::
   forall dom.
   (HiddenClockResetEnable dom) =>

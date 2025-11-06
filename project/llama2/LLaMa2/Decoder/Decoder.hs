@@ -34,13 +34,12 @@ initialLayerData = LayerData
   , feedForwardOutput = repeat 0
   }
 
--- | Introspection signals for debugging
+-- | Introspection signals for debugging (simplified)
 data DecoderIntrospection dom = DecoderIntrospection
   { state               :: Signal dom ProcessingState
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
-  , attnDone            :: Signal dom Bool
-  , qkvDone             :: Signal dom Bool
+  , attnDone            :: Signal dom Bool  -- Single signal for entire attention (QKV+Write+Attend)
   , ffnDone             :: Signal dom Bool
   , weightStreamValid   :: Signal dom Bool
   , parsedWeightSample  :: Signal dom Mantissa
@@ -51,7 +50,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerData           :: Signal dom LayerData
   } deriving (Generic, NFDataX)
 
--- | Main decoder with simplified control flow
+-- | Main decoder with simplified control flow (Phase 2)
 decoder :: forall dom. HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
   -> Signal dom Bool
@@ -67,25 +66,26 @@ decoder :: forall dom. HiddenClockResetEnable dom
 decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
   (outputToken, readyPulse, ddrMaster, introspection)
   where
+    _ = traceSignal "layerIdx" layerIdx
+    _ = traceSignal "readyPulse" readyPulse
+    _ = traceSignal "layerFfnDone" layerFfnDone
     -- =======================================================================
-    -- CONTROLLER
+    -- CONTROLLER (SIMPLIFIED)
     -- =======================================================================
     controller = Controller.sequenceController
-      layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
+      layerAttnDone layerFfnDone logitsValid
 
     processingState = Controller.processingState controller
     layerIdx        = Controller.currentLayer controller
     readyPulse      = Controller.readyPulse controller
 
-    -- Extract enable signals from controller
-    enableQKV       = Controller.enableQKV controller
-    enableWriteKV   = Controller.enableWriteKV controller
-    enableAttend    = Controller.enableAttend controller
-    enableFFN       = Controller.enableFFN controller
+    -- Extract simplified enable signals from controller
+    enableAttention  = Controller.enableAttention controller
+    enableFFN        = Controller.enableFFN controller
     enableClassifier = Controller.enableClassifier controller
     
     -- =======================================================================
-    -- WEIGHT LOADING SYSTEM
+    -- WEIGHT LOADING SYSTEM (unchanged)
     -- =======================================================================
     layerChanged = layerIdx ./=. register 0 layerIdx
     loadTrigger  = register True (pure False) .||. layerChanged
@@ -114,32 +114,30 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     useRAM = (fullyLoaded <$> weightBuffer) .&&. layerDone
 
     -- =======================================================================
-    -- TOKEN EMBEDDING AND FEEDBACK
+    -- TOKEN EMBEDDING AND FEEDBACK (unchanged)
     -- =======================================================================
     outputToken = mux inputTokenValid inputToken feedbackToken
     embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
     -- =======================================================================
-    -- LAYER PROCESSING (direct active layer)
+    -- LAYER PROCESSING (simplified interface)
     -- =======================================================================
     layerInput = LayerStack.prepareLayerInput 
       <$> layerIdx 
       <*> register initialLayerData nextLayerData 
       <*> embeddedVector
 
-    -- Extract seqPos for modules that need it, but keep processingState too
+    -- Process active layer with simplified enables
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV enableWriteKV enableAttend enableFFN enableClassifier
+      enableAttention enableFFN enableClassifier
     
     nextLayerData   = LayerStack.outputData layerOutput
-    layerWriteDone  = LayerStack.writeDone layerOutput
-    layerAttnDone   = LayerStack.attnDone layerOutput
-    layerQkvDone    = LayerStack.qkvDone layerOutput
+    layerAttnDone   = LayerStack.attnDone layerOutput   -- Single attention done signal
     layerFfnDone    = LayerStack.ffnDone layerOutput
 
     -- =======================================================================
-    -- OUTPUT PROJECTION AND SAMPLING
+    -- OUTPUT PROJECTION AND SAMPLING (unchanged)
     -- =======================================================================
     ffnOutput = feedForwardOutput <$> nextLayerData
     lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
@@ -150,7 +148,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     feedbackToken = regEn 0 logitsValid sampledToken
 
     -- =======================================================================
-    -- INTROSPECTION
+    -- INTROSPECTION (simplified)
     -- =======================================================================
     (mantissasH, _expH) = unbundle parsedWeightsHold
     firstMantissa = fmap (bitCoerce . head) mantissasH
@@ -159,8 +157,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       { state               = processingState
       , layerIndex          = layerIdx
       , ready               = readyPulse
-      , attnDone            = layerAttnDone
-      , qkvDone             = layerQkvDone
+      , attnDone            = layerAttnDone   -- Single signal for entire attention mechanism
       , ffnDone             = layerFfnDone
       , weightStreamValid   = streamValid
       , parsedWeightSample  = firstMantissa
@@ -172,7 +169,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       }
 
 -- =============================================================================
--- HELPER FUNCTIONS
+-- HELPER FUNCTIONS (unchanged)
 -- =============================================================================
 
 mapToOldWeightAddr :: LayerAddress -> WeightAddress

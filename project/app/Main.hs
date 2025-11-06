@@ -188,7 +188,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     statesSampled         = C.sampleN simSteps (Decoder.state introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
-    qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
     weightValidSampled = C.sampleN simSteps (Decoder.weightStreamValid introspection)
@@ -216,7 +215,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
+  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
   putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
@@ -229,7 +228,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
           ps     = processingStage (statesSampled !! cycleIdx)
           rdy    = readiesSampled !! cycleIdx
-          qkv    = qkvDonesSampled !! cycleIdx
           attn    = attnDonesSampled !! cycleIdx
           ffn    = ffnDonesSampled !! cycleIdx
           wValid = weightValidSampled !! cycleIdx
@@ -243,14 +241,13 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           ddrWReady = ddrWReadySampled !! cycleIdx
           ddrBValid = ddrBValidSampled !! cycleIdx
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg) $
+        when (cycleIdx `mod` 10000 == 0 || rdy || attn || ffn || layChg) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s | %9s | %9s"
+            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s | %9s | %9s"
               cycleIdx
               li
               (show ps)
               (show rdy)
-              (show qkv)
               (show attn)
               (show ffn)
               (show wValid)

@@ -173,6 +173,8 @@ test-suite llama2-test
       Simulation.SingleLayerOutputSpec
       Simulation.WeightLoadingDiagnosticSpec
       Simulation.WeightLoaderSpec
+      Simulation.ControllerSpec
+      Simulation.LayerEnableSpec
   hs-source-dirs:
       test
   build-depends:

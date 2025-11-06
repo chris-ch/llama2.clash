@@ -38,6 +38,9 @@ ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
     (result, ffnSeqValid, ready) =
       FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
 
+-- | Transformer layer with simplified stage interface
+-- Now receives: enableAttention, enableFFN, enableClassifier
+-- Returns: attentionDone (single signal for entire attention mechanism), ffnDone
 transformerLayer ::
   forall dom.
   (HiddenClockResetEnable dom)
@@ -46,25 +49,19 @@ transformerLayer ::
    -> Signal dom ProcessingState
    -> Signal dom LayerData
    -> Signal dom QKVProjectionWeightBuffer
-   -> Signal dom Bool
-   -> Signal dom Bool  -- enableQKV (layer-specific)
-   -> Signal dom Bool  -- enableWriteKV (layer-specific)
-   -> Signal dom Bool  -- enableAttend (layer-specific)
-   -> Signal dom Bool  -- enableFFN (layer-specific)
-   -> Signal dom Bool  -- enableClassifier (layer-specific)
-   -> ( Signal dom LayerData,
-        Signal dom Bool,
-        Signal dom Bool,
-        Signal dom Bool,
-        Signal dom Bool
+   -> Signal dom Bool              -- useRAM
+   -> Signal dom Bool              -- enableAttention (layer-specific)
+   -> Signal dom Bool              -- enableFFN (layer-specific)
+   -> Signal dom Bool              -- enableClassifier (layer-specific)
+   -> ( Signal dom LayerData,      -- nextLayerData
+        Signal dom Bool,           -- attentionDone (replaces qkvDone, writeDone, attnDone)
+        Signal dom Bool            -- ffnDone (rising edge only)
       )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
+                 enableAttention enableFFN enableClassifier =
   ( nextLayerData,
-    writeDone,
     attentionDone,
-    qkvDone,
-    ffnValidOut
+    ffnDoneEdge  -- Use edge detector instead of raw validOut
   )
   where
     mha = PARAM.multiHeadAttention layer
@@ -72,11 +69,14 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
 
     seqPos = sequencePosition <$> processingState
 
-    -- Enables are already layer-specific from LayerStack
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM
-                              enableQKV enableWriteKV enableAttend 
+    -- ==========================================================================
+    -- Attention Stage (self-contained, manages QKV+Write+Attend internally)
+    -- ==========================================================================
+    -- MultiHeadAttention now returns Q/K/V values that are already latched internally
+    (attentionDone, xAfterAttn, qProj, kProj, vProj) =
+      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableAttention
 
+    -- Update layer data when attention completes
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =
       (layerDataAttnDone layerIndex <$> processingState)
@@ -84,20 +84,26 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         <*> xAfterAttn
         <*> attentionDone
 
+    -- Update layer data with QKV projections (already latched by MultiHeadAttention)
     baseNextLayerData :: Signal dom LayerData
     baseNextLayerData =
-      updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
+      (\ld q k v -> ld { queryVectors = q
+                       , keyVectors = k
+                       , valueVectors = v
+                       }) <$> layerData <*> qProj <*> kProj <*> vProj
 
-    -- FFN stage - enableFFN is already layer-specific
+    -- ==========================================================================
+    -- Feed-Forward Stage
+    -- ==========================================================================
     ffnInput = attentionOutput <$> layerDataAfterAttention
 
     -- FFN output ready when:
-    -- - Next layer is starting QKV (need to check which layer is active)
+    -- - Next layer is starting Attention (need to check which layer is active)
     -- - Or we're at last layer and classifier is starting
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
       let currentLayer = processingLayer <$> processingState
-      in (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
+      in (enableAttention .&&. (currentLayer .==. pure (layerIndex + 1)))
         .||.
         (enableClassifier .&&. (currentLayer .==. pure maxBound))
 
@@ -108,6 +114,12 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         ffnInput
         ffn
 
+    -- CRITICAL FIX: Detect rising edge of ffnValidOut to avoid multiple completions
+    ffnDoneEdge = risingEdge ffnValidOut
+      where
+        risingEdge sig = sig .&&. (not <$> register False sig)
+
+    -- Update layer data with FFN output
     nextLayerData :: Signal dom LayerData
     nextLayerData =
       (layerDataWithFFN layerIndex <$> processingState)
@@ -117,7 +129,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         <*> ffnOutput
         <*> ffnValidOut
 
--- Helper functions remain unchanged
+-- Helper functions
 layerDataWithFFN ::
   Index NumLayers ->
   ProcessingState ->
@@ -129,9 +141,8 @@ layerDataWithFFN ::
   LayerData
 layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
   let withAttn = layerDataAttnDone layerIndex ps baseData attnOut attnDone
-   in if processingLayer ps == layerIndex
-        && processingStage ps == Stage4_FeedForward
-        && ffnValid
+   in if processingLayer ps == layerIndex && ffnValid
+        -- Don't check stage! Just store when ffnValid pulses and it's our layer.
         then withAttn {feedForwardOutput = ffnOut}
         else withAttn
 
@@ -143,22 +154,8 @@ layerDataAttnDone ::
   Bool ->
   LayerData
 layerDataAttnDone layerIndex state cur attOut attnDone =
-  if processingLayer state == layerIndex
-    && processingStage state == Stage3_Attend
-    && attnDone
+  -- Don't check stage! The stage may have already advanced.
+  -- Just store when attnDone pulses and it's our layer.
+  if processingLayer state == layerIndex && attnDone
     then cur {attentionOutput = attOut}
     else cur
-
-updateLayerDataForStage :: Index NumLayers
-  -> ProcessingState
-  -> LayerData 
-  -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> LayerData
-updateLayerDataForStage layerIndex ps idata qs ks vs
-  | processingLayer ps /= layerIndex = idata
-  | otherwise = case processingStage ps of
-      Stage1_ProjectQKV ->
-        idata {queryVectors = qs, keyVectors = ks, valueVectors = vs}
-      _ -> idata

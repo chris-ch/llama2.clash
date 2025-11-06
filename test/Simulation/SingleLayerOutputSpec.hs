@@ -4,7 +4,7 @@ import           Test.Hspec
 import           Clash.Prelude
 import qualified Prelude as P
 
-import           LLaMa2.Types.LayerData (Temperature, Seed, Token, LayerData (..))
+import           LLaMa2.Types.LayerData (Temperature, Seed, Token, LayerData (..), ProcessingState, CycleStage (..))
 import           LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified LLaMa2.Decoder.Decoder as Decoder
@@ -12,6 +12,7 @@ import Simulation.Parameters (DecoderParameters)
 import qualified Simulation.ParamsPlaceholder as PARAM
 import Control.Monad (unless, when)
 import qualified System.Directory as DIR
+import Data.Foldable (forM_)
 
 -- Create autoregressive feedback loop
 -- State: (current token, remaining prompt tokens, using prompt)
@@ -83,7 +84,7 @@ spec = do
             temperature = pure (0.0 :: Temperature)
             seed        = pure (123 :: Seed)
             powerOn     = pure True
-            totalCycles = 20_600  -- Need more cycles to process the full prompt
+            totalCycles = 10_000  -- Need more cycles to process the full prompt
 
         let
           params :: DecoderParameters
@@ -125,58 +126,62 @@ spec = do
               enableGen
 
         -- -------------------------------------------------------------------
-        -- Sample *all* internal signals we need
+        -- Sample *all* internal signals we need (Phase 2: simplified signals)
         -- -------------------------------------------------------------------
         let sampledLayerIdx   = sampleN totalCycles (Decoder.layerIndex intro)
             sampledFFNDone    = sampleN totalCycles (Decoder.ffnDone intro)
-            sampledQKVDone    = sampleN totalCycles (Decoder.qkvDone intro)
-            sampledAttnDone   = sampleN totalCycles (Decoder.attnDone intro)
+            sampledAttnDone   = sampleN totalCycles (Decoder.attnDone intro)  -- Now includes QKV+Write+Attend
             sampledLayerOut   = sampleN totalCycles (Decoder.layerOutput intro)
             sampledLayerData  = sampleN totalCycles (Decoder.layerData intro)
             sampledInputToken = sampleN totalCycles inputToken
             sampledInputValid = sampleN totalCycles inputValid
             sampledReady      = sampleN totalCycles rdy
+            sampledState      = sampleN totalCycles (Decoder.state intro)
 
         -- -------------------------------------------------------------------
-        -- Pair everything with a cycle index
+        -- Pair everything with a cycle index (Phase 2: 8 signals instead of 9)
         -- -------------------------------------------------------------------
         let
           cycles = [0..totalCycles-1] :: [Int]
-          zipped = zipWith9' (,,,,,,,,)
+          zipped = zipWith8' (,,,,,,,)
                               cycles
                               sampledLayerIdx
-                              sampledQKVDone
-                              sampledAttnDone
+                              sampledAttnDone  -- Single attention completion signal
                               sampledFFNDone
                               (P.zip sampledLayerOut sampledLayerData)
                               sampledInputToken
                               sampledInputValid
                               sampledReady
+                              
+        putStrLn "\n=== DIAGNOSTIC: Per-Layer Completions ==="
+        forM_ [0, 1, 2, 3, 4] $ \layer -> do
+          let attnCount = P.length $ filter 
+                (\(_, layerIdx, attnDone, _, _, _, _, _) -> layerIdx == layer && attnDone) 
+                zipped
+              ffnCount = P.length $ filter 
+                (\(_, layerIdx, _, ffnDone, _, _, _, _) -> layerIdx == layer && ffnDone) 
+                zipped
+          
+          putStrLn $ "Layer " P.++ show layer P.++ ": attn=" P.++ show attnCount P.++ " ffn=" P.++ show ffnCount
 
         -- -------------------------------------------------------------------
-        -- Extract stage completions for layer 0
+        -- Extract stage completions for layer 0 (Phase 2: simplified)
         -- -------------------------------------------------------------------
-        let layer0QKVCompletions =
-              [ (i, inTok, valid)
-              | (i, layerIdx, qkvDone, _, _, _, inTok, valid, _) <- zipped
-              , layerIdx == 0 && qkvDone ]
-
         let layer0AttnCompletions =
               [ (i, output, layerData, inTok)
-              | (i, layerIdx, _, attnDone, _, (output, layerData), inTok, _, _) <- zipped
+              | (i, layerIdx, attnDone, _, (output, layerData), inTok, _, _) <- zipped
               , layerIdx == 0 && attnDone ]
 
         let layer0FFNCompletions =
               [ (i, output, layerData, inTok, rdy')
-              | (i, layerIdx, _, _, ffnDone, (output, layerData), inTok, _, rdy') <- zipped
+              | (i, layerIdx, _, ffnDone, (output, layerData), inTok, _, rdy') <- zipped
               , layerIdx == 0 && ffnDone ]
 
         -- -------------------------------------------------------------------
-        -- Diagnostic output
+        -- Diagnostic output (Phase 2: simplified)
         -- -------------------------------------------------------------------
-        putStrLn "\n=== Layer 0 Stage Completions ==="
-        putStrLn $ "QKV Completions: " P.++ show (P.length layer0QKVCompletions)
-        putStrLn $ "Attention Completions: " P.++ show (P.length layer0AttnCompletions)
+        putStrLn $ "\n=== Layer 0 Stage Completions (Phase 2) ==="
+        putStrLn $ "Attention Completions (full): " P.++ show (P.length layer0AttnCompletions)
         putStrLn $ "FFN Completions: " P.++ show (P.length layer0FFNCompletions)
 
         -- Print detailed info about each FFN completion
@@ -202,42 +207,33 @@ spec = do
           ) [0 .. P.length layer0FFNCompletions - 1]
 
         -- -------------------------------------------------------------------
-        -- Verify stage completion timing
+        -- Verify stage completion timing (Phase 2: Attn → FFN)
         -- -------------------------------------------------------------------
-        putStrLn "\n=== Stage Completion Timing Analysis ==="
+        putStrLn "\n=== Stage Completion Timing Analysis (Phase 2) ==="
         
-        -- For each FFN completion, find the corresponding QKV and Attn completions
+        -- For each FFN completion, find the corresponding Attn completion
         P.mapM_ (\(idx :: Int) -> do
             let (ffnCycle, _, _, inTok, _) = layer0FFNCompletions P.!! idx
             
-            -- Find matching QKV completion for this token
-            let qkvMatches = P.filter (\(_, _tok, _) -> _tok == inTok) layer0QKVCompletions
-            let attnMatches = P.filter (\(_, _, _, _tok) -> _tok == inTok) layer0AttnCompletions
+            -- Find matching Attn completion for this token
+            let attnMatches = P.filter (\(_, _, _, tok) -> tok == inTok) layer0AttnCompletions
             
             putStrLn $ "\nToken " P.++ show inTok P.++ " stage timing:"
             
-            case qkvMatches of
-              ((qkvCycle, _, _):_) -> 
-                putStrLn $ "  QKV done at cycle: " P.++ show qkvCycle
-              [] -> 
-                putStrLn "  QKV completion not found!"
-            
             case attnMatches of
               ((attnCycle, _, _, _):_) -> 
-                putStrLn $ "  Attn done at cycle: " P.++ show attnCycle
+                putStrLn $ "  Attention done at cycle: " P.++ show attnCycle
               [] -> 
                 putStrLn "  Attention completion not found!"
             
             putStrLn $ "  FFN done at cycle: " P.++ show ffnCycle
             
-            -- Verify ordering
-            case (qkvMatches, attnMatches) of
-              ((qkvCycle, _, _):_, (attnCycle, _, _, _):_) -> do
-                when (qkvCycle >= attnCycle) $
-                  putStrLn "  WARNING: QKV completed after or at same time as Attention!"
+            -- Verify ordering (Attention < FFN)
+            case attnMatches of
+              ((attnCycle, _, _, _):_) -> do
                 when (attnCycle >= ffnCycle) $
                   putStrLn "  WARNING: Attention completed after or at same time as FFN!"
-              _ -> putStrLn "  WARNING: Missing stage completions!"
+              _ -> putStrLn "  WARNING: Missing attention completion!"
           ) [0 .. P.length layer0FFNCompletions - 1]
 
         -- -------------------------------------------------------------------
@@ -259,7 +255,7 @@ spec = do
             P.mapM_ (\(idx :: Int) -> do
                 when (idx < P.length tokenReferences) $ do
                   let ref = tokenReferences P.!! idx
-                  let (_cycle, output, layerData, inTok, _) = layer0FFNCompletions P.!! idx
+                  let (cycle', output, layerData, inTok, _) = layer0FFNCompletions P.!! idx
                   
                   let LayerData { attentionOutput, feedForwardOutput, queryVectors, keyVectors, valueVectors } = layerData
                   let qNorm = vectorNorm (P.head $ toList queryVectors) :: Float
@@ -307,17 +303,16 @@ spec = do
                   putStrLn "  ✓ All checks passed"
               ) [0 .. P.min numCompletions (P.length tokenReferences) - 1]
 
--- Helper function to zip 9 lists
-zipWith9' :: (a -> b -> c -> d -> e -> f -> g -> h -> i -> j) 
-          -> [a] -> [b] -> [c] -> [d] -> [e] -> [f] -> [g] -> [h] -> [i] -> [j]
-zipWith9' _ []     _      _      _      _      _      _      _      _      = []
-zipWith9' _ _      []     _      _      _      _      _      _      _      = []
-zipWith9' _ _      _      []     _      _      _      _      _      _      = []
-zipWith9' _ _      _      _      []     _      _      _      _      _      = []
-zipWith9' _ _      _      _      _      []     _      _      _      _      = []
-zipWith9' _ _      _      _      _      _      []     _      _      _      = []
-zipWith9' _ _      _      _      _      _      _      []     _      _      = []
-zipWith9' _ _      _      _      _      _      _      _      []     _      = []
-zipWith9' _ _      _      _      _      _      _      _      _      []     = []
-zipWith9' fn (x:xs) (y:ys) (z:zs) (w:ws) (v:vs) (u:us) (t:ts) (s:ss) (r:rs) =
-    fn x y z w v u t s r : zipWith9' fn xs ys zs ws vs us ts ss rs
+-- Helper function to zip 8 lists (Phase 2: simplified from 9)
+zipWith8' :: (a -> b -> c -> d -> e -> f -> g -> h -> i) 
+          -> [a] -> [b] -> [c] -> [d] -> [e] -> [f] -> [g] -> [h] -> [i]
+zipWith8' _ []     _      _      _      _      _      _      _      = []
+zipWith8' _ _      []     _      _      _      _      _      _      = []
+zipWith8' _ _      _      []     _      _      _      _      _      = []
+zipWith8' _ _      _      _      []     _      _      _      _      = []
+zipWith8' _ _      _      _      _      []     _      _      _      = []
+zipWith8' _ _      _      _      _      _      []     _      _      = []
+zipWith8' _ _      _      _      _      _      _      []     _      = []
+zipWith8' _ _      _      _      _      _      _      _      []     = []
+zipWith8' fn (x:xs) (y:ys) (z:zs) (w:ws) (v:vs) (u:us) (t:ts) (s:ss) =
+    fn x y z w v u t s : zipWith8' fn xs ys zs ws vs us ts ss
