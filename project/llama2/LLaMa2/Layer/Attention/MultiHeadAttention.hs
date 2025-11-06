@@ -116,11 +116,8 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableAttention
     xAfterAttn = residualAdder <$> layerData <*> woHeads
     
     -- CRITICAL: Define edge detector first (outer scope)
-    prevReady = register False validProjected
+    prevReady = register True validProjected  -- start true -> suppress spurious initial rising edge
     attentionDonePulse = validProjected .&&. (not <$> prevReady)
-    
-    -- CRITICAL: Latch attention output when it completes (before stage advances)
-    xAfterAttnLatched = regEn (repeat 0) attentionDonePulse xAfterAttn
     
     -- Attention done: rising edge of validProjected
     -- This signals completion of the entire attention mechanism

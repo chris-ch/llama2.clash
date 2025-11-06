@@ -236,6 +236,15 @@ spec = do
               _ -> putStrLn "  WARNING: Missing attention completion!"
           ) [0 .. P.length layer0FFNCompletions - 1]
 
+        let readyCount = P.length $ filter id sampledReady
+        let attnCount  = P.length $ filter id sampledAttnDone
+        let ffnCount   = P.length $ filter id sampledFFNDone
+
+        putStrLn "\n=== Controller Activity Summary ==="
+        putStrLn $ "ready pulses: " P.++ show readyCount
+        putStrLn $ "attention dones: " P.++ show attnCount
+        putStrLn $ "ffn dones: " P.++ show ffnCount
+
         -- -------------------------------------------------------------------
         -- Assertions against reference values
         -- -------------------------------------------------------------------
@@ -302,6 +311,7 @@ spec = do
                   
                   putStrLn "  ✓ All checks passed"
               ) [0 .. P.min numCompletions (P.length tokenReferences) - 1]
+
 
 -- Helper function to zip 8 lists (Phase 2: simplified from 9)
 zipWith8' :: (a -> b -> c -> d -> e -> f -> g -> h -> i) 
