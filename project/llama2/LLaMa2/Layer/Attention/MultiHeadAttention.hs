@@ -22,7 +22,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom Bool ->
   Signal dom Bool ->  -- enableQKV
   Signal dom Bool ->  -- enableWriteKV (kept in signature, not used in implementation)
-  Signal dom Bool ->  -- enableAttend
+  Signal dom Bool ->  -- enableAttend (kept in signature, not used in implementation)
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -60,6 +60,20 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
     -- Provide stable write enable to banks (stays high during entire write operation)
     writeEnableForBanks = writeEnable .&&. qkvDoneLatchedForWrite
 
+    -- ========================================================================
+    -- ATTEND STAGE CONTROL (replacing controller's enableAttend)
+    -- ========================================================================
+    -- Detect write completion (rising edge of writeDone)
+    writeDonePrev = register False writeDone
+    writeCompletePulse = writeDone .&&. (not <$> writeDonePrev)
+    
+    -- Latch: set when write completes, clear when attention completes
+    -- This replaces the controller's enableAttend signal
+    allHeadsDone = and <$> sequenceA perHeadDoneFlags
+    attendActive = register False 
+      (mux writeCompletePulse (pure True)
+        (mux allHeadsDone (pure False) attendActive))
+
     input = inputVector <$> layerData
 
     (qkvProjected, qkvDone, qkvInReady) =
@@ -82,10 +96,11 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
     -- Pass FSM's writeEnableForBanks to banks (includes latched qkvDone)
     -- CRITICAL: Pass qkvDoneLatchedForWrite as 3rd arg, not original qkvDone!
     -- The banks AND this with writeEnableForBanks, so both must be latched versions
+    -- Use locally-generated attendActive instead of controller's enableAttend
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
         (kvBankController seqPos layerData qkvDoneLatchedForWrite 
-                         writeEnableForBanks enableAttend)  -- Changed: pass latched qkvDone
+                         writeEnableForBanks attendActive)  -- Changed: use local attendActive
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
     
@@ -167,4 +182,3 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
       parallelRowMatrixMultiplier woValidIn internalReady woMatrix latchedVector
     projOut = regEn (repeat 0) multiplierResultHandshake woResult
     validOut = (==) <$> state <*> pure SINGLE_HEAD_DONE
-  
