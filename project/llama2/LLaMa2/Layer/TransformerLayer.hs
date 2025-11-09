@@ -48,8 +48,6 @@ transformerLayer ::
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
    -> Signal dom Bool  -- enableQKV (layer-specific)
-   -> Signal dom Bool  -- enableWriteKV (layer-specific)
-   -> Signal dom Bool  -- enableAttend (layer-specific)
    -> Signal dom Bool  -- enableFFN (layer-specific)
    -> Signal dom Bool  -- enableClassifier (layer-specific)
    -> ( Signal dom LayerData,
@@ -59,7 +57,7 @@ transformerLayer ::
         Signal dom Bool
       )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
+                 enableQKV enableFFN enableClassifier =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -74,8 +72,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
 
     -- Enables are already layer-specific from LayerStack
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM
-                              enableQKV enableWriteKV enableAttend 
+      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableQKV 
 
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =

@@ -21,8 +21,6 @@ multiHeadAttentionStage :: forall dom.
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->
   Signal dom Bool ->  -- enableQKV
-  Signal dom Bool ->  -- enableWriteKV (kept in signature, not used in implementation)
-  Signal dom Bool ->  -- enableAttend (kept in signature, not used in implementation)
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -32,8 +30,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
-                        enableQKV enableWriteKV enableAttend =
+multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention enableQKV =
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
 
@@ -100,7 +97,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
         (kvBankController seqPos layerData qkvDoneLatchedForWrite 
-                         writeEnableForBanks attendActive)  -- Changed: use local attendActive
+                         writeEnableForBanks attendActive)
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
     
