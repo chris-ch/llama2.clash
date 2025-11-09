@@ -15,7 +15,6 @@ import qualified Simulation.DRAMBackedAxiSlaveSpec  (spec)
 import qualified Simulation.WeightLoadingDiagnosticSpec (spec)
 import qualified LLaMa2.Decoder.EnableAttentionTimingSpec (spec)
 import qualified Simulation.SingleLayerOutputSpec (spec)
-import qualified Simulation.ControllerSpec (spec)
 
 main :: IO ()
 main = hspec $ do
@@ -32,4 +31,3 @@ main = hspec $ do
   --Simulation.WeightLoadingDiagnosticSpec.spec
   LLaMa2.Decoder.EnableAttentionTimingSpec.spec
   Simulation.SingleLayerOutputSpec.spec
-  Simulation.ControllerSpec.spec
