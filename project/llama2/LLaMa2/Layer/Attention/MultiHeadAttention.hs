@@ -21,7 +21,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->
   Signal dom Bool ->  -- enableQKV
-  Signal dom Bool ->  -- enableWriteKV
+  Signal dom Bool ->  -- enableWriteKV (kept in signature, not used in implementation)
   Signal dom Bool ->  -- enableAttend
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
@@ -37,8 +37,28 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
   (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
   where
 
+    -- Pipeline-based ready/valid control
+    -- The write FSM generates the proper ready signal for QKV output
+    allBanksDone = and <$> sequenceA perBankWriteDoneFlags
+    (writeValidOutNew, writeReadyIn, writeEnable) =
+      kvWriteControllerFSM
+        qkvDone
+        (pure True)
+        allBanksDone
+    
+    -- Use FSM's ready signal instead of controller enable
     qkvOutReady :: Signal dom Bool
-    qkvOutReady = enableWriteKV
+    qkvOutReady = writeReadyIn  -- Changed: use pipeline ready signal, not enableWriteKV
+    
+    -- CRITICAL FIX: Latch qkvDone for the duration of the write operation
+    -- The banks need both writeEnable AND qkvDone, but qkvDone de-asserts after handshake
+    -- So we create writeEnableWithValid that combines them properly
+    qkvDoneHandshake = qkvDone .&&. writeReadyIn
+    qkvDoneLatchedForWrite = register False (mux qkvDoneHandshake (pure True) 
+                                            (mux allBanksDone (pure False) qkvDoneLatchedForWrite))
+    
+    -- Provide stable write enable to banks (stays high during entire write operation)
+    writeEnableForBanks = writeEnable .&&. qkvDoneLatchedForWrite
 
     input = inputVector <$> layerData
 
@@ -58,18 +78,17 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer enableAttention
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
+    
+    -- Pass FSM's writeEnableForBanks to banks (includes latched qkvDone)
+    -- CRITICAL: Pass qkvDoneLatchedForWrite as 3rd arg, not original qkvDone!
+    -- The banks AND this with writeEnableForBanks, so both must be latched versions
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
-        (kvBankController seqPos layerData qkvDone 
-                         enableWriteKV enableAttend)
+        (kvBankController seqPos layerData qkvDoneLatchedForWrite 
+                         writeEnableForBanks enableAttend)  -- Changed: pass latched qkvDone
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
-    allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-    (writeValidOutNew, writeReadyIn, writeEnable) =
-      kvWriteControllerFSM
-        qkvDone
-        (pure True)
-        allBanksDone
+    
     writeDone = writeValidOutNew
 
     -- WO projection (unchanged)
@@ -148,3 +167,4 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
       parallelRowMatrixMultiplier woValidIn internalReady woMatrix latchedVector
     projOut = regEn (repeat 0) multiplierResultHandshake woResult
     validOut = (==) <$> state <*> pure SINGLE_HEAD_DONE
+  
