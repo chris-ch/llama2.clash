@@ -62,24 +62,23 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
       , ffnDone'
       )
       where
-        -- NEW: Gate enables for this specific layer
+        -- Gate enables for this specific layer
         isThisLayer = activeLayerIdx .==. pure layerIdx
         
         validIn' = validIn .&&. isThisLayer
         
-        cycleStage = processingStage <$> processingState
-
         ( qProj, kProj, vProj, attnOut, ffnOut, writeDone', attnDone', qkvDone', ffnDone' ) =
           TransformerLayer.transformerLayer
             layerParams
             seqPos
-            cycleStage
             inputData'
             weightBuffer
             useRAM
             validIn'
 
         -- Now recombine locally, no internal mutation inside transformerLayer
+        cycleStage = processingStage <$> processingState
+
         outputData' =
           mux (cycleStage .==. pure Stage1_ProjectQKV)
             ( (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })

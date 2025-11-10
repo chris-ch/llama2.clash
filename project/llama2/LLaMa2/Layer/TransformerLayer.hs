@@ -7,8 +7,7 @@ import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.LayerData
-  ( CycleStage (..),
-    LayerData (..),
+  ( LayerData (..),
   )
 import LLaMa2.Types.ModelConfig
   ( HeadDimension,
@@ -22,7 +21,7 @@ import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 --------------------------------------------------------------------------------
--- Simplified feed-forward controller (unchanged)
+-- Feed-forward controller
 --------------------------------------------------------------------------------
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -48,7 +47,6 @@ transformerLayer ::
   (HiddenClockResetEnable dom)
    => PARAM.TransformerLayerComponent
    -> Signal dom (Index SequenceLength)
-   -> Signal dom CycleStage
    -> Signal dom LayerData                -- input layer data
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool                     -- useRAM
@@ -63,7 +61,7 @@ transformerLayer ::
       , Signal dom Bool  -- qkvDone
       , Signal dom Bool  -- ffnDone
       )
-transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM validIn =
+transformerLayer layerParams seqPos layerData weightBuffer useRAM validIn =
   ( qProj
   , kProj
   , vProj
@@ -81,14 +79,26 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
     ----------------------------------------------------------------------------
     -- Multi-head attention stage
     ----------------------------------------------------------------------------
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, _qkvReady, writeDone, qkvDone) =
+    (xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone) =
       multiHeadAttentionStage mhaParams seqPos layerData weightBuffer useRAM validIn
 
-    ----------------------------------------------------------------------------
+    -- ----------------------------------------------------------------------------
     -- Feed-forward stage (Stage 4)
-    ----------------------------------------------------------------------------
-    inFFNStage = cycleStage .==. pure Stage4_FeedForward
-    ffnStageStart = risingEdge inFFNStage
+    -- ----------------------------------------------------------------------------
+
+    -- latch that we are inside a valid transaction for this layer
+    -- set when validIn asserts, cleared when the FFN finishes for this transaction
+    ffnArmed :: Signal dom Bool
+    ffnArmed = register False nextFfnArmed
+      where
+        setArm = validIn                              -- transaction begins
+        clearArm = ffnDone                            -- transaction ends when FFN done
+        nextFfnArmed = mux setArm (pure True) (mux clearArm (pure False) ffnArmed)
+
+    -- ffnStageStart: only start FFN when attentionDone *and* we are armed for this layer
+    -- note: attentionDone is already a pulse; no extra risingEdge is required
+    ffnStageStart :: Signal dom Bool
+    ffnStageStart = attentionDone .&&. ffnArmed
 
     ffnInput = attentionOutput <$> layerData
 

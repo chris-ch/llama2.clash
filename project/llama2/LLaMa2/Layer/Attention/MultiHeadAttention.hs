@@ -21,17 +21,18 @@ multiHeadAttentionStage :: forall dom.
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->  -- useRAM
   Signal dom Bool ->  -- validIn
-  ( Signal dom Bool,
+  (
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
     Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
     Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
     Signal dom Bool,
     Signal dom Bool,
+    Signal dom Bool,
     Signal dom Bool
   )
 multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
-  (attentionDone, xAfterAttn, q, k, v, qkvReady, writeDone, qkvDone)
+  (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
   where
 
     -- Pipeline-based ready/valid control
