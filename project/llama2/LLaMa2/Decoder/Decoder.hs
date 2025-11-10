@@ -3,7 +3,7 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, CycleStage)
+import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, CycleStage (..))
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
@@ -125,16 +125,25 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       <*> embeddedVector
 
     -- Extract seqPos for modules that need it, but keep processingState too
-    layerOutput = LayerStack.processActiveLayer
-      processingStage layerIdx seqPosition layerInput weightBuffer useRAM (PARAM.modelLayers params)
+    layerOutputs = LayerStack.processActiveLayer
+      layerIdx seqPosition layerInput weightBuffer useRAM (PARAM.modelLayers params)
       layerValidIn
-    
-    nextLayerData   = LayerStack.outputData layerOutput
-    layerWriteDone  = LayerStack.writeDone layerOutput
-    layerAttnDone   = LayerStack.attnDone layerOutput
-    layerQkvDone    = LayerStack.qkvDone layerOutput
-    layerFfnDone    = LayerStack.ffnDone layerOutput
-    layerQkvReady    = LayerStack.qkvReady layerOutput
+
+    -- Select the appropriate intermediate output depending on current processing stage
+    nextLayerData =
+      mux (processingStage .==. pure Stage1_ProjectQKV)
+        (LayerStack.qkvOutput layerOutputs)
+        (mux (processingStage .==. pure Stage3_Attend)
+            (LayerStack.attnOutput layerOutputs)
+            (mux (processingStage .==. pure Stage4_FeedForward)
+                (LayerStack.ffnOutput layerOutputs)
+                layerInput))  -- default: pass-through
+                
+    layerWriteDone = LayerStack.writeDone layerOutputs
+    layerAttnDone  = LayerStack.attnDone layerOutputs
+    layerQkvDone   = LayerStack.qkvDone layerOutputs
+    layerFfnDone   = LayerStack.ffnDone layerOutputs
+    layerQkvReady  = LayerStack.qkvReady layerOutputs
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
