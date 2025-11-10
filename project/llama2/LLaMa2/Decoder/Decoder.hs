@@ -78,7 +78,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     readyPulse      = Controller.readyPulse controller
 
     -- Extract enable signals from controller
-    enableQKV       = Controller.enableQKV controller
+    layerValidIn       = Controller.layerValidIn controller
     
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
@@ -126,7 +126,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- Extract seqPos for modules that need it, but keep processingState too
     layerOutput = LayerStack.processActiveLayer
       processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV
+      layerValidIn
     
     nextLayerData   = LayerStack.outputData layerOutput
     layerWriteDone  = LayerStack.writeDone layerOutput

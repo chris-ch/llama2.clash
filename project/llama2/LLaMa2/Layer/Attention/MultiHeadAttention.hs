@@ -30,8 +30,8 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableQKV =
-  (attentionDone, xAfterAttn, q, k, v, qkvInReady, writeDone, qkvDone)
+multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
+  (attentionDone, xAfterAttn, q, k, v, qkvReady, writeDone, qkvDone)
   where
 
     -- Pipeline-based ready/valid control
@@ -42,10 +42,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableQKV =
         qkvDone
         (pure True)
         allBanksDone
-    
-    -- Use FSM's ready signal instead of controller enable
-    qkvOutReady :: Signal dom Bool
-    qkvOutReady = writeReadyIn  -- Changed: use pipeline ready signal, not enableWriteKV
     
     -- CRITICAL FIX: Latch qkvDone for the duration of the write operation
     -- The banks need both writeEnable AND qkvDone, but qkvDone de-asserts after handshake
@@ -73,10 +69,10 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableQKV =
 
     input = inputVector <$> layerData
 
-    (qkvProjected, qkvDone, qkvInReady) =
+    (qkvProjected, qkvDone, qkvReady) =
       qkvProjectionController
-        enableQKV
-        qkvOutReady
+        validIn
+        writeReadyIn
         input
         mha
         seqPos

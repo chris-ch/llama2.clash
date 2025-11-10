@@ -54,8 +54,7 @@ transformerLayer ::
         Signal dom Bool,
         Signal dom Bool
       )
-transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV =
+transformerLayer layer layerIndex processingState layerData weightBuffer useRAM validIn =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -69,8 +68,8 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     seqPos = sequencePosition <$> processingState
 
     -- Enables are already layer-specific from LayerStack
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM enableQKV 
+    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvReady, writeDone, qkvDone) =
+      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn 
 
     layerDataAfterAttention :: Signal dom LayerData
     layerDataAfterAttention =

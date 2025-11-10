@@ -25,7 +25,7 @@ data SequenceController dom = SequenceController
   stageComplete   :: Signal dom Bool,
   
   -- Centralized enable signals (one per stage)
-  enableQKV        :: Signal dom Bool  -- Stage1_ProjectQKV is active
+  layerValidIn        :: Signal dom Bool
   }
 
 -- | Single controller
@@ -45,8 +45,8 @@ sequenceController qkvDone writeDone attnDone ffnDone classifierDone =
     readyPulse      = readyPulse',
     stageComplete   = stageDone
     
-    -- Generate enable signals directly from current stage
-    , enableQKV        = (stage <$> state) .==. pure Stage1_ProjectQKV
+    -- Generate valid signal directly from current stage
+    , layerValidIn        = (stage <$> state) .==. pure Stage1_ProjectQKV
     }
   where
     initialState = UnifiedState

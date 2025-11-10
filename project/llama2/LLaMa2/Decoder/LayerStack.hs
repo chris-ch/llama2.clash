@@ -28,8 +28,7 @@ processActiveLayer :: forall dom.
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> Signal dom Bool  -- enableQKV (global)
   -> LayerOutput dom
-processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
-                   enableQKV =
+processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers validIn =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -65,7 +64,7 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
         -- NEW: Gate enables for this specific layer
         isThisLayer = activeLayerIdx .==. pure layerIdx
         
-        enableQKVThisLayer = enableQKV .&&. isThisLayer
+        validIn' = validIn .&&. isThisLayer
         
         ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =
           TransformerLayer.transformerLayer
@@ -75,7 +74,7 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
             inputData'
             weightBuffer
             useRAM
-            enableQKVThisLayer
+            validIn'
 
     selectActiveLayer :: Signal dom (Index NumLayers)
                       -> Vec NumLayers ( Signal dom LayerData

@@ -218,7 +218,7 @@ qkvProjectionController ::
   -> Signal dom Bool
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> PARAM.MultiHeadAttentionComponentQ
-  -> Signal dom (Index SequenceLength)          -- seqPos (not ProcessingState)
+  -> Signal dom (Index SequenceLength)
   -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
@@ -226,11 +226,11 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController inValid outReady input mhaQ seqPos weightBuf useRAM =
+qkvProjectionController validIn readyIn input mhaQ seqPos weightBuf useRAM =
   (result, validOut, inReady)
  where
   (projectorEnable, validOut, inReady) =
-    processingControllerFSM inValid outReady matVecValid
+    processingControllerFSM validIn readyIn matVecValid
 
   (result, matVecValid, ready) =
     qkvProjector projectorEnable (pure True) mhaQ
