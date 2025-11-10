@@ -34,16 +34,16 @@ parallelRowMatrixMultiplierDyn :: forall dom rows cols.
   ( HiddenClockResetEnable dom
   , KnownNat rows, KnownNat cols
   )
-  => Signal dom Bool                      -- ^ validIn
-  -> Signal dom Bool                      -- ^ readyIn (downstream)
+  => Signal dom Bool                      -- ^ inputValid
+  -> Signal dom Bool                      -- ^ downStreamReady
   -> Signal dom (MatI8E rows cols)        -- ^ matrix (runtime, from RAM or const)
   -> Signal dom (Vec cols FixedPoint)     -- ^ input vector
   -> ( Signal dom (Vec rows FixedPoint)   -- ^ output vector
-     , Signal dom Bool                    -- ^ validOut
-     , Signal dom Bool                    -- ^ readyOut
+     , Signal dom Bool                    -- ^ outputValid
+     , Signal dom Bool                    -- ^ readyForInput
      )
-parallelRowMatrixMultiplierDyn validIn readyInDownstream matSig inputVector =
-  (outputVector, validOut, readyOut)
+parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
+  (outputVector, outputValid, readyForInput)
  where
   -- Row counter
   rowIndex :: Signal dom (Index rows)
@@ -58,14 +58,14 @@ parallelRowMatrixMultiplierDyn validIn readyInDownstream matSig inputVector =
     parallel64RowProcessor rowReset rowEnable currentRow inputVector
 
   -- Protocol FSM
-  (state, rowReset, rowEnable, validOut, readyOut) =
-    matrixMultiplierStateMachine validIn readyInDownstream rowDone rowIndex
+  (state, rowReset, rowEnable, outputValid, readyForInput) =
+    matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
 
   -- Row index sequencing
   nextRowIndex =
     mux (rowDone .&&. (rowIndex ./=. pure maxBound))
         (rowIndex + 1)
-        (mux ((state .==. pure MDone) .&&. readyInDownstream)
+        (mux ((state .==. pure MDone) .&&. downStreamReady)
              (pure 0)
              rowIndex)
 
@@ -80,26 +80,25 @@ parallelRowMatrixMultiplierDyn validIn readyInDownstream matSig inputVector =
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Signal dom Bool                          -- ^ validIn
-  -> Signal dom Bool                          -- ^ readyIn
+  => Signal dom Bool                          -- ^ inputValid
+  -> Signal dom Bool                          -- ^ downStreamReady
   -> PARAM.SingleHeadComponentQ               -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM weights
   -> Signal dom Bool                          -- ^ useRAM
   -> ( Signal dom (Vec HeadDimension FixedPoint)
-     , Signal dom Bool                        -- ^ validOut
-     , Signal dom Bool                        -- ^ readyOut
+     , Signal dom Bool                        -- ^ outputValid
+     , Signal dom Bool                        -- ^ readyForInput
      )
-queryHeadProjector validIn readyIn headComp stepCountSig xHatSig ramWeights useRAM =
-  (qRoOut, qValidOut, qReadyOut)
+queryHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramWeights useRAM =
+  (qRoOut, outputValid, readyForInput)
  where
   selectedMat :: Signal dom (MatI8E HeadDimension ModelDimension)
   selectedMat = mux useRAM ramWeights (pure (PARAM.wqHeadQ headComp))
 
-  -- Use readyIn (was: pure True)
-  (qOut, qValidOut, qReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn readyIn selectedMat xHatSig
+  (qOut, outputValid, readyForInput) =
+    parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedMat xHatSig
 
   qRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> qOut
 
@@ -108,8 +107,8 @@ queryHeadProjector validIn readyIn headComp stepCountSig xHatSig ramWeights useR
 --------------------------------------------------------------------------------
 keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Signal dom Bool                          -- ^ validIn
-  -> Signal dom Bool                          -- ^ readyIn
+  => Signal dom Bool                          -- ^ inputValid
+  -> Signal dom Bool                          -- ^ downStreamReady
   -> PARAM.SingleHeadComponentQ               -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
@@ -118,35 +117,35 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom Bool                          -- ^ useRAM
   -> ( Signal dom (Vec HeadDimension FixedPoint)  -- K
      , Signal dom (Vec HeadDimension FixedPoint)  -- V
-     , Signal dom Bool                            -- validOut
-     , Signal dom Bool                            -- readyOut
+     , Signal dom Bool                            -- outputValid
+     , Signal dom Bool                            -- readyForInput
      )
-keyValueHeadProjector validIn readyIn headComp stepCountSig xHatSig ramK ramV useRAM =
-  (kRoOut, vOut, validOut, readyOut)
+keyValueHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramK ramV useRAM =
+  (kRoOut, vOut, outputValid, readyForInput)
  where
   selectedK = mux useRAM ramK (pure (PARAM.wkHeadQ headComp))
   selectedV = mux useRAM ramV (pure (PARAM.wvHeadQ headComp))
 
-  -- Use readyIn for both children (was: pure True)
+  -- Use downStreamReady for both children (was: pure True)
   (kOut, kValidOut, kReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn readyIn selectedK xHatSig
+    parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedK xHatSig
 
   (vOut, vValidOut, vReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn readyIn selectedV xHatSig
+    parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedV xHatSig
 
   kRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> kOut
 
   -- Keep existing policy: present result only when both valid, and upstream is ready when both children are ready
-  validOut = kValidOut .&&. vValidOut
-  readyOut = kReadyOut .&&. vReadyOut
+  outputValid = kValidOut .&&. vValidOut
+  readyForInput = kReadyOut .&&. vReadyOut
 
 --------------------------------------------------------------------------------
 -- Full QKV projector using the RAM buffer
 --------------------------------------------------------------------------------
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Signal dom Bool                          -- ^ validIn
-  -> Signal dom Bool                          -- ^ readyIn
+  => Signal dom Bool                          -- ^ inputValid
+  -> Signal dom Bool                          -- ^ downStreamReady
   -> PARAM.MultiHeadAttentionComponentQ             -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
@@ -155,11 +154,11 @@ qkvProjector :: forall dom.
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Signal dom Bool                        -- ^ validOut
-     , Signal dom Bool                        -- ^ readyOut
+     , Signal dom Bool                        -- ^ outputValid
+     , Signal dom Bool                        -- ^ readyForInput
      )
-qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
-  (qkvOut, allValid, allReady)
+qkvProjector inputValid downStreamReady mhaQ seqPosSig xSig weightBuffer useRAM =
+  (qkvOut, outputValid, readyForInput)
  where
   xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaQ)
   useRAM' = useRAM -- should be pure True for disabling legacy wired weights completely for QKV
@@ -172,7 +171,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
              , Signal dom Bool )
     qHead hIx headQ =
       let ramQ = extractQWeight <$> weightBuffer <*> pure hIx
-      in queryHeadProjector validIn readyIn headQ seqPosSig xNorm ramQ useRAM'
+      in queryHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramQ useRAM'
 
   -- Map KV heads to their corresponding SingleHeadComponentQ (for rotary params)
   queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
@@ -190,7 +189,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
       let headQ = PARAM.headsQ mhaQ !! qIx
           ramK  = extractKWeight <$> weightBuffer <*> pure kvIx
           ramV  = extractVWeight <$> weightBuffer <*> pure kvIx
-      in keyValueHeadProjector validIn readyIn headQ seqPosSig xNorm ramK ramV useRAM'
+      in keyValueHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramK ramV useRAM'
 
   qVecs    = map (\(q, _, _) -> q) qResults
   qValids  = map (\(_, v, _) -> v) qResults
@@ -201,8 +200,8 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
   kvValids = map (\(_, _, v, _) -> v) kvResults
   kvReadys = map (\(_, _, _, r) -> r) kvResults
 
-  allValid = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
-  allReady = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
+  outputValid = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
+  readyForInput = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
 
   qkvOut = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)
 
@@ -223,17 +222,17 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController validIn readyIn input mhaQ seqPos weightBuf useRAM =
-  (result, validOut, inReadyGated)
+qkvProjectionController inputValid downStreamReady input mhaQ seqPos weightBuf useRAM =
+  (result, outputValid, readyForInput)
  where
   -- Generic controller (stateful): produces raw enable/valid/inReady
-  (enableRaw, validOut, inReadyRaw) =
-    processingControllerFSM validIn readyIn matVecValid
+  (enableRaw, outputValid, inReadyRaw) =
+    processingControllerFSM inputValid downStreamReady matVecValid
 
   -- Instantiate the projector, now driving downstream readyIn correctly.
   -- We also capture its upstream readiness (projReadyOut).
   (result, matVecValid, projReadyOut) =
-    qkvProjector enableGated readyIn mhaQ
+    qkvProjector enableGated downStreamReady mhaQ
                  seqPos
                  input
                  weightBuf
@@ -243,4 +242,4 @@ qkvProjectionController validIn readyIn input mhaQ seqPos weightBuf useRAM =
   -- to avoid any potential combinational loop; start permissive (True).
   projReadyOut_d = register True projReadyOut
   enableGated    = enableRaw  .&&. projReadyOut_d
-  inReadyGated   = inReadyRaw .&&. projReadyOut_d
+  readyForInput   = inReadyRaw .&&. projReadyOut_d

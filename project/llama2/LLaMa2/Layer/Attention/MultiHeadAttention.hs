@@ -123,13 +123,13 @@ perHeadWOController ::
     Vec NumQueryHeads (Signal dom Bool)
   )
 perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
-  (perHeadProjected, perHeadValidOuts, perHeadReadyOuts)
+  (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs)
   where
-    headValidIn = zipWith (.&&.) perHeadDoneFlags perHeadReadyOuts
-    perHeadResults = zipWith3 singleHeadController headValidIn perHeadOutputs mWoQs
+    headInputValid = zipWith (.&&.) perHeadDoneFlags perHeadReadyForInputs
+    perHeadResults = zipWith3 singleHeadController headInputValid perHeadOutputs mWoQs
     perHeadProjected = map (\(result, _, _) -> result) perHeadResults
-    perHeadValidOuts = map (\(_, validOut, _) -> validOut) perHeadResults
-    perHeadReadyOuts = map (\(_, _, readyOut) -> readyOut) perHeadResults
+    perHeadOutputValids = map (\(_, outputValid, _) -> outputValid) perHeadResults
+    perHeadReadyForInputs = map (\(_, _, readyForInput) -> readyForInput) perHeadResults
 
 residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 residualAdder layerData = zipWith (+) (inputVector layerData)
@@ -144,11 +144,11 @@ singleHeadController ::
     Signal dom Bool,
     Signal dom Bool
   )
-singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
+singleHeadController inputValid headVector woMatrix = (projOut, outputValid, readyForInput)
   where
     state :: Signal dom SingleHeadState
     state = register SINGLE_HEAD_IDLE nextState
-    upstreamHandshake = validIn .&&. readyOut
+    upstreamHandshake = inputValid .&&. readyForInput
     multiplierRequestHandshake = woValidIn .&&. woReadyOut
     multiplierResultHandshake = woValidOut .&&. internalReady
     nextState =
@@ -164,11 +164,11 @@ singleHeadController validIn headVector woMatrix = (projOut, validOut, readyOut)
     transition SINGLE_HEAD_PROJECTING _ _ res| res = SINGLE_HEAD_DONE
                                              | otherwise = SINGLE_HEAD_PROJECTING
     transition SINGLE_HEAD_DONE _ _ _        = SINGLE_HEAD_IDLE
-    readyOut = (==) <$> state <*> pure SINGLE_HEAD_IDLE
+    readyForInput = (==) <$> state <*> pure SINGLE_HEAD_IDLE
     latchedVector = regEn (repeat 0) upstreamHandshake headVector
     woValidIn = (==) <$> state <*> pure SINGLE_HEAD_REQUESTING
-    internalReady = mux (state .==. pure SINGLE_HEAD_PROJECTING) (pure True) readyOut
+    internalReady = mux (state .==. pure SINGLE_HEAD_PROJECTING) (pure True) readyForInput
     (woResult, woValidOut, woReadyOut) =
       parallelRowMatrixMultiplier woValidIn internalReady woMatrix latchedVector
     projOut = regEn (repeat 0) multiplierResultHandshake woResult
-    validOut = (==) <$> state <*> pure SINGLE_HEAD_DONE
+    outputValid = (==) <$> state <*> pure SINGLE_HEAD_DONE
