@@ -226,7 +226,7 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController inValid outReady input mhaQ seqPosSig weightBuf useRAM =
+qkvProjectionController inValid outReady input mhaQ seqPos weightBuf useRAM =
   (result, validOut, inReady)
  where
   (projectorEnable, validOut, inReady) =
@@ -234,7 +234,7 @@ qkvProjectionController inValid outReady input mhaQ seqPosSig weightBuf useRAM =
 
   (result, matVecValid, ready) =
     qkvProjector projectorEnable (pure True) mhaQ
-                 seqPosSig       -- Pass seqPos directly
+                 seqPos
                  input
                  weightBuf
                  useRAM

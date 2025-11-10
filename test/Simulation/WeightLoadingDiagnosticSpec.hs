@@ -265,7 +265,7 @@ spec = do
           vActualMantissas `shouldBe` [0..4]
           
           -- Verify a different head (if NumKeyValueHeads > 1)
-          when (natToNum @NumKeyValueHeads > 1) $ do
+          when (natToNum @NumKeyValueHeads > (1 :: Int)) $ do
             let kWeight1 = extractKWeight loadedBuffer 1
                 kRow1 = kWeight1 !! (0 :: Int)
                 (kMant1, kExp1) = kRow1

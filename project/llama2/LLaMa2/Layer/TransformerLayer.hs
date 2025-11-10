@@ -48,8 +48,6 @@ transformerLayer ::
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
    -> Signal dom Bool  -- enableQKV (layer-specific)
-   -> Signal dom Bool  -- enableFFN (layer-specific)
-   -> Signal dom Bool  -- enableClassifier (layer-specific)
    -> ( Signal dom LayerData,
         Signal dom Bool,
         Signal dom Bool,
@@ -57,12 +55,12 @@ transformerLayer ::
         Signal dom Bool
       )
 transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableFFN enableClassifier =
+                 enableQKV =
   ( nextLayerData,
     writeDone,
     attentionDone,
     qkvDone,
-    ffnValidOut
+    ffnDone  -- Now a proper pulse!
   )
   where
     mha = PARAM.multiHeadAttention layer
@@ -85,27 +83,40 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     baseNextLayerData =
       updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
 
-    -- FFN stage - enableFFN is already layer-specific
+    -- FFN stage - detect transition INTO Stage4_FeedForward for this layer
+    currentStage = processingStage <$> processingState
+    currentLayer = processingLayer <$> processingState
+    
+    -- Detect rising edge of Stage4_FeedForward for this layer
+    inFFNStage = (currentStage .==. pure Stage4_FeedForward) .&&. (currentLayer .==. pure layerIndex)
+    ffnStageStart = risingEdge inFFNStage
+    
     ffnInput = attentionOutput <$> layerDataAfterAttention
 
-    -- FFN output ready when:
-    -- - Next layer is starting QKV (need to check which layer is active)
-    -- - Or we're at last layer and classifier is starting
+    -- Convert stage start pulse to sustained valid signal for FFN
+    ffnValidIn :: Signal dom Bool
+    ffnValidIn = register False nextFFNValidIn
+      where
+        setFFNValid = ffnStageStart
+        clearFFNValid = ffnValidIn .&&. ffnInReady
+        nextFFNValidIn = 
+          mux setFFNValid (pure True) 
+            (mux clearFFNValid (pure False) ffnValidIn)
+
+    -- FFN output is always ready to be consumed by the sequencer
     ffnOutReady :: Signal dom Bool
-    ffnOutReady =
-      let
-        currentLayer = processingLayer <$> processingState
-        nextLayer    = pure (satSucc SatBound layerIndex)
-      in (enableQKV .&&. (currentLayer .==. nextLayer))
-        .||.
-        (enableClassifier .&&. (currentLayer .==. pure maxBound))
+    ffnOutReady = pure True
 
     (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController
-        enableFFN
-        ffnOutReady
+        ffnValidIn  -- Triggered by entering Stage4_FeedForward
+        ffnOutReady -- Always ready
         ffnInput
         ffn
+
+    -- Convert ffnValidOut to a pulse (rising edge detection)
+    ffnDone :: Signal dom Bool
+    ffnDone = risingEdge ffnValidOut
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =
@@ -115,6 +126,10 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
         <*> attentionDone
         <*> ffnOutput
         <*> ffnValidOut
+
+-- Helper function for rising edge detection
+risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
+risingEdge sig = sig .&&. (not <$> register False sig)
 
 -- Helper functions remain unchanged
 layerDataWithFFN ::

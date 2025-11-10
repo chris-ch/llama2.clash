@@ -27,11 +27,9 @@ processActiveLayer :: forall dom.
   -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> Signal dom Bool  -- enableQKV (global)
-  -> Signal dom Bool  -- enableFFN (global)
-  -> Signal dom Bool  -- enableClassifier (global)
   -> LayerOutput dom
 processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
-                   enableQKV enableFFN enableClassifier =
+                   enableQKV =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -68,7 +66,6 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
         isThisLayer = activeLayerIdx .==. pure layerIdx
         
         enableQKVThisLayer = enableQKV .&&. isThisLayer
-        enableFFNThisLayer = enableFFN .&&. isThisLayer
         
         ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =
           TransformerLayer.transformerLayer
@@ -79,8 +76,6 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
             weightBuffer
             useRAM
             enableQKVThisLayer
-            enableFFNThisLayer
-            enableClassifier
 
     selectActiveLayer :: Signal dom (Index NumLayers)
                       -> Vec NumLayers ( Signal dom LayerData
