@@ -1,11 +1,10 @@
 module LLaMa2.Decoder.SequenceController
  ( SequenceController(..)
  , sequenceController
- , UnifiedState(..)
  ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (ProcessingState (..), CycleStage (..))
+import LLaMa2.Types.LayerData (CycleStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, SequenceLength)
 
 -- | State combining stage, layer, and sequence position
@@ -17,13 +16,12 @@ data UnifiedState = UnifiedState
 
 -- | All controller outputs in one record
 data SequenceController dom = SequenceController
-  { -- Legacy outputs (keep for backward compatibility during transition)
-    processingState :: Signal dom ProcessingState,
-  currentLayer    :: Signal dom (Index NumLayers),
-  seqPosition     :: Signal dom (Index SequenceLength),
-  readyPulse      :: Signal dom Bool,  
-  -- Centralized enable signals (one per stage)
-  layerValidIn        :: Signal dom Bool
+  { 
+    processingStage :: Signal dom CycleStage,
+    currentLayer    :: Signal dom (Index NumLayers),
+    seqPosition     :: Signal dom (Index SequenceLength),
+    readyPulse      :: Signal dom Bool,  
+    layerValidIn     :: Signal dom Bool
   }
 
 -- | Single controller
@@ -37,13 +35,14 @@ sequenceController ::
   -> SequenceController dom
 sequenceController qkvDone writeDone attnDone ffnDone classifierDone = 
   SequenceController
-    { processingState = toProcessingState <$> state,
-    currentLayer    = layer <$> state,
-    seqPosition     = seqPos <$> state,
-    readyPulse      = readyPulse'
-    
-    -- Generate valid signal directly from current stage
-    , layerValidIn        = (stage <$> state) .==. pure Stage1_ProjectQKV
+    {
+      processingStage = stage <$> state,
+      currentLayer    = layer <$> state,
+      seqPosition     = seqPos <$> state,
+      readyPulse      = readyPulse',
+      
+      -- Generate valid signal directly from current stage
+      layerValidIn        = (stage <$> state) .==. pure Stage1_ProjectQKV
     }
   where
     initialState = UnifiedState
@@ -86,11 +85,3 @@ sequenceController qkvDone writeDone attnDone ffnDone classifierDone =
     readyPulse' = risingEdge isTokenComplete
     
     risingEdge sig = (&&) <$> sig <*> (not <$> register False sig)
-
--- | Convert unified state to ProcessingState for compatibility
-toProcessingState :: UnifiedState -> ProcessingState
-toProcessingState s = ProcessingState
-  { processingStage  = stage s
-  , processingLayer  = layer s
-  , sequencePosition = seqPos s
-  }

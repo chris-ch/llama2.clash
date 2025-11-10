@@ -3,7 +3,7 @@ module LLaMa2.Decoder.LayerStack (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..), CycleStage (..))
+import LLaMa2.Types.LayerData (LayerData(..), CycleStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, SequenceLength)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -21,7 +21,7 @@ data LayerOutput dom = LayerOutput
 
 processActiveLayer :: forall dom.
   HiddenClockResetEnable dom
-  => Signal dom ProcessingState
+  => Signal dom CycleStage
   -> Signal dom (Index NumLayers)
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
@@ -30,7 +30,7 @@ processActiveLayer :: forall dom.
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> Signal dom Bool  -- validIn
   -> LayerOutput dom
-processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer useRAM layers validIn =
+processActiveLayer cycleStage activeLayerIdx seqPos inputData weightBuffer useRAM layers validIn =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -81,8 +81,7 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
             validIn'
 
         -- Now recombine locally, no internal mutation inside transformerLayer
-        cycleStage = processingStage <$> processingState
-
+        outputData' :: Signal dom LayerData
         outputData' =
           mux (cycleStage .==. pure Stage1_ProjectQKV)
             ( (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })

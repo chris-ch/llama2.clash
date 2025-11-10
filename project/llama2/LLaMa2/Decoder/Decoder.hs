@@ -3,7 +3,7 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..), Temperature, Seed, Token)
+import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, CycleStage)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
@@ -36,7 +36,7 @@ initialLayerData = LayerData
 
 -- | Introspection signals for debugging
 data DecoderIntrospection dom = DecoderIntrospection
-  { state               :: Signal dom ProcessingState
+  { stage               :: Signal dom CycleStage
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
   , attnDone            :: Signal dom Bool
@@ -73,7 +73,8 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     controller = Controller.sequenceController
       layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
 
-    processingState = Controller.processingState controller
+    processingStage = Controller.processingStage controller
+    seqPosition     = Controller.seqPosition controller
     layerIdx        = Controller.currentLayer controller
     readyPulse      = Controller.readyPulse controller
 
@@ -123,11 +124,9 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       <*> register initialLayerData nextLayerData 
       <*> embeddedVector
 
-    seqPos = sequencePosition <$> processingState
-
     -- Extract seqPos for modules that need it, but keep processingState too
     layerOutput = LayerStack.processActiveLayer
-      processingState layerIdx seqPos layerInput weightBuffer useRAM (PARAM.modelLayers params)
+      processingStage layerIdx seqPosition layerInput weightBuffer useRAM (PARAM.modelLayers params)
       layerValidIn
     
     nextLayerData   = LayerStack.outputData layerOutput
@@ -155,7 +154,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     firstMantissa = fmap (bitCoerce . head) mantissasH
     
     introspection = DecoderIntrospection
-      { state               = processingState
+      { stage               = processingStage
       , layerIndex          = layerIdx
       , ready               = readyPulse
       , attnDone            = layerAttnDone

@@ -13,7 +13,7 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..), LayerData (..) )
+import LLaMa2.Types.LayerData ( Token, Temperature, Seed, LayerData (..) )
 
 import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
@@ -185,7 +185,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
     -- Sample introspection fields separately
-    statesSampled         = C.sampleN simSteps (Decoder.state introspection)
+    stagesSampled         = C.sampleN simSteps (Decoder.stage introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
@@ -227,7 +227,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           attnOut = attentionOutput (layerDataSampled !! cycleIdx)
 
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
-          ps     = processingStage (statesSampled !! cycleIdx)
+          ps     = stagesSampled !! cycleIdx
           rdy    = readiesSampled !! cycleIdx
           qkv    = qkvDonesSampled !! cycleIdx
           attn    = attnDonesSampled !! cycleIdx

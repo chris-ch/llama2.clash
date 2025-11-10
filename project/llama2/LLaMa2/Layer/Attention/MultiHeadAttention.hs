@@ -82,7 +82,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3
     initHeadOutputs = repeat (pure (repeat 0))
     initHeadDone = repeat (pure False)
     initWriteDone = repeat (pure False)
