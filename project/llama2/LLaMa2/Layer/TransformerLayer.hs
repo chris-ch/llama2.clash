@@ -63,7 +63,6 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
     mha = PARAM.multiHeadAttention layerParams
     ffn = PARAM.feedforwardNetwork layerParams
 
-    -- Enables are already layer-specific from LayerStack
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn 
 
@@ -71,10 +70,9 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
     layerDataAfterAttention = layerDataAttnDone <$> cycleStage
         <*> layerData
         <*> xAfterAttn
-        <*> attentionDone
 
     baseNextLayerData :: Signal dom LayerData
-    baseNextLayerData = updateLayerDataForStage <$> cycleStage <*> layerData <*> qProj <*> kProj <*> vProj
+    baseNextLayerData = layerDataQKV <$> cycleStage <*> layerData <*> qProj <*> kProj <*> vProj
     
     -- Detect rising edge of Stage4_FeedForward for this layer
     inFFNStage = cycleStage .==. pure Stage4_FeedForward
@@ -111,47 +109,40 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
     nextLayerData = layerDataWithFFN <$> cycleStage
         <*> baseNextLayerData
         <*> xAfterAttn
-        <*> attentionDone
         <*> ffnOutput
-        <*> ffnValidOut
 
 -- Helper function for rising edge detection
 risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
 risingEdge sig = sig .&&. (not <$> register False sig)
 
--- Helper functions remain unchanged
+-- Helper functions
 layerDataWithFFN :: CycleStage ->
   LayerData ->
   Vec ModelDimension FixedPoint ->
-  Bool ->
   Vec ModelDimension FixedPoint ->
-  Bool ->
   LayerData
-layerDataWithFFN stage baseData attnOut attnDone ffnOut ffnValid =
-  let withAttn = layerDataAttnDone stage baseData attnOut attnDone
+layerDataWithFFN stage baseData attnOut ffnOut =
+  let withAttn = layerDataAttnDone stage baseData attnOut
    in if stage == Stage4_FeedForward
-        && ffnValid
         then withAttn {feedForwardOutput = ffnOut}
         else withAttn
 
 layerDataAttnDone :: CycleStage ->
   LayerData ->
   Vec ModelDimension FixedPoint ->
-  Bool ->
   LayerData
-layerDataAttnDone stage cur attOut attnDone =
+layerDataAttnDone stage baseData attOut =
   if stage == Stage3_Attend
-    && attnDone
-    then cur {attentionOutput = attOut}
-    else cur
+    then baseData {attentionOutput = attOut}
+    else baseData
 
-updateLayerDataForStage :: CycleStage
+layerDataQKV :: CycleStage
   -> LayerData 
   -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
   -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
   -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
   -> LayerData
-updateLayerDataForStage stage idata qs ks vs = case stage of
+layerDataQKV stage baseData qs ks vs = case stage of
       Stage1_ProjectQKV ->
-        idata {queryVectors = qs, keyVectors = ks, valueVectors = vs}
-      _ -> idata
+        baseData {queryVectors = qs, keyVectors = ks, valueVectors = vs}
+      _ -> baseData
