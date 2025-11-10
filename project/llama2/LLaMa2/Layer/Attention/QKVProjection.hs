@@ -110,7 +110,7 @@ keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom Bool                          -- ^ validIn
   -> Signal dom Bool                          -- ^ readyIn
-  -> PARAM.SingleHeadComponentQ                     -- ^ hardcoded (fallback)
+  -> PARAM.SingleHeadComponentQ               -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM K
@@ -127,14 +127,16 @@ keyValueHeadProjector validIn readyIn headComp stepCountSig xHatSig ramK ramV us
   selectedK = mux useRAM ramK (pure (PARAM.wkHeadQ headComp))
   selectedV = mux useRAM ramV (pure (PARAM.wvHeadQ headComp))
 
+  -- Use readyIn for both children (was: pure True)
   (kOut, kValidOut, kReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn (pure True) selectedK xHatSig
+    parallelRowMatrixMultiplierDyn validIn readyIn selectedK xHatSig
 
   (vOut, vValidOut, vReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn (pure True) selectedV xHatSig
+    parallelRowMatrixMultiplierDyn validIn readyIn selectedV xHatSig
 
   kRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> kOut
 
+  -- Keep existing policy: present result only when both valid, and upstream is ready when both children are ready
   validOut = kValidOut .&&. vValidOut
   readyOut = kReadyOut .&&. vReadyOut
 

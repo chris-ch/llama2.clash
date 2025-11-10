@@ -38,7 +38,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
     -- Pipeline-based ready/valid control
     -- The write FSM generates the proper ready signal for QKV output
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
-    (writeValidOutNew, writeReadyIn, writeEnable) =
+    (writeDone, writeReadyIn, writeEnable) =
       kvWriteControllerFSM
         qkvDone
         (pure True)
@@ -96,8 +96,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
     
-    writeDone = writeValidOutNew
-
     -- WO projection
     (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
