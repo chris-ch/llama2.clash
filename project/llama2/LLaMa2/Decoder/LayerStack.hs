@@ -3,7 +3,7 @@ module LLaMa2.Decoder.LayerStack (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..))
+import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..), CycleStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, SequenceLength)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -69,7 +69,7 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
         
         cycleStage = processingStage <$> processingState
 
-        ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =
+        ( qProj, kProj, vProj, attnOut, ffnOut, writeDone', attnDone', qkvDone', ffnDone' ) =
           TransformerLayer.transformerLayer
             layerParams
             seqPos
@@ -78,6 +78,19 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
             weightBuffer
             useRAM
             validIn'
+
+        -- Now recombine locally, no internal mutation inside transformerLayer
+        outputData' =
+          mux (cycleStage .==. pure Stage1_ProjectQKV)
+            ( (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
+                <$> inputData' <*> qProj <*> kProj <*> vProj )
+            ( mux (cycleStage .==. pure Stage3_Attend)
+                ((\d attn -> d { attentionOutput = attn }) <$> inputData' <*> attnOut)
+                ( mux (cycleStage .==. pure Stage4_FeedForward)
+                    ((\d ffn -> d { feedForwardOutput = ffn }) <$> inputData' <*> ffnOut)
+                    inputData'
+                )
+            )
 
     selectActiveLayer :: Signal dom (Index NumLayers)
                       -> Vec NumLayers ( Signal dom LayerData
