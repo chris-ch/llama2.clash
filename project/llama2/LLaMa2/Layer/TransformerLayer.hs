@@ -93,8 +93,10 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
     -- - Or we're at last layer and classifier is starting
     ffnOutReady :: Signal dom Bool
     ffnOutReady =
-      let currentLayer = processingLayer <$> processingState
-      in (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
+      let
+        currentLayer = processingLayer <$> processingState
+        nextLayer    = pure (satSucc SatBound layerIndex)
+      in (enableQKV .&&. (currentLayer .==. nextLayer))
         .||.
         (enableClassifier .&&. (currentLayer .==. pure maxBound))
 
