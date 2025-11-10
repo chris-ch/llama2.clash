@@ -34,39 +34,32 @@ multiHeadAttentionStage :: forall dom.
 multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
   (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
   where
-
-    -- Pipeline-based ready/valid control
-    -- The write FSM generates the proper ready signal for QKV output
+    -- Write-back controller
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeDone, writeReadyIn, writeEnable) =
       kvWriteControllerFSM
         qkvDone
         (pure True)
         allBanksDone
-    
-    -- Latch qkvDone for the duration of the write operation
-    -- The banks need both writeEnable AND qkvDone, but qkvDone de-asserts after handshake
-    -- So we create writeEnableWithValid that combines them properly
+
+    -- Latch qkvDone across the whole write
     qkvDoneHandshake = qkvDone .&&. writeReadyIn
-    qkvDoneLatchedForWrite = register False (mux qkvDoneHandshake (pure True) 
-                                            (mux allBanksDone (pure False) qkvDoneLatchedForWrite))
-    
-    -- Provide stable write enable to banks (stays high during entire write operation)
+    qkvDoneLatchedForWrite =
+      register False
+        ( mux qkvDoneHandshake (pure True)
+        ( mux allBanksDone     (pure False) qkvDoneLatchedForWrite ) )
+
     writeEnableForBanks = writeEnable .&&. qkvDoneLatchedForWrite
 
-    -- ========================================================================
-    -- ATTEND STAGE CONTROL
-    -- ========================================================================
-    -- Detect write completion (rising edge of writeDone)
-    writeDonePrev = register False writeDone
+    -- Attend-stage local enable (independent of controller’s internal flag)
+    writeDonePrev      = register False writeDone
     writeCompletePulse = writeDone .&&. (not <$> writeDonePrev)
-    
-    -- Latch: set when write completes, clear when attention completes
-    -- This replaces the controller's enableAttend signal
+
     allHeadsDone = and <$> sequenceA perHeadDoneFlags
-    attendActive = register False 
-      (mux writeCompletePulse (pure True)
-        (mux allHeadsDone (pure False) attendActive))
+    attendActive =
+      register False
+        ( mux writeCompletePulse (pure True)
+        ( mux allHeadsDone       (pure False) attendActive ) )
 
     input = inputVector <$> layerData
 
@@ -82,35 +75,41 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
 
     (q, k, v) = unbundle qkvProjected
 
-    initHeadOutputs = repeat (pure (repeat 0))
-    initHeadDone = repeat (pure False)
-    initWriteDone = repeat (pure False)
-    
-    -- Pass FSM's writeEnableForBanks to banks (includes latched qkvDone)
-    -- The banks AND this with writeEnableForBanks, so both must be latched versions
-    -- Use locally-generated attendActive instead of controller's enableAttend
+    -- Stage2/3
+    initHeadOutputs   = repeat (pure (repeat 0))
+    initHeadDone      = repeat (pure False)
+    initWriteDone     = repeat (pure False)
+
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
-        (kvBankController seqPos layerData qkvDoneLatchedForWrite 
-                         writeEnableForBanks attendActive)
+        ( kvBankController seqPos layerData
+                           qkvDoneLatchedForWrite
+                           writeEnableForBanks
+                           attendActive )
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
-    
-    -- WO projection
-    (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
+
+    -- WO projection over heads
+    (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
+
+    -- IMPORTANT: gate the accumulation by valid (not readyForInput)
+    validProjection proj valid _ready = mux valid proj (pure (repeat 0))
     gatedHeads =
-      zipWith3
-        (\proj valid ready -> mux ready proj (pure (repeat 0)))
+      zipWith3 validProjection
         perHeadProjected
-        perHeadValidOuts
-        perHeadReadyOuts
-    woHeads = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
-    validProjected = and <$> sequenceA perHeadReadyOuts
+        perHeadOutputValids
+        perHeadReadyForInputs
+
+    -- Sum heads and produce “projection valid” when all outputs are valid
+    woHeads        = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
+    validProjected = and <$> sequenceA perHeadOutputValids
+
     xAfterAttn = residualAdder <$> layerData <*> woHeads
+
     attentionDone =
-      let prevReady = register False validProjected
-       in validProjected .&&. (not <$> prevReady)
+      let prevValid = register False validProjected
+       in validProjected .&&. (not <$> prevValid)
 
 perHeadWOController ::
   forall dom.
@@ -119,17 +118,21 @@ perHeadWOController ::
   Vec NumQueryHeads (Signal dom Bool) ->
   Vec NumQueryHeads (MatI8E ModelDimension HeadDimension) ->
   ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint)),
-    Vec NumQueryHeads (Signal dom Bool),
-    Vec NumQueryHeads (Signal dom Bool)
+    Vec NumQueryHeads (Signal dom Bool),  -- outputValid per head
+    Vec NumQueryHeads (Signal dom Bool)   -- readyForInput per head
   )
 perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
   (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs)
   where
-    headInputValid = zipWith (.&&.) perHeadDoneFlags perHeadReadyForInputs
-    perHeadResults = zipWith3 singleHeadController headInputValid perHeadOutputs mWoQs
-    perHeadProjected = map (\(result, _, _) -> result) perHeadResults
-    perHeadOutputValids = map (\(_, outputValid, _) -> outputValid) perHeadResults
+    -- Drive each head only when it is both needed (done flag) and ready to accept input
     perHeadReadyForInputs = map (\(_, _, readyForInput) -> readyForInput) perHeadResults
+    headInputValids       = zipWith (.&&.) perHeadDoneFlags perHeadReadyForInputs
+
+    perHeadResults =
+      zipWith3 singleHeadController headInputValids perHeadOutputs mWoQs
+
+    perHeadProjected      = map (\(result, _, _) -> result)      perHeadResults
+    perHeadOutputValids   = map (\(_, outputValid, _) -> outputValid) perHeadResults
 
 residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 residualAdder layerData = zipWith (+) (inputVector layerData)
