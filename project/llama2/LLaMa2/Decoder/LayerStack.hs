@@ -3,7 +3,7 @@ module LLaMa2.Decoder.LayerStack (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState)
+import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -26,7 +26,7 @@ processActiveLayer :: forall dom.
   -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
-  -> Signal dom Bool  -- enableQKV (global)
+  -> Signal dom Bool  -- validIn
   -> LayerOutput dom
 processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers validIn =
   LayerOutput
@@ -66,11 +66,14 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
         
         validIn' = validIn .&&. isThisLayer
         
+        seqPos = sequencePosition <$> processingState
+        cycleStage = processingStage <$> processingState
+
         ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =
           TransformerLayer.transformerLayer
             layerParams
-            layerIdx
-            processingState
+            seqPos
+            cycleStage
             inputData'
             weightBuffer
             useRAM

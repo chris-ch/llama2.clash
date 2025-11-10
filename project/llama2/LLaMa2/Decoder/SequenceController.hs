@@ -21,9 +21,7 @@ data SequenceController dom = SequenceController
     processingState :: Signal dom ProcessingState,
   currentLayer    :: Signal dom (Index NumLayers),
   seqPosition     :: Signal dom (Index SequenceLength),
-  readyPulse      :: Signal dom Bool,
-  stageComplete   :: Signal dom Bool,
-  
+  readyPulse      :: Signal dom Bool,  
   -- Centralized enable signals (one per stage)
   layerValidIn        :: Signal dom Bool
   }
@@ -42,8 +40,7 @@ sequenceController qkvDone writeDone attnDone ffnDone classifierDone =
     { processingState = toProcessingState <$> state,
     currentLayer    = layer <$> state,
     seqPosition     = seqPos <$> state,
-    readyPulse      = readyPulse',
-    stageComplete   = stageDone
+    readyPulse      = readyPulse'
     
     -- Generate valid signal directly from current stage
     , layerValidIn        = (stage <$> state) .==. pure Stage1_ProjectQKV

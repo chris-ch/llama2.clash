@@ -9,14 +9,12 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.LayerData
   ( CycleStage (..),
     LayerData (..),
-    ProcessingState (..),
   )
 import LLaMa2.Types.ModelConfig
   ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,
-    NumLayers,
-    NumQueryHeads,
+    NumQueryHeads, SequenceLength,
   )
 import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
@@ -42,8 +40,8 @@ transformerLayer ::
   forall dom.
   (HiddenClockResetEnable dom)
    => PARAM.TransformerLayerComponent
-   -> Index NumLayers
-   -> Signal dom ProcessingState
+   -> Signal dom (Index SequenceLength)
+   -> Signal dom CycleStage
    -> Signal dom LayerData
    -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
@@ -54,7 +52,7 @@ transformerLayer ::
         Signal dom Bool,
         Signal dom Bool
       )
-transformerLayer layer layerIndex processingState layerData weightBuffer useRAM validIn =
+transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM validIn =
   ( nextLayerData,
     writeDone,
     attentionDone,
@@ -62,32 +60,24 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     ffnDone  -- Now a proper pulse!
   )
   where
-    mha = PARAM.multiHeadAttention layer
-    ffn = PARAM.feedforwardNetwork layer
-
-    seqPos = sequencePosition <$> processingState
+    mha = PARAM.multiHeadAttention layerParams
+    ffn = PARAM.feedforwardNetwork layerParams
 
     -- Enables are already layer-specific from LayerStack
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvReady, writeDone, qkvDone) =
       multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn 
 
     layerDataAfterAttention :: Signal dom LayerData
-    layerDataAfterAttention =
-      (layerDataAttnDone layerIndex <$> processingState)
+    layerDataAfterAttention = layerDataAttnDone <$> cycleStage
         <*> layerData
         <*> xAfterAttn
         <*> attentionDone
 
     baseNextLayerData :: Signal dom LayerData
-    baseNextLayerData =
-      updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
-
-    -- FFN stage - detect transition INTO Stage4_FeedForward for this layer
-    currentStage = processingStage <$> processingState
-    currentLayer = processingLayer <$> processingState
+    baseNextLayerData = updateLayerDataForStage <$> cycleStage <*> layerData <*> qProj <*> kProj <*> vProj
     
     -- Detect rising edge of Stage4_FeedForward for this layer
-    inFFNStage = (currentStage .==. pure Stage4_FeedForward) .&&. (currentLayer .==. pure layerIndex)
+    inFFNStage = cycleStage .==. pure Stage4_FeedForward
     ffnStageStart = risingEdge inFFNStage
     
     ffnInput = attentionOutput <$> layerDataAfterAttention
@@ -118,8 +108,7 @@ transformerLayer layer layerIndex processingState layerData weightBuffer useRAM 
     ffnDone = risingEdge ffnValidOut
 
     nextLayerData :: Signal dom LayerData
-    nextLayerData =
-      (layerDataWithFFN layerIndex <$> processingState)
+    nextLayerData = layerDataWithFFN <$> cycleStage
         <*> baseNextLayerData
         <*> xAfterAttn
         <*> attentionDone
@@ -131,47 +120,38 @@ risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
 risingEdge sig = sig .&&. (not <$> register False sig)
 
 -- Helper functions remain unchanged
-layerDataWithFFN ::
-  Index NumLayers ->
-  ProcessingState ->
+layerDataWithFFN :: CycleStage ->
   LayerData ->
   Vec ModelDimension FixedPoint ->
   Bool ->
   Vec ModelDimension FixedPoint ->
   Bool ->
   LayerData
-layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
-  let withAttn = layerDataAttnDone layerIndex ps baseData attnOut attnDone
-   in if processingLayer ps == layerIndex
-        && processingStage ps == Stage4_FeedForward
+layerDataWithFFN stage baseData attnOut attnDone ffnOut ffnValid =
+  let withAttn = layerDataAttnDone stage baseData attnOut attnDone
+   in if stage == Stage4_FeedForward
         && ffnValid
         then withAttn {feedForwardOutput = ffnOut}
         else withAttn
 
-layerDataAttnDone ::
-  Index NumLayers ->
-  ProcessingState ->
+layerDataAttnDone :: CycleStage ->
   LayerData ->
   Vec ModelDimension FixedPoint ->
   Bool ->
   LayerData
-layerDataAttnDone layerIndex state cur attOut attnDone =
-  if processingLayer state == layerIndex
-    && processingStage state == Stage3_Attend
+layerDataAttnDone stage cur attOut attnDone =
+  if stage == Stage3_Attend
     && attnDone
     then cur {attentionOutput = attOut}
     else cur
 
-updateLayerDataForStage :: Index NumLayers
-  -> ProcessingState
+updateLayerDataForStage :: CycleStage
   -> LayerData 
   -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
   -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
   -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
   -> LayerData
-updateLayerDataForStage layerIndex ps idata qs ks vs
-  | processingLayer ps /= layerIndex = idata
-  | otherwise = case processingStage ps of
+updateLayerDataForStage stage idata qs ks vs = case stage of
       Stage1_ProjectQKV ->
         idata {queryVectors = qs, keyVectors = ks, valueVectors = vs}
       _ -> idata
