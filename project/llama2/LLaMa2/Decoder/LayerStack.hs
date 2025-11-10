@@ -4,7 +4,7 @@ module LLaMa2.Decoder.LayerStack (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..))
-import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension)
+import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, SequenceLength)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM (TransformerLayerComponent)
@@ -22,13 +22,14 @@ processActiveLayer :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom ProcessingState
   -> Signal dom (Index NumLayers)
+  -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
   -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> Signal dom Bool  -- validIn
   -> LayerOutput dom
-processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers validIn =
+processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer useRAM layers validIn =
   LayerOutput
     { outputData = outputLayerData
     , writeDone  = selectedWriteDone
@@ -66,7 +67,6 @@ processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM 
         
         validIn' = validIn .&&. isThisLayer
         
-        seqPos = sequencePosition <$> processingState
         cycleStage = processingStage <$> processingState
 
         ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =

@@ -14,11 +14,32 @@ import LLaMa2.Types.ModelConfig
   ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,
-    NumQueryHeads, SequenceLength,
+    NumQueryHeads,
+    SequenceLength,
   )
 import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
+
+-- Define a type for LayerData updates
+data LayerUpdate
+  = UpdateQKV (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
+              (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+              (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+  | UpdateAttention (Vec ModelDimension FixedPoint)
+  | UpdateFeedForward (Vec ModelDimension FixedPoint)
+  | NoUpdate
+
+-- Unified function to update LayerData based on CycleStage and update data
+updateLayerData :: CycleStage -> LayerData -> LayerUpdate -> LayerData
+updateLayerData stage baseData update = case (stage, update) of
+  (Stage1_ProjectQKV, UpdateQKV qs ks vs) ->
+    baseData { queryVectors = qs, keyVectors = ks, valueVectors = vs }
+  (Stage3_Attend, UpdateAttention attnOut) ->
+    baseData { attentionOutput = attnOut }
+  (Stage4_FeedForward, UpdateFeedForward ffnOut) ->
+    baseData { feedForwardOutput = ffnOut }
+  _ -> baseData
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -57,28 +78,22 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
     writeDone,
     attentionDone,
     qkvDone,
-    ffnDone  -- Now a proper pulse!
+    ffnDone
   )
   where
-    mha = PARAM.multiHeadAttention layerParams
-    ffn = PARAM.feedforwardNetwork layerParams
+    mhaParams = PARAM.multiHeadAttention layerParams
+    ffnParams = PARAM.feedforwardNetwork layerParams
 
+    -- Multi-head attention stage
     (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn 
+      multiHeadAttentionStage mhaParams seqPos layerData weightBuffer useRAM validIn
 
-    layerDataAfterAttention :: Signal dom LayerData
-    layerDataAfterAttention = layerDataAttnDone <$> cycleStage
-        <*> layerData
-        <*> xAfterAttn
-
-    baseNextLayerData :: Signal dom LayerData
-    baseNextLayerData = layerDataQKV <$> cycleStage <*> layerData <*> qProj <*> kProj <*> vProj
-    
-    -- Detect rising edge of Stage4_FeedForward for this layer
+    -- Detect rising edge of Stage4_FeedForward
     inFFNStage = cycleStage .==. pure Stage4_FeedForward
     ffnStageStart = risingEdge inFFNStage
-    
-    ffnInput = attentionOutput <$> layerDataAfterAttention
+
+    -- FFN input from attention output
+    ffnInput = attentionOutput <$> layerData
 
     -- Convert stage start pulse to sustained valid signal for FFN
     ffnValidIn :: Signal dom Bool
@@ -86,63 +101,40 @@ transformerLayer layerParams seqPos cycleStage layerData weightBuffer useRAM val
       where
         setFFNValid = ffnStageStart
         clearFFNValid = ffnValidIn .&&. ffnInReady
-        nextFFNValidIn = 
-          mux setFFNValid (pure True) 
+        nextFFNValidIn =
+          mux setFFNValid (pure True)
             (mux clearFFNValid (pure False) ffnValidIn)
 
-    -- FFN output is always ready to be consumed by the sequencer
+    -- FFN output is always ready to be consumed
     ffnOutReady :: Signal dom Bool
     ffnOutReady = pure True
 
     (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController
-        ffnValidIn  -- Triggered by entering Stage4_FeedForward
-        ffnOutReady -- Always ready
+        ffnValidIn
+        ffnOutReady
         ffnInput
-        ffn
+        ffnParams
 
-    -- Convert ffnValidOut to a pulse (rising edge detection)
+    -- Convert ffnValidOut to a pulse
     ffnDone :: Signal dom Bool
     ffnDone = risingEdge ffnValidOut
 
+    -- Determine the appropriate LayerUpdate based on CycleStage
+    layerUpdate :: Signal dom LayerUpdate
+    layerUpdate = fmap mkLayerUpdate (bundle (cycleStage, qProj, kProj, vProj, xAfterAttn, ffnOutput))
+      where
+        mkLayerUpdate (stage, q, k, v, attn, ffn) =
+          case stage of
+            Stage1_ProjectQKV -> UpdateQKV q k v
+            Stage3_Attend -> UpdateAttention attn
+            Stage4_FeedForward -> UpdateFeedForward ffn
+            _ -> NoUpdate
+
+    -- Update LayerData using the unified update function
     nextLayerData :: Signal dom LayerData
-    nextLayerData = layerDataWithFFN <$> cycleStage
-        <*> baseNextLayerData
-        <*> xAfterAttn
-        <*> ffnOutput
+    nextLayerData = updateLayerData <$> cycleStage <*> layerData <*> layerUpdate
 
 -- Helper function for rising edge detection
 risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
 risingEdge sig = sig .&&. (not <$> register False sig)
-
--- Helper functions
-layerDataWithFFN :: CycleStage ->
-  LayerData ->
-  Vec ModelDimension FixedPoint ->
-  Vec ModelDimension FixedPoint ->
-  LayerData
-layerDataWithFFN stage baseData attnOut ffnOut =
-  let withAttn = layerDataAttnDone stage baseData attnOut
-   in if stage == Stage4_FeedForward
-        then withAttn {feedForwardOutput = ffnOut}
-        else withAttn
-
-layerDataAttnDone :: CycleStage ->
-  LayerData ->
-  Vec ModelDimension FixedPoint ->
-  LayerData
-layerDataAttnDone stage baseData attOut =
-  if stage == Stage3_Attend
-    then baseData {attentionOutput = attOut}
-    else baseData
-
-layerDataQKV :: CycleStage
-  -> LayerData 
-  -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> LayerData
-layerDataQKV stage baseData qs ks vs = case stage of
-      Stage1_ProjectQKV ->
-        baseData {queryVectors = qs, keyVectors = ks, valueVectors = vs}
-      _ -> baseData

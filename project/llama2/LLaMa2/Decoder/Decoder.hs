@@ -3,7 +3,7 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState, Temperature, Seed, Token)
+import LLaMa2.Types.LayerData (LayerData(..), ProcessingState (..), Temperature, Seed, Token)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
@@ -123,9 +123,11 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       <*> register initialLayerData nextLayerData 
       <*> embeddedVector
 
+    seqPos = sequencePosition <$> processingState
+
     -- Extract seqPos for modules that need it, but keep processingState too
     layerOutput = LayerStack.processActiveLayer
-      processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
+      processingState layerIdx seqPos layerInput weightBuffer useRAM (PARAM.modelLayers params)
       layerValidIn
     
     nextLayerData   = LayerStack.outputData layerOutput

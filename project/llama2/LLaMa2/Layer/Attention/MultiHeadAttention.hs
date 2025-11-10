@@ -20,7 +20,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom LayerData ->
   Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->  -- useRAM
-  Signal dom Bool ->  -- enableQKV
+  Signal dom Bool ->  -- validIn
   ( Signal dom Bool,
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
@@ -43,7 +43,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
         (pure True)
         allBanksDone
     
-    -- CRITICAL FIX: Latch qkvDone for the duration of the write operation
+    -- Latch qkvDone for the duration of the write operation
     -- The banks need both writeEnable AND qkvDone, but qkvDone de-asserts after handshake
     -- So we create writeEnableWithValid that combines them properly
     qkvDoneHandshake = qkvDone .&&. writeReadyIn
@@ -54,7 +54,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
     writeEnableForBanks = writeEnable .&&. qkvDoneLatchedForWrite
 
     -- ========================================================================
-    -- ATTEND STAGE CONTROL (replacing controller's enableAttend)
+    -- ATTEND STAGE CONTROL
     -- ========================================================================
     -- Detect write completion (rising edge of writeDone)
     writeDonePrev = register False writeDone
@@ -87,7 +87,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
     initWriteDone = repeat (pure False)
     
     -- Pass FSM's writeEnableForBanks to banks (includes latched qkvDone)
-    -- CRITICAL: Pass qkvDoneLatchedForWrite as 3rd arg, not original qkvDone!
     -- The banks AND this with writeEnableForBanks, so both must be latched versions
     -- Use locally-generated attendActive instead of controller's enableAttend
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
@@ -99,7 +98,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
     
     writeDone = writeValidOutNew
 
-    -- WO projection (unchanged)
+    -- WO projection
     (perHeadProjected, perHeadValidOuts, perHeadReadyOuts) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
     gatedHeads =
