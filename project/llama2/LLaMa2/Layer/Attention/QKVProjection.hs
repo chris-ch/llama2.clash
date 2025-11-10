@@ -82,7 +82,7 @@ queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom Bool                          -- ^ validIn
   -> Signal dom Bool                          -- ^ readyIn
-  -> PARAM.SingleHeadComponentQ                     -- ^ hardcoded (fallback)
+  -> PARAM.SingleHeadComponentQ               -- ^ hardcoded (fallback)
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM weights
@@ -92,21 +92,16 @@ queryHeadProjector :: forall dom.
      , Signal dom Bool                        -- ^ readyOut
      )
 queryHeadProjector validIn readyIn headComp stepCountSig xHatSig ramWeights useRAM =
-  (qRoOut, validOut, readyOut)
+  (qRoOut, qValidOut, qReadyOut)
  where
-  -- Select matrix dynamically
   selectedMat :: Signal dom (MatI8E HeadDimension ModelDimension)
   selectedMat = mux useRAM ramWeights (pure (PARAM.wqHeadQ headComp))
 
-  -- MatVec with dynamic matrix
+  -- Use readyIn (was: pure True)
   (qOut, qValidOut, qReadyOut) =
-    parallelRowMatrixMultiplierDyn validIn (pure True) selectedMat xHatSig
+    parallelRowMatrixMultiplierDyn validIn readyIn selectedMat xHatSig
 
-  -- Rotary encoding on Q
   qRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> qOut
-
-  validOut = qValidOut
-  readyOut = qReadyOut
 
 --------------------------------------------------------------------------------
 -- KV head projector with weight selection (hardcoded vs RAM)
