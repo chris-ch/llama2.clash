@@ -63,24 +63,24 @@ feedForwardCore validIn readyIn ffn xHat =
     state = register FFNIdle nextState
 
     -- Handshake conditions
-    acceptInput = (state .==. pure FFNIdle) .&&. validIn
+    acceptInput = (state .==. pure FFNIdle) .&&. validIn .&&. gateReadyOut
     outputAccepted = (state .==. pure FFNDone) .&&. readyIn
 
     -- W1 (gate) computation
-    gateValidIn = state .==. pure FFNGate
-    gateReadyIn = pure True  -- Always ready to accept multiplier result
+    gateValidIn = (state .==. pure FFNGate) .&&. gateReadyOut
+    gateReadyIn = (state .==. pure FFNGate) .&&. readyIn .&&. upReadyOut
     (gateRaw, gateValidOut, gateReadyOut) =
       parallelRowMatrixMultiplier gateValidIn gateReadyIn (PARAM.fW1Q ffn) xHatLatched
 
-    -- W3 (up) computation  
-    upValidIn = state .==. pure FFNUp
-    upReadyIn = pure True
+    -- W3 (up) computation
+    upValidIn = (state .==. pure FFNUp) .&&. upReadyOut
+    upReadyIn = (state .==. pure FFNUp) .&&. readyIn .&&. downReadyOut
     (upRaw, upValidOut, upReadyOut) =
       parallelRowMatrixMultiplier upValidIn upReadyIn (PARAM.fW3Q ffn) xHatLatched
 
     -- W2 (down) computation
-    downValidIn = state .==. pure FFNDown
-    downReadyIn = pure True
+    downValidIn = (state .==. pure FFNDown) .&&. downReadyOut
+    downReadyIn = (state .==. pure FFNDown) .&&. readyIn
     (downRaw, downValidOut, downReadyOut) =
       parallelRowMatrixMultiplier downValidIn downReadyIn (PARAM.fW2Q ffn) gateUpLatched
 
@@ -88,10 +88,10 @@ feedForwardCore validIn readyIn ffn xHat =
     nextState =
       mux acceptInput
           (pure FFNGate)  -- Accept input, start W1
-          (mux ((state .==. pure FFNGate) .&&. gateValidOut)
-               (pure FFNUp)  -- W1 done, start W3
-               (mux ((state .==. pure FFNUp) .&&. upValidOut)
-                    (pure FFNDown)  -- W3 done, start W2
+          (mux ((state .==. pure FFNGate) .&&. gateValidOut .&&. upReadyOut)
+               (pure FFNUp)  -- W1 done, W3 ready
+               (mux ((state .==. pure FFNUp) .&&. upValidOut .&&. downReadyOut)
+                    (pure FFNDown)  -- W3 done, W2 ready
                     (mux ((state .==. pure FFNDown) .&&. downValidOut)
                          (pure FFNDone)  -- W2 done, output ready
                          (mux outputAccepted
@@ -100,7 +100,7 @@ feedForwardCore validIn readyIn ffn xHat =
 
     -- Ready/Valid outputs
     readyOut :: Signal dom Bool
-    readyOut = state .==. pure FFNIdle
+    readyOut = (state .==. pure FFNIdle) .&&. gateReadyOut
 
     validOut :: Signal dom Bool
     validOut = state .==. pure FFNDone
