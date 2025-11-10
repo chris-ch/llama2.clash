@@ -56,10 +56,11 @@ transformerLayer ::
       , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)) -- vProj
       , Signal dom (Vec ModelDimension FixedPoint)  -- attention output
       , Signal dom (Vec ModelDimension FixedPoint)  -- feed-forward output
+      , Signal dom Bool  -- qkvDone
       , Signal dom Bool  -- writeDone
       , Signal dom Bool  -- attentionDone
-      , Signal dom Bool  -- qkvDone
       , Signal dom Bool  -- ffnDone
+      , Signal dom Bool  -- qkvReady
       )
 transformerLayer layerParams seqPos layerData weightBuffer useRAM validIn =
   ( qProj
@@ -67,10 +68,11 @@ transformerLayer layerParams seqPos layerData weightBuffer useRAM validIn =
   , vProj
   , xAfterAttn
   , ffnOutput
+  , qkvDone
   , writeDone
   , attentionDone
-  , qkvDone
   , ffnDone
+  , qkvReady
   )
   where
     mhaParams = PARAM.multiHeadAttention layerParams

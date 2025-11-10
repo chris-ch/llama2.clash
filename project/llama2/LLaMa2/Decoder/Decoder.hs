@@ -135,6 +135,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     layerAttnDone   = LayerStack.attnDone layerOutput
     layerQkvDone    = LayerStack.qkvDone layerOutput
     layerFfnDone    = LayerStack.ffnDone layerOutput
+    layerQkvReady    = LayerStack.qkvReady layerOutput
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING

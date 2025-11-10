@@ -16,6 +16,7 @@ data LayerOutput dom = LayerOutput
   , attnDone     :: Signal dom Bool
   , qkvDone      :: Signal dom Bool
   , ffnDone      :: Signal dom Bool
+  , qkvReady     :: Signal dom Bool
   }
 
 processActiveLayer :: forall dom.
@@ -36,13 +37,14 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
     , attnDone   = selectedAttnDone
     , qkvDone    = selectedQkvDone
     , ffnDone    = selectedFfnDone
+    , qkvReady   = selectedQkvReady
     }
   where
     -- Create outputs for all layers
     layerOutputs = imap (createLayerOutput inputData) layers
     
     -- Select outputs from the active layer
-    (outputLayerData, selectedWriteDone, selectedAttnDone, selectedQkvDone, selectedFfnDone) =
+    (outputLayerData, selectedQkvDone, selectedWriteDone, selectedAttnDone, selectedFfnDone, selectedQkvReady) =
       unbundle $ selectActiveLayer activeLayerIdx layerOutputs
 
     createLayerOutput :: Signal dom LayerData
@@ -53,13 +55,15 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
                          , Signal dom Bool
                          , Signal dom Bool
                          , Signal dom Bool
+                         , Signal dom Bool
                          )
     createLayerOutput inputData' layerIdx layerParams =
       ( outputData'
+      , qkvDone'
       , writeDone'
       , attnDone'
-      , qkvDone'
       , ffnDone'
+      , qkvReady
       )
       where
         -- Gate enables for this specific layer
@@ -67,7 +71,7 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
         
         validIn' = validIn .&&. isThisLayer
         
-        ( qProj, kProj, vProj, attnOut, ffnOut, writeDone', attnDone', qkvDone', ffnDone' ) =
+        ( qProj, kProj, vProj, attnOut, ffnOut, qkvDone', writeDone', attnDone', ffnDone', qkvReady ) =
           TransformerLayer.transformerLayer
             layerParams
             seqPos
@@ -97,8 +101,10 @@ processActiveLayer processingState activeLayerIdx seqPos inputData weightBuffer 
                                        , Signal dom Bool
                                        , Signal dom Bool
                                        , Signal dom Bool
+                                       , Signal dom Bool
                                        )
                       -> Signal dom ( LayerData
+                                    , Bool
                                     , Bool
                                     , Bool
                                     , Bool
