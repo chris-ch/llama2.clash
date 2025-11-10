@@ -67,7 +67,7 @@ data MultiplierState = MIdle | MReset | MProcessing | MDone
 
 -- | State machine for matrix multiplier
 -- Manages state transitions and control signals
-matrixMultiplierStateMachine  :: forall dom rows .
+matrixMultiplierStateMachine :: forall dom rows .
   (HiddenClockResetEnable dom, KnownNat rows)
   => Signal dom Bool
   -> Signal dom Bool -- readyIn from downstream
@@ -100,7 +100,7 @@ matrixMultiplierStateMachine validIn readyIn rowDone currentRow =
                                         state))))
 
     rowReset = state .==. pure MReset
-    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone)
+    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. readyIn
     validOut = state .==. pure MDone
 
     -- Ready to accept new input when idle
