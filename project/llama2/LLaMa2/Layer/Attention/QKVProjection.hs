@@ -210,7 +210,7 @@ qkvProjector validIn readyIn mhaQ seqPosSig xSig weightBuffer useRAM =
   qkvOut = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)
 
 --------------------------------------------------------------------------------
--- Controller wrapper (unchanged protocol; adds RAM buffer + useRAM)
+-- Controller wrapper
 --------------------------------------------------------------------------------
 qkvProjectionController ::
   HiddenClockResetEnable dom
@@ -227,14 +227,23 @@ qkvProjectionController ::
      , Signal dom Bool
      , Signal dom Bool )
 qkvProjectionController validIn readyIn input mhaQ seqPos weightBuf useRAM =
-  (result, validOut, inReady)
+  (result, validOut, inReadyGated)
  where
-  (projectorEnable, validOut, inReady) =
+  -- Generic controller (stateful): produces raw enable/valid/inReady
+  (enableRaw, validOut, inReadyRaw) =
     processingControllerFSM validIn readyIn matVecValid
 
-  (result, matVecValid, ready) =
-    qkvProjector projectorEnable (pure True) mhaQ
+  -- Instantiate the projector, now driving downstream readyIn correctly.
+  -- We also capture its upstream readiness (projReadyOut).
+  (result, matVecValid, projReadyOut) =
+    qkvProjector enableGated readyIn mhaQ
                  seqPos
                  input
                  weightBuf
                  useRAM
+
+  -- Gate enable and inReady with a one-cycle delayed projector readiness
+  -- to avoid any potential combinational loop; start permissive (True).
+  projReadyOut_d = register True projReadyOut
+  enableGated    = enableRaw  .&&. projReadyOut_d
+  inReadyGated   = inReadyRaw .&&. projReadyOut_d
