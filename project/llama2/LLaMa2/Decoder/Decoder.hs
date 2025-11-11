@@ -122,7 +122,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- =======================================================================
     layerInput = LayerStack.prepareLayerInput 
       <$> layerIdx 
-      <*> register initialLayerData nextLayerData 
+      <*> layerDataReg  -- Use the explicitly named register
       <*> embeddedVector
 
     -- Extract seqPos for modules that need it, but keep processingState too
@@ -130,15 +130,18 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       layerIdx seqPosition layerInput weightBuffer useRAM (PARAM.modelLayers params)
       layerValidIn
 
-    -- Select the appropriate intermediate output depending on current processing stage
+    -- Priority mux: latch outputs when their stage completes
+    -- Priority: FFN > Attn > QKV (if multiple done in same cycle, take latest stage)
     nextLayerData =
-      mux (processingStage .==. pure Stage1_ProjectQKV)
-        (LayerStack.qkvOutput layerOutputs)
-        (mux (processingStage .==. pure Stage3_Attend)
-            (LayerStack.attnOutput layerOutputs)
-            (mux (processingStage .==. pure Stage4_FeedForward)
+      mux layerFfnDone
         (LayerStack.ffnOutput layerOutputs)
-                layerInput))  -- default: pass-through
+        (mux layerAttnDone
+            (LayerStack.attnOutput layerOutputs)
+            (mux layerQkvDone
+                (LayerStack.qkvOutput layerOutputs)
+                layerDataReg))  -- Hold previous value when nothing completes
+
+    layerDataReg = register initialLayerData nextLayerData
 
     layerWriteDone = LayerStack.writeDone layerOutputs
     layerAttnDone  = LayerStack.attnDone layerOutputs
