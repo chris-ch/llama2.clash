@@ -45,7 +45,7 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer useRAM layers va
     }
   where
     -- Run all layers in parallel (only one gets validIn true)
-    layerOutputs = imap (createLayerOutput inputData) layers
+    layerOutputs = imap (layerPipeline inputData) layers
 
     -- Pick outputs for the active layer
     (selectedQkvOutput, selectedAttnOutput, selectedFfnOutput,
@@ -53,7 +53,7 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer useRAM layers va
      selectedFfnDone, selectedQkvReady) =
       unbundle $ selectActiveLayer activeLayerIdx layerOutputs
 
-    createLayerOutput :: Signal dom LayerData
+    layerPipeline :: Signal dom LayerData
                       -> Index NumLayers
                       -> PARAM.TransformerLayerComponent
                       -> ( Signal dom LayerData
@@ -65,7 +65,7 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer useRAM layers va
                          , Signal dom Bool
                          , Signal dom Bool
                          )
-    createLayerOutput inputData' layerIdx layerParams =
+    layerPipeline inputData' layerIdx layerParams =
       ( qkvData, attnData, ffnData
       , qkvDone', writeDone', attnDone', ffnDone', qkvReady )
       where
