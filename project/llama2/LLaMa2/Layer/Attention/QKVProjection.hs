@@ -12,7 +12,7 @@ import LLaMa2.Types.ModelConfig
   )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ(..), SingleHeadComponentQ(..))
@@ -20,60 +20,7 @@ import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
   ( QKVProjectionWeightBuffer(..)
   , extractQWeight, extractKWeight, extractVWeight
   )
--- Reuse the proven row core and control FSM
-import LLaMa2.Numeric.Operations
-  ( parallel64RowProcessor
-  , matrixMultiplierStateMachine, MultiplierState (..)
-  )
-
---------------------------------------------------------------------------------
--- Dynamic matrix-vector multiplier: accepts Signal dom (MatI8E rows cols)
--- Mirrors parallel64RowMatrixMultiplier but with runtime-selectable matrix.
---------------------------------------------------------------------------------
-parallelRowMatrixMultiplierDyn :: forall dom rows cols.
-  ( HiddenClockResetEnable dom
-  , KnownNat rows, KnownNat cols
-  )
-  => Signal dom Bool                      -- ^ inputValid
-  -> Signal dom Bool                      -- ^ downStreamReady
-  -> Signal dom (MatI8E rows cols)        -- ^ matrix (runtime, from RAM or const)
-  -> Signal dom (Vec cols FixedPoint)     -- ^ input vector
-  -> ( Signal dom (Vec rows FixedPoint)   -- ^ output vector
-     , Signal dom Bool                    -- ^ outputValid
-     , Signal dom Bool                    -- ^ readyForInput
-     )
-parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
-  (outputVector, outputValid, readyForInput)
- where
-  -- Row counter
-  rowIndex :: Signal dom (Index rows)
-  rowIndex = register 0 nextRowIndex
-
-  -- Fetch current row from the runtime matrix
-  currentRow :: Signal dom (RowI8E cols)
-  currentRow = (!!) <$> matSig <*> rowIndex
-
-  -- Parallel row engine
-  (rowResult, rowDone) =
-    parallel64RowProcessor rowReset rowEnable currentRow inputVector
-
-  -- Protocol FSM
-  (state, rowReset, rowEnable, outputValid, readyForInput) =
-    matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
-
-  -- Row index sequencing
-  nextRowIndex =
-    mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-        (rowIndex + 1)
-        (mux ((state .==. pure MDone) .&&. downStreamReady)
-             (pure 0)
-             rowIndex)
-
-  -- Accumulate per-row results into the output vector
-  outputVector = register (repeat 0) nextOutput
-  nextOutput   = mux rowDone
-                   (replace <$> rowIndex <*> rowResult <*> outputVector)
-                   outputVector
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplierDyn)
 
 --------------------------------------------------------------------------------
 -- Q head projector with weight selection (hardcoded vs RAM)
@@ -99,7 +46,7 @@ queryHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramW
 
   (qOut, outputValid, readyForInput) =
     parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedMat xHatSig
-
+  
   qRoOut = (rotaryEncoder (PARAM.rotaryF headComp) <$> stepCountSig) <*> qOut
 
 --------------------------------------------------------------------------------

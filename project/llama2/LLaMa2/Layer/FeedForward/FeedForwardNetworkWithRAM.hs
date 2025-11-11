@@ -7,46 +7,8 @@ import LLaMa2.Types.ModelConfig (ModelDimension, HiddenDimension)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E, dequantRowToF)
 import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ(..))
-import LLaMa2.Numeric.Operations (parallel64RowProcessor, matrixMultiplierStateMachine, MultiplierState (..))
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
-
--- simple dynamic multiplier (matrix as Signal)
-parallelRowMatrixMultiplierDyn :: forall dom rows cols.
-  (HiddenClockResetEnable dom, KnownNat rows, KnownNat cols)
-  => Signal dom Bool                       -- ^ validIn
-  -> Signal dom Bool                       -- ^ readyIn (downstream)
-  -> Signal dom (MatI8E rows cols)         -- ^ matrix (runtime)
-  -> Signal dom (Vec cols FixedPoint)      -- ^ input vector
-  -> ( Signal dom (Vec rows FixedPoint)    -- ^ output vector
-     , Signal dom Bool                     -- ^ validOut
-     , Signal dom Bool                     -- ^ readyOut
-     )
-parallelRowMatrixMultiplierDyn validIn readyIn matSig vecSig =
-  (outVec, validOut, readyOut)
- where
-  rowIndex :: Signal dom (Index rows)
-  rowIndex = register 0 nextRow
-
-  currentRow = (!!) <$> matSig <*> rowIndex
-
-  (rowRes, rowDone) =
-    LLaMa2.Numeric.Operations.parallel64RowProcessor rowReset rowEnable currentRow vecSig
-
-  (state, rowReset, rowEnable, validOut, readyOut) =
-    LLaMa2.Numeric.Operations.matrixMultiplierStateMachine validIn readyIn rowDone rowIndex
-
-  -- PROVEN sequencing: only increment on rowDone and not last row; reset to 0 when MDone is consumed
-  nextRow =
-    mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-        (rowIndex + 1)
-        (mux ((state .==. pure LLaMa2.Numeric.Operations.MDone) .&&. readyIn)
-             (pure 0)
-             rowIndex)
-
-  outVec = register (repeat 0) nextOut
-  nextOut = mux rowDone
-                 (replace <$> rowIndex <*> rowRes <*> outVec)
-                 outVec
+import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplierDyn)
 
 feedForwardStageWithRAM ::
   HiddenClockResetEnable dom =>

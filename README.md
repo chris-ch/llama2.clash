@@ -162,106 +162,96 @@ Prepending BOS to prompt tokens: [1,320,417]
 Simulating 259000 cycles...
 This may take a moment...
 
-Cycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid
+Loading: ./data/stories260K.bin
+✅ Simulation Model (FPGA wired) Loaded
+
+Cycle | Layer | DataStage      | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    0 |     0 | Stage1_ProjectQKV  |   False |    False |     True |    False |    False |    False |        0.0 |        0.0 | "\n<s>\n" |     WSReady |     False |     False |     False
-    1 |     0 | Stage1_ProjectQKV  |   False |    False |     True |    False |    False |    False |        0.0 |        0.0 | "\n<s>\n" |     WSReady |     False |     False |     False
-   27 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |        0.0 |        0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
-  227 |     0 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |   3.038473 |        0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 1589 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   3.038473 |   8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
- 1590 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   3.038473 |   8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
- 1616 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   3.038473 |   8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 1816 |     1 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |   9.176485 |   8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3178 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   9.176485 |  10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
- 3179 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   9.176485 |  10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
- 3205 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   9.176485 |  10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3405 |     2 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  11.258031 |  10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 4767 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  11.258031 |  12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
- 4768 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  11.258031 |  12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
- 4794 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  11.258031 |  12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 4994 |     3 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  14.736917 |  12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6356 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  14.736917 |  16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
- 6357 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  14.736917 |  16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
- 6383 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  14.736917 |  16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6583 |     4 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  16.443026 |  16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 7945 |     4 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  16.443026 |  18.754534 | "\n<s>\n" |     WSReady |     False |     False |     False
- 9482 |     4 | Stage5_Classifier  |    True |    False |    False |    False |    False |    False |  16.443026 |  18.754534 | "\n<s>\n" |     WSReady |     False |     False |     False
- 9483 |     0 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  16.443026 |  18.754534 |     " H" |     WSReady |     False |     False |     False
- 9509 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  16.443026 |  18.754534 |     " H" | WSStreaming |     False |     False |     False
- 9710 |     0 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |  2.7742534 |  18.754534 |     " H" | WSStreaming |     False |     False |     False
-10000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |    False |    False |  2.7742534 |  16.481407 |     " H" | WSStreaming |     False |     False |     False
-11072 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  2.7742534 |  3.8518157 |     " H" |     WSReady |     False |     False |     False
-11073 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  2.7742534 |  3.8518157 |     " H" |     WSReady |     False |     False |     False
-11099 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  2.7742534 |  3.8518157 |     " H" | WSStreaming |     False |     False |     False
-11300 |     1 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |  4.5273285 |  3.8518157 |     " H" | WSStreaming |     False |     False |     False
-12662 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  4.5273285 |  5.3426757 |     " H" |     WSReady |     False |     False |     False
-12663 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  4.5273285 |  5.3426757 |     " H" |     WSReady |     False |     False |     False
-12689 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  4.5273285 |  5.3426757 |     " H" | WSStreaming |     False |     False |     False
-12890 |     2 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |  6.4986663 |  5.3426757 |     " H" | WSStreaming |     False |     False |     False
-14252 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  6.4986663 |  6.8089294 |     " H" |     WSReady |     False |     False |     False
-14253 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  6.4986663 |  6.8089294 |     " H" |     WSReady |     False |     False |     False
-14279 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  6.4986663 |  6.8089294 |     " H" | WSStreaming |     False |     False |     False
-14480 |     3 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |   8.510305 |  6.8089294 |     " H" | WSStreaming |     False |     False |     False
-15842 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   8.510305 |    9.42028 |     " H" |     WSReady |     False |     False |     False
-15843 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   8.510305 |    9.42028 |     " H" |     WSReady |     False |     False |     False
-15869 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   8.510305 |    9.42028 |     " H" | WSStreaming |     False |     False |     False
-16070 |     4 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |   9.917849 |    9.42028 |     " H" | WSStreaming |     False |     False |     False
-17432 |     4 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   9.917849 |  13.655915 |     " H" |     WSReady |     False |     False |     False
-18969 |     4 | Stage5_Classifier  |    True |    False |    False |    False |    False |    False |   9.917849 |  13.655915 |     " H" |     WSReady |     False |     False |     False
-18970 |     0 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   9.917849 |  13.655915 |      "i" |     WSReady |     False |     False |     False
-18996 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   9.917849 |  13.655915 |      "i" | WSStreaming |     False |     False |     False
-19198 |     0 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  2.7814713 |  13.655915 |      "i" | WSStreaming |     False |     False |     False
-20000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |    False |    False |  2.7814713 |   9.014496 |      "i" |     WSReady |     False |     False |     False
-20560 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  2.7814713 |   2.822887 |      "i" |     WSReady |     False |     False |     False
-20561 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  2.7814713 |   2.822887 |      "i" |     WSReady |     False |     False |     False
-20587 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  2.7814713 |   2.822887 |      "i" | WSStreaming |     False |     False |     False
-20789 |     1 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  3.2277346 |   2.822887 |      "i" | WSStreaming |     False |     False |     False
-22151 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  3.2277346 |  4.6433043 |      "i" |     WSReady |     False |     False |     False
-22152 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  3.2277346 |  4.6433043 |      "i" |     WSReady |     False |     False |     False
-22178 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  3.2277346 |  4.6433043 |      "i" | WSStreaming |     False |     False |     False
-22380 |     2 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  5.5058446 |  4.6433043 |      "i" | WSStreaming |     False |     False |     False
-23742 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  5.5058446 |   6.180796 |      "i" |     WSReady |     False |     False |     False
-23743 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  5.5058446 |   6.180796 |      "i" |     WSReady |     False |     False |     False
-23769 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  5.5058446 |   6.180796 |      "i" | WSStreaming |     False |     False |     False
-23971 |     3 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  7.5363054 |   6.180796 |      "i" | WSStreaming |     False |     False |     False
-25333 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  7.5363054 |   9.746549 |      "i" |     WSReady |     False |     False |     False
-25334 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  7.5363054 |   9.746549 |      "i" |     WSReady |     False |     False |     False
-25360 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  7.5363054 |   9.746549 |      "i" | WSStreaming |     False |     False |     False
-25562 |     4 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  10.303003 |   9.746549 |      "i" | WSStreaming |     False |     False |     False
-26924 |     4 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  10.303003 | 12.8256645 |      "i" |     WSReady |     False |     False |     False
-28461 |     4 | Stage5_Classifier  |    True |    False |    False |    False |    False |    False |  10.303003 | 12.8256645 |      "i" |     WSReady |     False |     False |     False
-28462 |     0 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  10.303003 | 12.8256645 |      "b" |     WSReady |     False |     False |     False
-28488 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  10.303003 | 12.8256645 |      "b" | WSStreaming |     False |     False |     False
-28691 |     0 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |   2.813378 | 12.8256645 |      "b" | WSStreaming |     False |     False |     False
-30000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |    False |    False |   2.813378 |   9.883355 |      "b" |     WSReady |     False |     False |     False
-30053 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   2.813378 |  2.9710772 |      "b" |     WSReady |     False |     False |     False
-30054 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   2.813378 |  2.9710772 |      "b" |     WSReady |     False |     False |     False
-30080 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   2.813378 |  2.9710772 |      "b" | WSStreaming |     False |     False |     False
-30283 |     1 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |   3.412678 |  2.9710772 |      "b" | WSStreaming |     False |     False |     False
-31645 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   3.412678 |  4.1651764 |      "b" |     WSReady |     False |     False |     False
-31646 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   3.412678 |  4.1651764 |      "b" |     WSReady |     False |     False |     False
-31672 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   3.412678 |  4.1651764 |      "b" | WSStreaming |     False |     False |     False
-31875 |     2 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |  4.9870014 |  4.1651764 |      "b" | WSStreaming |     False |     False |     False
-33237 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  4.9870014 |   6.642122 |      "b" |     WSReady |     False |     False |     False
-33238 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  4.9870014 |   6.642122 |      "b" |     WSReady |     False |     False |     False
-33264 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  4.9870014 |   6.642122 |      "b" | WSStreaming |     False |     False |     False
-33467 |     3 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |   8.182645 |   6.642122 |      "b" | WSStreaming |     False |     False |     False
-34829 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |   8.182645 |   9.784572 |      "b" |     WSReady |     False |     False |     False
-34830 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |   8.182645 |   9.784572 |      "b" |     WSReady |     False |     False |     False
-34856 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |   8.182645 |   9.784572 |      "b" | WSStreaming |     False |     False |     False
-35059 |     4 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |  10.187632 |   9.784572 |      "b" | WSStreaming |     False |     False |     False
-36421 |     4 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  10.187632 |  11.553102 |      "b" |     WSReady |     False |     False |     False
-37958 |     4 | Stage5_Classifier  |    True |    False |    False |    False |    False |    False |  10.187632 |  11.553102 |      "b" |     WSReady |     False |     False |     False
-37959 |     0 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  10.187632 |  11.553102 |      "o" |     WSReady |     False |     False |     False
-37985 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  10.187632 |  11.553102 |      "o" | WSStreaming |     False |     False |     False
-38189 |     0 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  2.9592562 |  11.553102 |      "o" | WSStreaming |     False |     False |     False
-39551 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  2.9592562 |  2.8445544 |      "o" |     WSReady |     False |     False |     False
-39552 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  2.9592562 |  2.8445544 |      "o" |     WSReady |     False |     False |     False
-39578 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  2.9592562 |  2.8445544 |      "o" | WSStreaming |     False |     False |     False
-39782 |     1 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |  3.1207356 |  2.8445544 |      "o" | WSStreaming |     False |     False |     False
-40000 |     1 | Stage4_FeedForward |   False |    False |    False |    False |     True |    False |  3.1207356 |  3.0059326 |      "o" | WSStreaming |     False |     False |     False
-41144 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |  3.1207356 |  3.5186217 |      "o" |     WSReady |     False |     False |     False
-41145 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |  3.1207356 |  3.5186217 |      "o" |     WSReady |     False |     False |     False
-41171 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |  3.1207356 |  3.5186217 |      "o" | WSStreaming |     False |     False |     False
-41375 |     2 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |   4.546975 |  3.5186217 |      "o" | WSStreaming |     False |     False |     False
+    0 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     0.0000 |    0.0000 | "\n<s>\n" |     WSReady |       True
+    1 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     0.0000 |    0.0000 | "\n<s>\n" |     WSReady |       True
+   27 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     0.0000 |    0.0000 | "\n<s>\n" | WSStreaming |      False
+  226 |     0 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     3.0385 |    0.0000 | "\n<s>\n" | WSStreaming |      False
+ 1587 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.0385 |    8.2357 | "\n<s>\n" |     WSReady |      False
+ 1588 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.0385 |    8.2357 | "\n<s>\n" |     WSReady |       True
+ 1614 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.0385 |    8.2357 | "\n<s>\n" | WSStreaming |      False
+ 1813 |     1 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     9.1765 |    8.2357 | "\n<s>\n" | WSStreaming |      False
+ 3174 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     9.1765 |   10.3825 | "\n<s>\n" |     WSReady |      False
+ 3175 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     9.1765 |   10.3825 | "\n<s>\n" |     WSReady |       True
+ 3201 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     9.1765 |   10.3825 | "\n<s>\n" | WSStreaming |      False
+ 3400 |     2 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    11.2580 |   10.3825 | "\n<s>\n" | WSStreaming |      False
+ 4761 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    11.2580 |   12.2522 | "\n<s>\n" |     WSReady |      False
+ 4762 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    11.2580 |   12.2522 | "\n<s>\n" |     WSReady |       True
+ 4788 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    11.2580 |   12.2522 | "\n<s>\n" | WSStreaming |      False
+ 4987 |     3 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    14.7369 |   12.2522 | "\n<s>\n" | WSStreaming |      False
+ 6348 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    14.7369 |   16.0392 | "\n<s>\n" |     WSReady |      False
+ 6349 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    14.7369 |   16.0392 | "\n<s>\n" |     WSReady |       True
+ 6375 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    14.7369 |   16.0392 | "\n<s>\n" | WSStreaming |      False
+ 6574 |     4 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    16.4430 |   16.0392 | "\n<s>\n" | WSStreaming |      False
+ 7935 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    16.4430 |   18.7545 | "\n<s>\n" |     WSReady |      False
+ 9472 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |    16.4430 |   18.7545 | "\n<s>\n" |     WSReady |      False
+ 9473 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    16.4430 |   18.7545 |     " H" |     WSReady |       True
+ 9499 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    16.4430 |   18.7545 |     " H" | WSStreaming |      False
+ 9699 |     0 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     2.7743 |   18.7545 |     " H" | WSStreaming |      False
+10000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.7743 |   18.7545 |     " H" | WSStreaming |      False
+11060 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.7743 |    3.8518 |     " H" |     WSReady |      False
+11061 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.7743 |    3.8518 |     " H" |     WSReady |       True
+11087 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.7743 |    3.8518 |     " H" | WSStreaming |      False
+11287 |     1 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     4.5273 |    3.8518 |     " H" | WSStreaming |      False
+12648 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     4.5273 |    5.3427 |     " H" |     WSReady |      False
+12649 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     4.5273 |    5.3427 |     " H" |     WSReady |       True
+12675 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     4.5273 |    5.3427 |     " H" | WSStreaming |      False
+12875 |     2 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     6.4987 |    5.3427 |     " H" | WSStreaming |      False
+14236 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     6.4987 |    6.8089 |     " H" |     WSReady |      False
+14237 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     6.4987 |    6.8089 |     " H" |     WSReady |       True
+14263 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     6.4987 |    6.8089 |     " H" | WSStreaming |      False
+14463 |     3 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     8.5103 |    6.8089 |     " H" | WSStreaming |      False
+15824 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     8.5103 |    9.4203 |     " H" |     WSReady |      False
+15825 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     8.5103 |    9.4203 |     " H" |     WSReady |       True
+15851 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     8.5103 |    9.4203 |     " H" | WSStreaming |      False
+16051 |     4 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     9.9178 |    9.4203 |     " H" | WSStreaming |      False
+17412 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     9.9178 |   13.6559 |     " H" |     WSReady |      False
+18949 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |     9.9178 |   13.6559 |     " H" |     WSReady |      False
+18950 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     9.9178 |   13.6559 |      "i" |     WSReady |       True
+18976 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     9.9178 |   13.6559 |      "i" | WSStreaming |      False
+19177 |     0 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     2.7815 |   13.6559 |      "i" | WSStreaming |      False
+20000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.7815 |   13.6559 |      "i" |     WSReady |      False
+20538 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.7815 |    2.8229 |      "i" |     WSReady |      False
+20539 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.7815 |    2.8229 |      "i" |     WSReady |       True
+20565 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.7815 |    2.8229 |      "i" | WSStreaming |      False
+20766 |     1 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     3.2277 |    2.8229 |      "i" | WSStreaming |      False
+22127 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.2277 |    4.6433 |      "i" |     WSReady |      False
+22128 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.2277 |    4.6433 |      "i" |     WSReady |       True
+22154 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.2277 |    4.6433 |      "i" | WSStreaming |      False
+22355 |     2 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     5.5058 |    4.6433 |      "i" | WSStreaming |      False
+23716 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     5.5058 |    6.1808 |      "i" |     WSReady |      False
+23717 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     5.5058 |    6.1808 |      "i" |     WSReady |       True
+23743 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     5.5058 |    6.1808 |      "i" | WSStreaming |      False
+23944 |     3 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     7.5363 |    6.1808 |      "i" | WSStreaming |      False
+25305 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     7.5363 |    9.7465 |      "i" |     WSReady |      False
+25306 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     7.5363 |    9.7465 |      "i" |     WSReady |       True
+25332 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     7.5363 |    9.7465 |      "i" | WSStreaming |      False
+25533 |     4 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    10.3030 |    9.7465 |      "i" | WSStreaming |      False
+26894 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    10.3030 |   12.8257 |      "i" |     WSReady |      False
+28431 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |    10.3030 |   12.8257 |      "i" |     WSReady |      False
+28432 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    10.3030 |   12.8257 |      "b" |     WSReady |       True
+28458 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    10.3030 |   12.8257 |      "b" | WSStreaming |      False
+28660 |     0 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     2.8134 |   12.8257 |      "b" | WSStreaming |      False
+30000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.8134 |   12.8257 |      "b" |     WSReady |      False
+30021 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.8134 |    2.9711 |      "b" |     WSReady |      False
+30022 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.8134 |    2.9711 |      "b" |     WSReady |       True
+30048 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.8134 |    2.9711 |      "b" | WSStreaming |      False
+30250 |     1 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     3.4127 |    2.9711 |      "b" | WSStreaming |      False
+31611 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.4127 |    4.1652 |      "b" |     WSReady |      False
+31612 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.4127 |    4.1652 |      "b" |     WSReady |       True
+31638 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.4127 |    4.1652 |      "b" | WSStreaming |      False
+31840 |     2 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     4.9870 |    4.1652 |      "b" | WSStreaming |      False
+33201 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     4.9870 |    6.6421 |      "b" |     WSReady |      False
+33202 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     4.9870 |    6.6421 |      "b" |     WSReady |       True
+33228 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     4.9870 |    6.6421 |      "b" | WSStreaming |      False
+33430 |     3 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     8.1826 |    6.6421 |      "b" | WSStreaming |      False
+34791 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     8.1826 |    9.7846 |      "b" |     WSReady |      False
+34792 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     8.1826 |    9.7846 |      "b" |     WSReady |       True
+34818 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     8.1826 |    9.7846 |      "b" | WSStreaming |      False
+35020 |     4 | ProcessingLayer |   False |   False |     True |   False |     True |    False |    10.1876 |    9.7846 |      "b" | WSStreaming |      False
+36381 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    10.1876 |   11.5531 |      "b" |     WSReady |      False
 ```
