@@ -188,6 +188,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     stagesSampled         = C.sampleN simSteps (Decoder.stage introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
+    layerValidInsSampled        = C.sampleN simSteps (Decoder.layerValidIn introspection)
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
@@ -216,8 +217,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
-  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | layerValidIn"
+  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
@@ -239,13 +240,11 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           attnOutNorm = normVec attnOut
           token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
-          ddrWValid = ddrWValidSampled !! cycleIdx
-          ddrWReady = ddrWReadySampled !! cycleIdx
-          ddrBValid = ddrBValidSampled !! cycleIdx
+          layerValidIn = layerValidInsSampled !! cycleIdx
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg) $
+        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s | %9s | %9s"
+            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s"
               cycleIdx
               li
               (show ps)
@@ -259,9 +258,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show layerOutputNorm)
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
-              (show ddrWValid)
-              (show ddrWReady)
-              (show ddrBValid)
+              (show layerValidIn)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 

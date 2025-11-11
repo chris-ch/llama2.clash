@@ -43,7 +43,7 @@ sequenceController qkvDone writeDone attnDone ffnDone classifierDone =
     , currentLayer    = layerS
     , seqPosition     = seqPosS
     , readyPulse      = readyPulseS
-    , layerValidIn    = stageS .==. pure Stage1_ProjectQKV
+    , layerValidIn = risingEdge (stageS .==. pure Stage1_ProjectQKV)
     }
   where
     -- initial (power-up) controller state

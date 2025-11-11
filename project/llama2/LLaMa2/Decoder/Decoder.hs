@@ -39,6 +39,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   { stage               :: Signal dom CycleStage
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
+  , layerValidIn        :: Signal dom Bool
   , attnDone            :: Signal dom Bool
   , qkvDone             :: Signal dom Bool
   , ffnDone             :: Signal dom Bool
@@ -170,6 +171,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       { stage               = processingStage
       , layerIndex          = layerIdx
       , ready               = readyPulse
+      , layerValidIn        = layerValidIn
       , attnDone            = layerAttnDone
       , qkvDone             = layerQkvDone
       , ffnDone             = layerFfnDone
