@@ -1,6 +1,6 @@
 module LLaMa2.Types.LayerData
   ( -- State machine
-    CycleStage (..),
+    DataStage (..),
     ProcessingState (..),
     LayerData (..),
     Token,
@@ -33,7 +33,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 -- Multi-Cycle State Machine
 -- ============================================================================
 
-data CycleStage
+data DataStage
   = Stage1_ProjectQKV -- compute Q,K,V for current layer & pos
   | Stage2_WriteKV -- write K,V(pos) to cache
   | Stage3_Attend -- read 0..pos and attend (Q uses current pos)
@@ -41,20 +41,20 @@ data CycleStage
   | Stage5_Classifier
   deriving (Show, Eq, Enum, Bounded, Generic)
 
-instance NFDataX CycleStage where
-  rnfX :: CycleStage -> ()
+instance NFDataX DataStage where
+  rnfX :: DataStage -> ()
   rnfX x = seq x ()
-  hasUndefined :: CycleStage -> Bool
+  hasUndefined :: DataStage -> Bool
   hasUndefined _ = False
-  ensureSpine :: CycleStage -> CycleStage
+  ensureSpine :: DataStage -> DataStage
   ensureSpine x = x
-  deepErrorX :: (HasCallStack) => String -> CycleStage
+  deepErrorX :: (HasCallStack) => String -> DataStage
   deepErrorX = errorX
 
 -- Tracks which stage, which layer, and which sequence position
 -- the pipeline is currently processing.
 data ProcessingState = ProcessingState
-  { processingStage :: CycleStage,
+  { processingStage :: DataStage,
     processingLayer :: Index NumLayers,
     sequencePosition :: Index SequenceLength
   }

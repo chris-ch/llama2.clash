@@ -1,22 +1,22 @@
-module LLaMa2.Decoder.SequenceController
+module LLaMa2.Decoder.DataFlowController
  ( SequenceController(..)
  , sequenceController
  ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (CycleStage (..))
+import LLaMa2.Types.LayerData (DataStage (..))
 import LLaMa2.Types.ModelConfig (NumLayers, SequenceLength)
 
 -- | Unified controller state: stage, active layer index, sequence position.
 data UnifiedState = UnifiedState
-  { stage  :: CycleStage
+  { stage  :: DataStage
   , layer  :: Index NumLayers
   , seqPos :: Index SequenceLength
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- | Controller outputs: everything the pipeline needs to observe.
 data SequenceController dom = SequenceController
-  { processingStage :: Signal dom CycleStage
+  { processingStage :: Signal dom DataStage
   , currentLayer    :: Signal dom (Index NumLayers)
   , seqPosition     :: Signal dom (Index SequenceLength)
   , readyPulse      :: Signal dom Bool       -- rising pulse when token completes

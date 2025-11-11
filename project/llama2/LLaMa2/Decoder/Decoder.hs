@@ -3,14 +3,14 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, CycleStage (..))
+import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, DataStage (..))
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
 import LLaMa2.Numeric.Types (Mantissa, FixedPoint)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
-import qualified LLaMa2.Decoder.SequenceController as Controller
+import qualified LLaMa2.Decoder.DataFlowController as Controller
 import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
@@ -36,7 +36,7 @@ initialLayerData = LayerData
 
 -- | Introspection signals for debugging
 data DecoderIntrospection dom = DecoderIntrospection
-  { stage               :: Signal dom CycleStage
+  { stage               :: Signal dom DataStage
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
   , layerValidIn        :: Signal dom Bool
@@ -137,7 +137,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
         (mux (processingStage .==. pure Stage3_Attend)
             (LayerStack.attnOutput layerOutputs)
             (mux (processingStage .==. pure Stage4_FeedForward)
-                (LayerStack.ffnOutput layerOutputs)
+        (LayerStack.ffnOutput layerOutputs)
                 layerInput))  -- default: pass-through
 
     layerWriteDone = LayerStack.writeDone layerOutputs

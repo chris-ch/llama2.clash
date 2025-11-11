@@ -94,7 +94,7 @@ library
   exposed-modules:
       LLaMa2.Decoder.Decoder
       LLaMa2.Decoder.LayerStack
-      LLaMa2.Decoder.SequenceController
+      LLaMa2.Decoder.DataFlowController
       LLaMa2.Embedding.InputEmbedding
       LLaMa2.Embedding.OutputProjection
       LLaMa2.Layer.Attention.AttentionHead
