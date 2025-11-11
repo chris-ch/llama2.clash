@@ -126,7 +126,7 @@ keyValueHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig r
   selectedK = mux useRAM ramK (pure (PARAM.wkHeadQ headComp))
   selectedV = mux useRAM ramV (pure (PARAM.wvHeadQ headComp))
 
-  -- Use downStreamReady for both children (was: pure True)
+  -- Use downStreamReady for both children
   (kOut, kValidOut, kReadyOut) =
     parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedK xHatSig
 

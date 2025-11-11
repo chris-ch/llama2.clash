@@ -39,7 +39,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
     (writeDone, writeReadyIn, writeEnable) =
       kvWriteControllerFSM
         qkvDone
-        (pure True)
+        (pure True)  -- always ready (?)
         allBanksDone
 
     -- Latch qkvDone across the whole write

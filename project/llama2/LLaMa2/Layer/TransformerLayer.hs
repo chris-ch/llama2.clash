@@ -115,7 +115,7 @@ transformerLayer layerParams seqPos layerData weightBuffer useRAM validIn =
             (mux clearFFNValid (pure False) ffnValidIn)
 
     ffnOutReady :: Signal dom Bool
-    ffnOutReady = pure True
+    ffnOutReady = pure True  -- always ready (?)
 
     (ffnOutput, ffnValidOut, ffnInReady) =
       ffnController ffnValidIn ffnOutReady ffnInput ffnParams

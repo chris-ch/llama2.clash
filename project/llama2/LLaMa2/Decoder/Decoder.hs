@@ -9,7 +9,7 @@ import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
 import LLaMa2.Numeric.Types (Mantissa, FixedPoint)
 
-import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
+import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Decoder.SequenceController as Controller
 import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
@@ -138,7 +138,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
             (mux (processingStage .==. pure Stage4_FeedForward)
                 (LayerStack.ffnOutput layerOutputs)
                 layerInput))  -- default: pass-through
-                
+
     layerWriteDone = LayerStack.writeDone layerOutputs
     layerAttnDone  = LayerStack.attnDone layerOutputs
     layerQkvDone   = LayerStack.qkvDone layerOutputs
@@ -151,7 +151,11 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     ffnOutput = feedForwardOutput <$> nextLayerData
     lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
 
-    (logits, logitsValid) = OutputProjection.outputProjection params lastLayerComplete ffnOutput
+    (logits, logitsValid) = OutputProjection.logitsProjector
+      lastLayerComplete
+      (pure True) -- always teady to consume (?)
+      params
+      ffnOutput
 
     sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
     feedbackToken = regEn 0 logitsValid sampledToken
