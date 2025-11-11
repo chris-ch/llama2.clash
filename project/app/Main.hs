@@ -217,9 +217,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | layerValidIn"
-  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-
+  putStrLn "\nCycle | Layer | DataStage      | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid"
+  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
         let
@@ -244,7 +244,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 
         when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s"
+            printf "%5d | %5d | %-14s | %7s | %7s | %8s | %7s | %8s | %8s | %10.4f | %9.4f | %8s | %11s | %10s"
               cycleIdx
               li
               (show ps)
@@ -254,8 +254,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show ffn)
               (show wValid)
               (show layChg)
-              (show attnOutNorm)
-              (show layerOutputNorm)
+              attnOutNorm
+              layerOutputNorm
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
               (show layerValidIn)

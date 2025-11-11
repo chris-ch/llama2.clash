@@ -1,7 +1,5 @@
 module LLaMa2.Types.LayerData
-  ( -- State machine
-    DataStage (..),
-    ProcessingState (..),
+  (
     LayerData (..),
     Token,
     Temperature,
@@ -16,49 +14,16 @@ module LLaMa2.Types.LayerData
 where
 
 import Clash.Prelude
-import GHC.Stack (HasCallStack)
 import LLaMa2.Types.ModelConfig
   ( HeadDimension,
     ModelDimension,
     NumKeyValueHeads,
-    NumLayers,
     NumQueryHeads,
     RotaryPositionalEmbeddingDimension,
     SequenceLength,
     VocabularySize, HiddenDimension,
   )
 import LLaMa2.Numeric.Types (FixedPoint)
-
--- ============================================================================
--- Multi-Cycle State Machine
--- ============================================================================
-
-data DataStage
-  = Stage1_ProjectQKV -- compute Q,K,V for current layer & pos
-  | Stage2_WriteKV -- write K,V(pos) to cache
-  | Stage3_Attend -- read 0..pos and attend (Q uses current pos)
-  | Stage4_FeedForward -- FFN and residual
-  | Stage5_Classifier
-  deriving (Show, Eq, Enum, Bounded, Generic)
-
-instance NFDataX DataStage where
-  rnfX :: DataStage -> ()
-  rnfX x = seq x ()
-  hasUndefined :: DataStage -> Bool
-  hasUndefined _ = False
-  ensureSpine :: DataStage -> DataStage
-  ensureSpine x = x
-  deepErrorX :: (HasCallStack) => String -> DataStage
-  deepErrorX = errorX
-
--- Tracks which stage, which layer, and which sequence position
--- the pipeline is currently processing.
-data ProcessingState = ProcessingState
-  { processingStage :: DataStage,
-    processingLayer :: Index NumLayers,
-    sequencePosition :: Index SequenceLength
-  }
-  deriving (Show, Generic, NFDataX, Eq)
 
 -- ============================================================================
 -- Intermediate Data Storage

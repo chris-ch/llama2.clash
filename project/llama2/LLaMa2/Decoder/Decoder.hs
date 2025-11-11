@@ -3,7 +3,7 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token, DataStage (..))
+import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import LLaMa2.Types.ModelConfig
   ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
@@ -36,7 +36,7 @@ initialLayerData = LayerData
 
 -- | Introspection signals for debugging
 data DecoderIntrospection dom = DecoderIntrospection
-  { stage               :: Signal dom DataStage
+  { stage               :: Signal dom Controller.DataStage
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
   , layerValidIn        :: Signal dom Bool
@@ -71,8 +71,9 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
-    controller = Controller.sequenceController
-      layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
+    controller = Controller.dataFlowController
+      layerFfnDone     -- Layer processing complete
+      logitsValid      -- Classifier/token complete
 
     processingStage = Controller.processingStage controller
     seqPosition     = Controller.seqPosition controller
@@ -81,18 +82,18 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     -- Extract enable signals from controller
     layerValidIn       = Controller.layerValidIn controller
-    
+
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
     -- =======================================================================
     layerChanged = layerIdx ./=. register 0 layerIdx
     loadTrigger  = register True (pure False) .||. layerChanged
-    
+
     (ddrMaster, weightStream, streamValid, sysState) =
       weightManagementSystem ddrSlave (powerOn .&&. loadTrigger) layerIdx sinkReady
 
     (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
-    
+
     (mdRowOut, mdRowValid, rowDoneExt, sinkReady) =
       dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
                    weightStream streamValid (seg <$> layerAddrSig)
@@ -120,8 +121,8 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- =======================================================================
     -- LAYER PROCESSING (direct active layer)
     -- =======================================================================
-    layerInput = LayerStack.prepareLayerInput 
-      <$> layerIdx 
+    layerInput = LayerStack.prepareLayerInput
+      <$> layerIdx
       <*> layerDataReg  -- Use the explicitly named register
       <*> embeddedVector
 
@@ -143,11 +144,9 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     layerDataReg = register initialLayerData nextLayerData
 
-    layerWriteDone = LayerStack.writeDone layerOutputs
     layerAttnDone  = LayerStack.attnDone layerOutputs
     layerQkvDone   = LayerStack.qkvDone layerOutputs
     layerFfnDone   = LayerStack.ffnDone layerOutputs
-    layerQkvReady  = LayerStack.qkvReady layerOutputs
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
@@ -168,8 +167,8 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     -- INTROSPECTION
     -- =======================================================================
     (mantissasH, _expH) = unbundle parsedWeightsHold
-    firstMantissa = fmap (bitCoerce . head) mantissasH
-    
+    firstMantissa = bitCoerce . head <$> mantissasH
+
     introspection = DecoderIntrospection
       { stage               = processingStage
       , layerIndex          = layerIdx
