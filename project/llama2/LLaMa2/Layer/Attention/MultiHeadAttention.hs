@@ -19,7 +19,6 @@ multiHeadAttentionStage :: forall dom.
   Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
   Signal dom QKVProjectionWeightBuffer ->
-  Signal dom Bool ->  -- useRAM
   Signal dom Bool ->  -- validIn
   (
     Signal dom (Vec ModelDimension FixedPoint),
@@ -31,7 +30,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
+multiHeadAttentionStage mha seqPos layerData weightBuffer validIn =
   (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
   where
     -- Write-back controller
@@ -71,7 +70,6 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM validIn =
         mha
         seqPos
         weightBuffer
-        useRAM
 
     (q, k, v) = unbundle qkvProjected
 

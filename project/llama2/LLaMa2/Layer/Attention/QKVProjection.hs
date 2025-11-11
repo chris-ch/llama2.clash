@@ -33,16 +33,15 @@ queryHeadProjector :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM weights
-  -> Signal dom Bool                          -- ^ useRAM
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool                        -- ^ outputValid
      , Signal dom Bool                        -- ^ readyForInput
      )
-queryHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramWeights useRAM =
+queryHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramWeights =
   (qRoOut, outputValid, readyForInput)
  where
   selectedMat :: Signal dom (MatI8E HeadDimension ModelDimension)
-  selectedMat = mux useRAM ramWeights (pure (PARAM.wqHeadQ headComp))
+  selectedMat = pure (PARAM.wqHeadQ headComp) -- ramWeights
 
   (qOut, outputValid, readyForInput) =
     parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedMat xHatSig
@@ -61,17 +60,16 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM K
   -> Signal dom (MatI8E HeadDimension ModelDimension)  -- ^ RAM V
-  -> Signal dom Bool                          -- ^ useRAM
   -> ( Signal dom (Vec HeadDimension FixedPoint)  -- K
      , Signal dom (Vec HeadDimension FixedPoint)  -- V
      , Signal dom Bool                            -- outputValid
      , Signal dom Bool                            -- readyForInput
      )
-keyValueHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramK ramV useRAM =
+keyValueHeadProjector inputValid downStreamReady headComp stepCountSig xHatSig ramK ramV =
   (kRoOut, vOut, outputValid, readyForInput)
  where
-  selectedK = mux useRAM ramK (pure (PARAM.wkHeadQ headComp))
-  selectedV = mux useRAM ramV (pure (PARAM.wvHeadQ headComp))
+  selectedK = pure (PARAM.wkHeadQ headComp) -- ramK
+  selectedV = pure (PARAM.wvHeadQ headComp) -- ramV
 
   -- Use downStreamReady for both children
   (kOut, kValidOut, kReadyOut) =
@@ -97,18 +95,16 @@ qkvProjector :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom QKVProjectionWeightBuffer               -- ^ RAM weight buffer
-  -> Signal dom Bool                          -- ^ useRAM (fully loaded)
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool                        -- ^ outputValid
      , Signal dom Bool                        -- ^ readyForInput
      )
-qkvProjector inputValid downStreamReady mhaQ seqPosSig xSig weightBuffer useRAM =
+qkvProjector inputValid downStreamReady mhaQ seqPosSig xSig weightBuffer =
   (qkvOut, outputValid, readyForInput)
  where
   xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaQ)
-  useRAM' = useRAM -- should be pure True for disabling legacy wired weights completely for QKV
   -- Q heads
   qResults = imap qHead (PARAM.headsQ mhaQ)
    where
@@ -118,7 +114,7 @@ qkvProjector inputValid downStreamReady mhaQ seqPosSig xSig weightBuffer useRAM 
              , Signal dom Bool )
     qHead hIx headQ =
       let ramQ = extractQWeight <$> weightBuffer <*> pure hIx
-      in queryHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramQ useRAM'
+      in queryHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramQ
 
   -- Map KV heads to their corresponding SingleHeadComponentQ (for rotary params)
   queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
@@ -136,7 +132,7 @@ qkvProjector inputValid downStreamReady mhaQ seqPosSig xSig weightBuffer useRAM 
       let headQ = PARAM.headsQ mhaQ !! qIx
           ramK  = extractKWeight <$> weightBuffer <*> pure kvIx
           ramV  = extractVWeight <$> weightBuffer <*> pure kvIx
-      in keyValueHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramK ramV useRAM'
+      in keyValueHeadProjector inputValid downStreamReady headQ seqPosSig xNorm ramK ramV
 
   qVecs    = map (\(q, _, _) -> q) qResults
   qValids  = map (\(_, v, _) -> v) qResults
@@ -163,13 +159,12 @@ qkvProjectionController ::
   -> PARAM.MultiHeadAttentionComponentQ
   -> Signal dom (Index SequenceLength)
   -> Signal dom QKVProjectionWeightBuffer
-  -> Signal dom Bool
   -> ( Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool )
-qkvProjectionController inputValid downStreamReady input mhaQ seqPos weightBuf useRAM =
+qkvProjectionController inputValid downStreamReady input mhaQ seqPos weightBuf =
   (result, outputValid, readyForInput)
  where
   -- Generic controller (stateful): produces raw enable/valid/inReady
@@ -183,7 +178,6 @@ qkvProjectionController inputValid downStreamReady input mhaQ seqPos weightBuf u
                  seqPos
                  input
                  weightBuf
-                 useRAM
 
   -- Gate enable and inReady with a one-cycle delayed projector readiness
   -- to avoid any potential combinational loop; start permissive (True).

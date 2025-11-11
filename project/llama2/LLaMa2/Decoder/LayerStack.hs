@@ -28,11 +28,10 @@ processActiveLayer :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
   -> Signal dom QKVProjectionWeightBuffer
-  -> Signal dom Bool
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> Signal dom Bool  -- validIn
   -> LayerOutputs dom
-processActiveLayer activeLayerIdx seqPos inputData weightBuffer useRAM layers validIn =
+processActiveLayer activeLayerIdx seqPos inputData weightBuffer layers validIn =
   LayerOutputs
     { qkvOutput  = selectedQkvOutput
     , attnOutput = selectedAttnOutput
@@ -79,7 +78,6 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer useRAM layers va
               seqPos
               inputData'
               weightBuffer
-              useRAM
               validIn'
 
         qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })

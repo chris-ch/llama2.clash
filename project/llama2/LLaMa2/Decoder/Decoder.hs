@@ -109,9 +109,6 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
       loadTrigger
 
-    -- Weight loading complete when QKV buffer is fully loaded
-    useRAM = (fullyLoaded <$> weightBuffer) .&&. layerDone
-
     -- =======================================================================
     -- TOKEN EMBEDDING AND FEEDBACK
     -- =======================================================================
@@ -128,7 +125,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
 
     -- Extract seqPos for modules that need it, but keep processingState too
     layerOutputs = LayerStack.processActiveLayer
-      layerIdx seqPosition layerInput weightBuffer useRAM (PARAM.modelLayers params)
+      layerIdx seqPosition layerInput weightBuffer (PARAM.modelLayers params)
       layerValidIn
 
     -- Priority mux: latch outputs when their stage completes
