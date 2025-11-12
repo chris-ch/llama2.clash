@@ -142,6 +142,21 @@ normVec v = sqrt (sum squares)
             floats = vecToFloatList v
             squares = map (\x -> x * x) floats
 
+-- | Convert a Clash Signed 8 to Float.
+fromSigned :: C.Signed 8 -> Float
+fromSigned = fromIntegral
+
+-- | Convert a Clash vector of Signed 8 numbers to a list of Float.
+vecToFloatList' :: C.Vec n (C.Signed 8) -> [Float]
+vecToFloatList' = map fromSigned . C.toList
+
+-- | Euclidean (L2) norm of a Signed 8 vector, returned as Float.
+normVec' :: C.Vec n (C.Signed 8) -> Float
+normVec' v = sqrt (sum squares)
+  where
+    floats = vecToFloatList' v
+    squares = map (\x -> x * x) floats
+
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
   :: T.Tokenizer
@@ -193,12 +208,19 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
     weightValidSampled = C.sampleN simSteps (Decoder.weightStreamValid introspection)
-    weightSampleSampled = C.sampleN simSteps (Decoder.parsedWeightSample introspection)
     layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
     sysStateSampled = C.sampleN simSteps (Decoder.sysState introspection)
     layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
     layerDataSampled :: [LayerData]
     layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
+    bufferFullyLoadedSampled = C.sampleN simSteps (Decoder.bufferFullyLoaded introspection)
+    loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
+    mantissaSampled = C.sampleN simSteps (Decoder.firstQMantissa introspection)
+    rawWeightStreamSampled = C.sampleN simSteps (Decoder.rawWeightStream introspection)
+    mdRowOutSampleSampled = C.sampleN simSteps (Decoder.mdRowOutSample introspection)
+    parsedWeightsHeldSampled = C.sampleN simSteps (Decoder.parsedWeightsHeld introspection)
+    firstMantissaFromRowSampled = C.sampleN simSteps (Decoder.firstMantissaFromRow introspection)
+    paramQ0Row0Sampled = C.sampleN simSteps (Decoder.paramQ0Row0 introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -217,8 +239,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | DataStage      | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid"
-  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid | bufferFullyLoaded | loadTriggerActive | firstQMantissa | rawWeightStream | mdRowOutSample | parsedWeightsHeld | firstMantissaFromRow | paramQ0Row0"
+  putStrLn "--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
   
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
@@ -235,19 +257,26 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           ffn    = ffnDonesSampled !! cycleIdx
           wValid = weightValidSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
-          wSample = weightSampleSampled !! cycleIdx
           layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
           attnOutNorm = normVec attnOut
           token  = coreOutputs !! cycleIdx
           sysSt  = sysStateSampled !! cycleIdx
           layerValidIn = layerValidInsSampled !! cycleIdx
+          bufferFullyLoaded = bufferFullyLoadedSampled !! cycleIdx
+          loadTriggerActive = loadTriggerActiveSampled !! cycleIdx
+          mantissa = mantissaSampled !! cycleIdx
+          rawWeightStream = rawWeightStreamSampled !! cycleIdx
+          mdRowOutSample = mdRowOutSampleSampled !! cycleIdx
+          parsedWeightsHeld = parsedWeightsHeldSampled !! cycleIdx
+          firstMantissaFromRow = firstMantissaFromRowSampled !! cycleIdx
+          paramQ0Row0 = paramQ0Row0Sampled !! cycleIdx
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn) $
+        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive) $
           putStrLn $
-            printf "%5d | %5d | %-14s | %7s | %7s | %8s | %7s | %8s | %8s | %10.4f | %9.4f | %8s | %11s | %10s"
+            printf "%5d | %5d | %7s | %7s | %8s | %7s | %8s | %8s | %10.4f | %9.4f | %8s | %11s | %10s | %18s | %15s | %10s | %15s | %15s | %18s | %18s"
               cycleIdx
               li
-              (show ps)
+              --(show ps)
               (show rdy)
               (show qkv)
               (show attn)
@@ -259,6 +288,14 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show $ decodeToken tokenizer (fst token))
               (show sysSt)
               (show layerValidIn)
+              (show bufferFullyLoaded)
+              (show loadTriggerActive)
+              (show mantissa)
+              --(if wValid then showHex rawWeightStream "" else "N/A")
+              (show $ normVec' mdRowOutSample)
+              (show $ normVec' parsedWeightsHeld)
+              (show firstMantissaFromRow)
+              (show paramQ0Row0)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 

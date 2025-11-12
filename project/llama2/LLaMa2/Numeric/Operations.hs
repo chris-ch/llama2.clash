@@ -261,9 +261,15 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   currentRow :: Signal dom (RowI8E cols)
   currentRow = (!!) <$> matSig <*> rowIndex
 
+  initialRow :: RowI8E cols
+  initialRow = (repeat 0, 0)
+
   -- Parallel row engine
+  currentRowReg :: Signal dom (RowI8E cols)
+  currentRowReg = register initialRow currentRow
+
   (rowResult, rowDone) =
-    parallel64RowProcessor rowReset rowEnable currentRow inputVector
+      parallel64RowProcessor rowReset rowEnable currentRowReg inputVector
 
   -- Protocol FSM
   (state, rowReset, rowEnable, outputValid, readyForInput) =

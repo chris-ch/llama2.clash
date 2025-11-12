@@ -1,8 +1,8 @@
-{-# LANGUAGE DerivingVia #-}
 module Simulation.DRAMBackedAxiSlave
   ( createDRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
   , buildMemoryFromParams
+  , packRowToWord
   , WordData
   , DRAMConfig(..)
   ) where
@@ -17,12 +17,12 @@ import qualified Prelude as P
 
 import qualified Simulation.Parameters as PARAM
 import LLaMa2.Types.ModelConfig
-  ( NumLayers, ModelDimension, HeadDimension, HiddenDimension
-  , NumQueryHeads, NumKeyValueHeads )
-import LLaMa2.Memory.LayerAddressing (LayerSeg(..))
+  ( ModelDimension
+  , NumQueryHeads, NumKeyValueHeads, SequenceLength, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Quantization (RowI8E)
-import LLaMa2.Numeric.Types (Mantissa)
+import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import Simulation.Parameters (DecoderParameters)
+import Clash.Sized.Vector (unsafeFromList)
 
 -- ===============================================================
 -- Configuration
@@ -47,7 +47,7 @@ incrAddr64B :: Unsigned 32 -> Unsigned 32
 incrAddr64B a = a + 64
 
 toRamIx :: Unsigned 32 -> Unsigned 16
-toRamIx = truncateB
+toRamIx addr = resize (addr `shiftR` 6)  -- Divide by 64 (shift right 6 bits)
 
 -- ===============================================================
 -- Top-level
@@ -62,151 +62,135 @@ createDRAMBackedAxiSlave ::
 createDRAMBackedAxiSlave params = createDRAMBackedAxiSlaveFromVec defaultCfg initMem
   where
     defaultCfg = DRAMConfig { readLatency = 1, writeLatency = 0, numBanks = 1 }
-    
+
     -- Convert to address-indexed memory
     initMem = buildMemoryFromParams params
 
--- | Build a Vec 65536 WordData from parsed DecoderParameters
---   Maps hardware addresses to weight data in streaming format
 buildMemoryFromParams :: PARAM.DecoderParameters -> Vec 65536 WordData
-buildMemoryFromParams params = map addressToWord indicesI
+buildMemoryFromParams params = map wordAtAddress indicesI
   where
-    -- Calculate address for a specific layer/segment/row
-    -- Format: [layer][segment][head/row]
-    -- Each layer: rmsAtt(1) + Q(nQ*hDim) + K(nKV*hDim) + V(nKV*hDim) + 
-    --             WO(nQ*mDim) + rmsFfn(1) + W1(hDim) + W2(mDim) + W3(hDim)
-    
-    numLayers = natToNum @NumLayers
-    modelDim = natToNum @ModelDimension
-    headDim = natToNum @HeadDimension
-    hiddenDim = natToNum @HiddenDimension
-    numQHeads = natToNum @NumQueryHeads
-    numKVHeads = natToNum @NumKeyValueHeads
-    
-    -- Rows per segment (matches rowsInSeg from LayerAddressing)
-    rowsPerSeg :: LayerSeg -> Int
-    rowsPerSeg seg = case seg of
-      SegRmsAtt -> 1
-      SegQ      -> numQHeads * headDim
-      SegK      -> numKVHeads * headDim
-      SegV      -> numKVHeads * headDim
-      SegWO     -> numQHeads * modelDim
-      SegRmsFfn -> 1
-      SegW1     -> hiddenDim
-      SegW2     -> modelDim
-      SegW3     -> hiddenDim
-    
-    -- Total rows per layer
-    rowsPerLayer = sum $ P.map rowsPerSeg [minBound .. maxBound]
-    
-    -- Bytes per row: (ModelDimension or HeadDimension or HiddenDimension) mantissas + 1 exponent
-    -- For simplicity, assume max dimension rows are packed to 64-byte boundaries
-    -- One RowI8E = Vec n (Signed 8) + Signed 8 exponent
-    -- Pack into 64 bytes (one 512-bit word)
-    
-    addressToWord :: Index 65536 -> WordData
-    addressToWord addr =
-      let addrInt = fromEnum addr :: Int
-          
-          -- Determine which layer
-          layerIdx = addrInt `div` rowsPerLayer
-          rowInLayer = addrInt `mod` rowsPerLayer
-          
-      in if layerIdx >= numLayers
-         then 0  -- Beyond valid layers
-         else packRowToWord (getRowForLayerOffset layerIdx rowInLayer)
+    -- Build complete file as flat byte array
+    allBytes :: [BitVector 8]
+    allBytes =
+      embeddingBytes P.++
+      rmsFinalBytes P.++
+      rotaryBytes P.++
+      layerBytes
 
-    getRowForLayerOffset :: Int -> Int -> RowI8E ModelDimension
-    getRowForLayerOffset layerIdx offset =
-      let layer = PARAM.modelLayers params !! layerIdx
-          mha = PARAM.multiHeadAttention layer
+    -- Extract 64 bytes starting at word index
+    wordAtAddress :: Index 65536 -> WordData
+    wordAtAddress wordIdx =
+      let startByte = fromEnum wordIdx * 64
+          slice' = P.take 64 $ P.drop startByte allBytes
+          -- Pad if we run out of data
+          padded = slice' P.++ P.replicate (64 - P.length slice') 0
+          vecBytes = listToVecTH' padded :: Vec 64 (BitVector 8)
+      in pack vecBytes
+
+    -- EMBEDDING SECTION
+    modelDim = natToNum @ModelDimension
+
+    embeddingBytes =
+      let vocab = PARAM.vocabularyQ (PARAM.modelEmbedding params)
+      in P.concatMap rowToBytes (toList vocab)
+
+    rmsFinalBytes = P.replicate (modelDim + 1) 0  -- RMS weights not quantized yet
+
+    -- ROTARY SECTION (skip for now - not used in weight loading)
+    seqLen = natToNum @SequenceLength
+    rotaryDim = natToNum @RotaryPositionalEmbeddingDimension
+    rotaryBytes = P.replicate (2 * seqLen * rotaryDim * 4) 0
+
+    -- LAYER SECTION
+    layerBytes = P.concatMap layerToBytes (toList (PARAM.modelLayers params))
+
+    layerToBytes :: PARAM.TransformerLayerComponent -> [BitVector 8]
+    layerToBytes layer =
+      let mha = PARAM.multiHeadAttention layer
           ffn = PARAM.feedforwardNetwork layer
-          
-          -- Segment boundaries within layer
-          rmsAttEnd = 1
-          qEnd = rmsAttEnd + numQHeads * headDim
-          kEnd = qEnd + numKVHeads * headDim  
-          vEnd = kEnd + numKVHeads * headDim
-          woEnd = vEnd + numQHeads * modelDim
-          rmsFfnEnd = woEnd + 1
-          w1End = rmsFfnEnd + hiddenDim
-          w2End = w1End + modelDim
-          w3End = w2End + hiddenDim
-          
-      in if offset < rmsAttEnd
-         then packRmsToRow (PARAM.rmsAttF mha)
-         else if offset < qEnd
-         then let qOffset = offset - rmsAttEnd
-                  headIdx = qOffset `div` headDim
-                  rowIdx = qOffset `mod` headDim
-                  idx = fromIntegral headIdx :: Index NumQueryHeads
-                  qMat = PARAM.wqHeadQ (PARAM.headsQ mha !! idx)
-              in padRow (qMat !! rowIdx)
-         else if offset < kEnd
-         then let kOffset = offset - qEnd
-                  headIdx = kOffset `div` headDim
-                  rowIdx = kOffset `mod` headDim
-                  queryHeadsPerKV = numQHeads `div` numKVHeads
-                  qHeadIdx = headIdx * queryHeadsPerKV
-                  kMat = PARAM.wkHeadQ (PARAM.headsQ mha !! qHeadIdx)
-              in padRow (kMat !! rowIdx)
-         else if offset < vEnd
-         then let vOffset = offset - kEnd
-                  headIdx = vOffset `div` headDim
-                  rowIdx = vOffset `mod` headDim
-                  queryHeadsPerKV = numQHeads `div` numKVHeads
-                  qHeadIdx = headIdx * queryHeadsPerKV
-                  vMat = PARAM.wvHeadQ (PARAM.headsQ mha !! qHeadIdx)
-              in padRow (vMat !! rowIdx)
-         else if offset < woEnd
-         then let woOffset = offset - vEnd
-                  headIdx = woOffset `div` modelDim
-                  rowIdx = woOffset `mod` modelDim
-                  woMat = PARAM.mWoQ mha !! headIdx
-              in padRow (woMat !! rowIdx)
-         else if offset < rmsFfnEnd
-         then packRmsToRow (PARAM.fRMSFfnF ffn)
-         else if offset < w1End
-         then let rowIdx = offset - rmsFfnEnd
-                  w1Mat = PARAM.fW1Q ffn
-              in w1Mat !! rowIdx  -- Already ModelDimension wide
-         else if offset < w2End
-         then let rowIdx = offset - w1End
-                  w2Mat = PARAM.fW2Q ffn
-              in padRow (w2Mat !! rowIdx)
-         else if offset < w3End
-         then let rowIdx = offset - w2End
-                  w3Mat = PARAM.fW3Q ffn
-              in w3Mat !! rowIdx  -- Already ModelDimension wide
-         else (repeat 0, 0)  -- Padding
-    
-    -- Pad a smaller row to ModelDimension by zero-filling
-    padRow :: forall n. KnownNat n => RowI8E n -> RowI8E ModelDimension
-    padRow (mantissas, expon) = 
-      let buildVec = imap (\i _ -> 
-            if fromEnum i < natToNum @n 
-            then mantissas !! (toEnum (fromEnum i) :: Index n)
-            else 0) (repeat 0 :: Vec ModelDimension Mantissa)
-      in (buildVec, expon)
-      
-    packRmsToRow :: Vec ModelDimension (SFixed 12 20) -> RowI8E ModelDimension
-    packRmsToRow _weights =
-      -- TODO: Implement proper quantization
-      -- For now, return zeros (RMS weights handled separately in hardware)
-      (repeat 0, 0)
-    
-    -- Pack a RowI8E into a 512-bit word (64 bytes)
-    packRowToWord :: RowI8E ModelDimension -> WordData
-    packRowToWord (mantissas, expon) =
-      let -- Pack mantissas (ModelDimension signed 8-bit values)
-          mantissaBits = foldl
-            (\acc m -> (acc `shiftL` 8) .|. resize (pack m))
-            (0 :: BitVector 512)
-            mantissas
-          -- Pack exponent in last byte
-          expBits = resize (pack expon) :: BitVector 512
-          -- Combine (exponent in LSB for simplicity)
-      in (mantissaBits `shiftL` 8) .|. expBits
+      in P.concat
+        [ rmsAttBytes
+        , qBytes mha
+        , kBytes mha
+        , vBytes mha
+        , woBytes mha
+        , rmsFfnBytes
+        , w1Bytes ffn
+        , w2Bytes ffn
+        , w3Bytes ffn
+        ]
+
+    -- MHA weight sections
+    rmsAttBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
+
+    qBytes mha =
+      let heads = toList (PARAM.headsQ mha)
+      in P.concatMap (\hd ->
+           let qMat = PARAM.wqHeadQ hd
+           in P.concatMap rowToBytes (toList qMat)
+         ) heads
+
+    kBytes mha =
+      let kvHeadIndices = kvHeadIndicesFromQ
+      in P.concatMap (\kvIdx ->
+           let qHeadIdx = kvIdx * queryHeadsPerKV
+               kMat = PARAM.wkHeadQ (PARAM.headsQ mha !! qHeadIdx)
+           in P.concatMap rowToBytes (toList kMat)
+         ) kvHeadIndices
+
+    vBytes mha =
+      let kvHeadIndices = kvHeadIndicesFromQ
+      in P.concatMap (\kvIdx ->
+           let qHeadIdx = kvIdx * queryHeadsPerKV
+               vMat = PARAM.wvHeadQ (PARAM.headsQ mha !! qHeadIdx)
+           in P.concatMap rowToBytes (toList vMat)
+         ) kvHeadIndices
+
+    woBytes mha =
+      let heads = toList (PARAM.mWoQ mha)
+      in P.concatMap (P.concatMap rowToBytes . toList) heads
+
+    -- FFN weight sections  
+    rmsFfnBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
+
+    w1Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW1Q ffn))
+    w2Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW2Q ffn))
+    w3Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW3Q ffn))
+
+    -- Helper: convert one RowI8E to bytes
+    rowToBytes :: (Vec n Mantissa, Exponent) -> [BitVector 8]
+    rowToBytes (mantissas, expon) =
+      let
+        mantBytes :: [BitVector 8]
+        mantBytes = P.map pack (toList mantissas)
+        expByte :: BitVector 8
+        expByte = resize (pack expon)
+      in mantBytes P.++ [expByte]
+
+    -- Helper values
+    numKVHeads = natToNum @NumKeyValueHeads
+    numQHeads = natToNum @NumQueryHeads
+    queryHeadsPerKV = numQHeads `div` numKVHeads
+    kvHeadIndicesFromQ = [(0 :: Int) .. numKVHeads - 1]
+
+-- Helper to convert list to Vec (use this or Template Haskell)
+listToVecTH' :: forall n a. (KnownNat n, Default a) => [a] -> Vec n a
+listToVecTH' xs =
+  let len = natToNum @n
+      padded = P.take len (xs P.++ P.repeat def)
+  in unsafeFromList padded
+
+-- Pack a RowI8E into a 512-bit word (64 bytes)
+packRowToWord :: RowI8E ModelDimension -> WordData
+packRowToWord (mantissas, expon) =
+  let -- Take up to 63 mantissas (adjust if ModelDimension > 63)
+      mantBytes = take (SNat @63) (map pack mantissas) :: Vec 63 (BitVector 8)
+      expByte = resize (pack expon) :: BitVector 8
+
+      -- Concatenate: [mant0, mant1, ..., mant62, exp]
+      allBytes = mantBytes :< expByte :: Vec 64 (BitVector 8)
+
+  in pack allBytes
 
 -- Original Vec-based implementation for compatibility
 createDRAMBackedAxiSlaveFromVec ::

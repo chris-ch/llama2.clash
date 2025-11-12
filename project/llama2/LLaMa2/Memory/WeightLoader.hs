@@ -155,8 +155,7 @@ data WeightSystemState
   | WSStreaming      -- Streaming layer from DDR4
   deriving (Generic, NFDataX, Show, Eq)
 
-weightManagementSystem
-  :: forall dom . HiddenClockResetEnable dom
+weightManagementSystem :: forall dom . HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
   -> Signal dom Bool
   -> Signal dom (Index NumLayers)
