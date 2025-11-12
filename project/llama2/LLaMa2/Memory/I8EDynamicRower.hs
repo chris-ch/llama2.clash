@@ -1,7 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 module LLaMa2.Memory.I8EDynamicRower
   ( dynamicRower
-  , dynamicRower3
   ) where
 
 import Clash.Prelude

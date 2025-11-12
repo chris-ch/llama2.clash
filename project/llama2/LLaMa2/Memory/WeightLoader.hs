@@ -2,7 +2,6 @@ module LLaMa2.Memory.WeightLoader
  (
   calculateLayerBaseAddress,
   calculateLayerSizeBytes,
-  --layerWeightStreamer,
   parseI8EChunk,
   weightManagementSystem,
   WeightSystemState(..)

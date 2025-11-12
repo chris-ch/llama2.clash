@@ -65,7 +65,7 @@ decoder :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Master.AxiMasterOut dom
      , DecoderIntrospection dom )
-decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
+decoder ddrSlave powerOn params inputToken forceInputToken temperature seed =
   (outputToken, readyPulse, ddrMaster, introspection)
   where
     -- =======================================================================
@@ -81,7 +81,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     readyPulse      = Controller.readyPulse controller
 
     -- Extract enable signals from controller
-    layerValidIn       = Controller.layerValidIn controller
+    layerValid       = Controller.layerValidIn controller
 
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
@@ -92,44 +92,50 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     (ddrMaster, weightStream, streamValid, sysState) =
       weightManagementSystem ddrSlave (powerOn .&&. loadTrigger) layerIdx sinkReady
 
-    (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
+    (layerAddress, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
 
     (mdRowOut, mdRowValid, rowDoneExt, sinkReady) =
       dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
-                   weightStream streamValid (seg <$> layerAddrSig)
+                   weightStream streamValid (seg <$> layerAddress)
 
     parsedWeightsHold :: Signal dom (RowI8E ModelDimension)
     parsedWeightsHold = regEn (repeat 0, 0) mdRowValid mdRowOut
 
     -- QKV weight buffer
-    weightBuffer = qkvWeightBufferController
+    weightsBuffer :: Signal dom QKVProjectionWeightBuffer
+    weightsBuffer = qkvWeightBufferController
       mdRowValid
-      (mapToOldWeightAddr <$> layerAddrSig)
+      (mapToOldWeightAddr <$> layerAddress)
       parsedWeightsHold
-      (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
+      (qkvDonePulse <$> layerAddress <*> mdRowValid)
       loadTrigger
-
-    -- =======================================================================
-    -- TOKEN EMBEDDING AND FEEDBACK
-    -- =======================================================================
-    outputToken = mux inputTokenValid inputToken feedbackToken
-    embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
     -- =======================================================================
     -- LAYER PROCESSING (direct active layer)
     -- =======================================================================
+
+    embeddedVector :: Signal dom (Vec ModelDimension FixedPoint)
+    embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
+
+    layerInput :: Signal dom LayerData
     layerInput = LayerStack.prepareLayerInput
       <$> layerIdx
       <*> layerDataReg  -- Use the explicitly named register
       <*> embeddedVector
 
     -- Extract seqPos for modules that need it, but keep processingState too
+    layerOutputs :: LayerStack.LayerOutputs dom
     layerOutputs = LayerStack.processActiveLayer
-      layerIdx seqPosition layerInput weightBuffer (PARAM.modelLayers params)
-      layerValidIn
+      layerIdx
+      seqPosition
+      layerInput
+      layerValid
+      weightsBuffer
+      (PARAM.modelLayers params)
 
     -- Priority mux: latch outputs when their stage completes
     -- Priority: FFN > Attn > QKV (if multiple done in same cycle, take latest stage)
+    nextLayerData :: Signal dom LayerData
     nextLayerData =
       mux layerFfnDone
         (LayerStack.ffnOutput layerOutputs)
@@ -161,6 +167,11 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     feedbackToken = regEn 0 logitsValid sampledToken
 
     -- =======================================================================
+    -- TOKEN EMBEDDING AND FEEDBACK
+    -- =======================================================================
+    outputToken = mux forceInputToken inputToken feedbackToken
+
+    -- =======================================================================
     -- INTROSPECTION
     -- =======================================================================
     (mantissasH, _expH) = unbundle parsedWeightsHold
@@ -170,7 +181,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       { stage               = processingStage
       , layerIndex          = layerIdx
       , ready               = readyPulse
-      , layerValidIn        = layerValidIn
+      , layerValidIn        = layerValid
       , attnDone            = layerAttnDone
       , qkvDone             = layerQkvDone
       , ffnDone             = layerFfnDone
@@ -178,7 +189,7 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
       , parsedWeightSample  = firstMantissa
       , layerChangeDetected = layerChanged
       , sysState            = sysState
-      , weightBufferState   = weightBuffer
+      , weightBufferState   = weightsBuffer
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
       }

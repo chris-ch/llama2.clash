@@ -27,11 +27,11 @@ processActiveLayer :: forall dom.
   => Signal dom (Index NumLayers)
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
+  -> Signal dom Bool  -- inputValid
   -> Signal dom QKVProjectionWeightBuffer
   -> Vec NumLayers PARAM.TransformerLayerComponent
-  -> Signal dom Bool  -- validIn
   -> LayerOutputs dom
-processActiveLayer activeLayerIdx seqPos inputData weightBuffer layers validIn =
+processActiveLayer activeLayerIdx seqPos inputData inputValid weightsBuffer params =
   LayerOutputs
     { qkvOutput  = selectedQkvOutput
     , attnOutput = selectedAttnOutput
@@ -43,8 +43,8 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer layers validIn =
     , qkvReady   = selectedQkvReady
     }
   where
-    -- Run all layers in parallel (only one gets validIn true)
-    layerOutputs = imap (layerPipeline inputData) layers
+    -- Run all layers in parallel (only one gets inputValid true)
+    layerOutputs = imap (layerPipeline inputData) params
 
     -- Pick outputs for the active layer
     (selectedQkvOutput, selectedAttnOutput, selectedFfnOutput,
@@ -69,7 +69,7 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer layers validIn =
       , qkvDone', writeDone', attnDone', ffnDone', qkvReady )
       where
         isThisLayer = activeLayerIdx .==. pure layerIdx
-        validIn' = validIn .&&. isThisLayer
+        validIn' = inputValid .&&. isThisLayer
 
         ( qProj, kProj, vProj, attnOut, ffnOut
           , qkvDone', writeDone', attnDone', ffnDone', qkvReady ) =
@@ -77,7 +77,7 @@ processActiveLayer activeLayerIdx seqPos inputData weightBuffer layers validIn =
               layerParams
               seqPos
               inputData'
-              weightBuffer
+              weightsBuffer
               validIn'
 
         qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })

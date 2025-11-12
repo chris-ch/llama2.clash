@@ -30,7 +30,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mha seqPos layerData weightBuffer validIn =
+multiHeadAttentionStage mhaParams seqPos layerData weightBuffer validIn =
   (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
   where
     -- Write-back controller
@@ -67,7 +67,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer validIn =
         validIn
         writeReadyIn
         input
-        mha
+        mhaParams
         seqPos
         weightBuffer
 
@@ -89,7 +89,7 @@ multiHeadAttentionStage mha seqPos layerData weightBuffer validIn =
 
     -- WO projection over heads
     (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs) =
-      perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mha)
+      perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mhaParams)
 
     -- IMPORTANT: gate the accumulation by valid (not readyForInput)
     validProjection proj valid _ready = mux valid proj (pure (repeat 0))
