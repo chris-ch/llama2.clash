@@ -5,6 +5,7 @@ module LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
   , extractQWeight
   , extractKWeight
   , extractVWeight
+  , emptyQKVBuffer
   ) where
 
 import Clash.Prelude

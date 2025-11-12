@@ -261,13 +261,14 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   currentRow :: Signal dom (RowI8E cols)
   currentRow = (!!) <$> matSig <*> rowIndex
 
+  -- Initial row (all zeros) for register initialization
   initialRow :: RowI8E cols
   initialRow = (repeat 0, 0)
 
-  -- Parallel row engine
   currentRowReg :: Signal dom (RowI8E cols)
-  currentRowReg = register initialRow currentRow
+  currentRowReg = regEn initialRow rowDone currentRow
 
+  -- Run parallel row processor
   (rowResult, rowDone) =
       parallel64RowProcessor rowReset rowEnable currentRowReg inputVector
 
@@ -275,13 +276,11 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   (state, rowReset, rowEnable, outputValid, readyForInput) =
     matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
 
-  -- Row index sequencing
+  -- Increment row index after each completed row
   nextRowIndex =
-    mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-        (rowIndex + 1)
-        (mux ((state .==. pure MDone) .&&. downStreamReady)
-             (pure 0)
-             rowIndex)
+    mux rowDone
+        (mux (rowIndex .==. pure maxBound) 0 (rowIndex + 1))
+        rowIndex
 
   -- Accumulate per-row results into the output vector
   outputVector = register (repeat 0) nextOutput
