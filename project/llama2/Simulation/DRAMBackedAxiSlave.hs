@@ -3,6 +3,8 @@ module Simulation.DRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
   , buildMemoryFromParams
   , packRowToWord
+  , rowToBytes
+  , layerToBytes
   , WordData
   , DRAMConfig(..)
   ) where
@@ -103,75 +105,6 @@ buildMemoryFromParams params = map wordAtAddress indicesI
 
     -- LAYER SECTION
     layerBytes = P.concatMap layerToBytes (toList (PARAM.modelLayers params))
-
-    layerToBytes :: PARAM.TransformerLayerComponent -> [BitVector 8]
-    layerToBytes layer =
-      let mha = PARAM.multiHeadAttention layer
-          ffn = PARAM.feedforwardNetwork layer
-      in P.concat
-        [ rmsAttBytes
-        , qBytes mha
-        , kBytes mha
-        , vBytes mha
-        , woBytes mha
-        , rmsFfnBytes
-        , w1Bytes ffn
-        , w2Bytes ffn
-        , w3Bytes ffn
-        ]
-
-    -- MHA weight sections
-    rmsAttBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
-
-    qBytes mha =
-      let heads = toList (PARAM.headsQ mha)
-      in P.concatMap (\hd ->
-           let qMat = PARAM.wqHeadQ hd
-           in P.concatMap rowToBytes (toList qMat)
-         ) heads
-
-    kBytes mha =
-      let kvHeadIndices = kvHeadIndicesFromQ
-      in P.concatMap (\kvIdx ->
-           let qHeadIdx = kvIdx * queryHeadsPerKV
-               kMat = PARAM.wkHeadQ (PARAM.headsQ mha !! qHeadIdx)
-           in P.concatMap rowToBytes (toList kMat)
-         ) kvHeadIndices
-
-    vBytes mha =
-      let kvHeadIndices = kvHeadIndicesFromQ
-      in P.concatMap (\kvIdx ->
-           let qHeadIdx = kvIdx * queryHeadsPerKV
-               vMat = PARAM.wvHeadQ (PARAM.headsQ mha !! qHeadIdx)
-           in P.concatMap rowToBytes (toList vMat)
-         ) kvHeadIndices
-
-    woBytes mha =
-      let heads = toList (PARAM.mWoQ mha)
-      in P.concatMap (P.concatMap rowToBytes . toList) heads
-
-    -- FFN weight sections  
-    rmsFfnBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
-
-    w1Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW1Q ffn))
-    w2Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW2Q ffn))
-    w3Bytes ffn = P.concatMap rowToBytes (toList (PARAM.fW3Q ffn))
-
-    -- Helper: convert one RowI8E to bytes
-    rowToBytes :: (Vec n Mantissa, Exponent) -> [BitVector 8]
-    rowToBytes (mantissas, expon) =
-      let
-        mantBytes :: [BitVector 8]
-        mantBytes = P.map pack (toList mantissas)
-        expByte :: BitVector 8
-        expByte = resize (pack expon)
-      in mantBytes P.++ [expByte]
-
-    -- Helper values
-    numKVHeads = natToNum @NumKeyValueHeads
-    numQHeads = natToNum @NumQueryHeads
-    queryHeadsPerKV = numQHeads `div` numKVHeads
-    kvHeadIndicesFromQ = [(0 :: Int) .. numKVHeads - 1]
 
 -- Helper to convert list to Vec (use this or Template Haskell)
 listToVecTH' :: forall n a. (KnownNat n, Default a) => [a] -> Vec n a
@@ -396,3 +329,75 @@ writePath masterOut = WritePathData
       mux bValidPulse (pure True) (pure False)
 
     bData = AxiB 0 <$> wIDReg
+
+-- Helper: convert one RowI8E to bytes
+rowToBytes :: (Vec n Mantissa, Exponent) -> [BitVector 8]
+rowToBytes (mantissas, expon) =
+  let
+    mantBytes :: [BitVector 8]
+    mantBytes = P.map pack (toList mantissas)
+    expByte :: BitVector 8
+    expByte = resize (pack expon)
+  in mantBytes P.++ [expByte]
+
+layerToBytes :: PARAM.TransformerLayerComponent -> [BitVector 8]
+layerToBytes layer =
+  let mha = PARAM.multiHeadAttention layer
+      ffn = PARAM.feedforwardNetwork layer
+
+      modelDim = natToNum @ModelDimension
+
+      -- MHA weight sections
+      rmsAttBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
+
+      qBytes mha' =
+        let heads = toList (PARAM.headsQ mha')
+        in P.concatMap (\hd ->
+              let qMat = PARAM.wqHeadQ hd
+              in P.concatMap rowToBytes (toList qMat)
+            ) heads
+
+      kBytes mha' =
+        let kvHeadIndices = kvHeadIndicesFromQ
+        in P.concatMap (\kvIdx ->
+              let qHeadIdx = kvIdx * queryHeadsPerKV
+                  kMat = PARAM.wkHeadQ (PARAM.headsQ mha' !! qHeadIdx)
+              in P.concatMap rowToBytes (toList kMat)
+            ) kvHeadIndices
+
+      vBytes mha' =
+        let kvHeadIndices = kvHeadIndicesFromQ
+        in P.concatMap (\kvIdx ->
+              let qHeadIdx = kvIdx * queryHeadsPerKV
+                  vMat = PARAM.wvHeadQ (PARAM.headsQ mha' !! qHeadIdx)
+              in P.concatMap rowToBytes (toList vMat)
+            ) kvHeadIndices
+
+      woBytes mha' =
+        let heads = toList (PARAM.mWoQ mha')
+        in P.concatMap (P.concatMap rowToBytes . toList) heads
+
+      -- FFN weight sections  
+      rmsFfnBytes = P.replicate (modelDim + 1) 0  -- RMS not quantized
+
+      w1Bytes ffn' = P.concatMap rowToBytes (toList (PARAM.fW1Q ffn'))
+      w2Bytes ffn' = P.concatMap rowToBytes (toList (PARAM.fW2Q ffn'))
+      w3Bytes ffn' = P.concatMap rowToBytes (toList (PARAM.fW3Q ffn'))
+
+      -- Helper values
+      numKVHeads = natToNum @NumKeyValueHeads
+      numQHeads = natToNum @NumQueryHeads
+      queryHeadsPerKV = numQHeads `div` numKVHeads
+      kvHeadIndicesFromQ = [(0 :: Int) .. numKVHeads - 1]
+
+  in P.concat
+    [ rmsAttBytes
+    , qBytes mha
+    , kBytes mha
+    , vBytes mha
+    , woBytes mha
+    , rmsFfnBytes
+    , w1Bytes ffn
+    , w2Bytes ffn
+    , w3Bytes ffn
+    ]

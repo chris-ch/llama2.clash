@@ -173,6 +173,8 @@ test-suite llama2-test
       Simulation.WeightLoadingDiagnosticSpec
       Simulation.WeightLoaderSpec
       Simulation.DynamicMatMulSpec
+      Simulation.DRAMSimpleSpec
+      Simulation.MemoryDiagnosticSpec
   hs-source-dirs:
       test
   build-depends:

@@ -16,6 +16,9 @@ import qualified Simulation.WeightLoadingDiagnosticSpec (spec)
 import qualified LLaMa2.Decoder.EnableAttentionTimingSpec (spec)
 import qualified Simulation.SingleLayerOutputSpec (spec)
 import qualified Simulation.DynamicMatMulSpec (spec)
+import qualified Simulation.DRAMSimpleSpec (spec)
+import qualified Simulation.MemoryDiagnosticSpec (spec)
+
 
 main :: IO ()
 main = hspec $ do
@@ -33,3 +36,5 @@ main = hspec $ do
   LLaMa2.Decoder.EnableAttentionTimingSpec.spec
   Simulation.SingleLayerOutputSpec.spec
   Simulation.DynamicMatMulSpec.spec
+  Simulation.DRAMSimpleSpec.spec
+  Simulation.MemoryDiagnosticSpec.spec
