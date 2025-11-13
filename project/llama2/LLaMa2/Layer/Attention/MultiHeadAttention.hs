@@ -11,14 +11,12 @@ import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
   PARAM.MultiHeadAttentionComponentQ ->
   Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
-  Signal dom QKVProjectionWeightBuffer ->
   Signal dom Bool ->  -- validIn
   (
     Signal dom (Vec ModelDimension FixedPoint),
@@ -30,7 +28,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool
   )
-multiHeadAttentionStage mhaParams seqPos layerData weightBuffer validIn =
+multiHeadAttentionStage mhaParams seqPos layerData validIn =
   (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
   where
     -- Write-back controller
@@ -69,7 +67,6 @@ multiHeadAttentionStage mhaParams seqPos layerData weightBuffer validIn =
         input
         mhaParams
         seqPos
-        weightBuffer
 
     (q, k, v) = unbundle qkvProjected
 

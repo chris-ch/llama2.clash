@@ -18,7 +18,6 @@ import LLaMa2.Types.ModelConfig
   )
 import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
 
 --------------------------------------------------------------------------------
 -- Feed-forward controller
@@ -48,7 +47,6 @@ transformerLayer ::
    => PARAM.TransformerLayerComponent
    -> Signal dom (Index SequenceLength)
    -> Signal dom LayerData                -- input layer data
-   -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool                     -- validIn (layer-specific)
    -> ( Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))  -- qProj
       , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)) -- kProj
@@ -61,7 +59,7 @@ transformerLayer ::
       , Signal dom Bool  -- ffnDone
       , Signal dom Bool  -- qkvReady
       )
-transformerLayer layerParams seqPos layerData weightBuffer validIn =
+transformerLayer layerParams seqPos layerData validIn =
   ( qProj
   , kProj
   , vProj
@@ -81,7 +79,7 @@ transformerLayer layerParams seqPos layerData weightBuffer validIn =
     -- Multi-head attention stage
     ----------------------------------------------------------------------------
     (xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone) =
-      multiHeadAttentionStage mhaParams seqPos layerData weightBuffer validIn
+      multiHeadAttentionStage mhaParams seqPos layerData validIn
 
     -- ----------------------------------------------------------------------------
     -- Feed-forward stage (Stage 4)

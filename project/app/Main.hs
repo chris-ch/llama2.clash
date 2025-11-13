@@ -19,9 +19,6 @@ import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
-import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified LLaMa2.Memory.AXI.Slave as Slave
-import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
@@ -142,21 +139,6 @@ normVec v = sqrt (sum squares)
             floats = vecToFloatList v
             squares = map (\x -> x * x) floats
 
--- | Convert a Clash Signed 8 to Float.
-fromSigned :: C.Signed 8 -> Float
-fromSigned = fromIntegral
-
--- | Convert a Clash vector of Signed 8 numbers to a list of Float.
-vecToFloatList' :: C.Vec n (C.Signed 8) -> [Float]
-vecToFloatList' = map fromSigned . C.toList
-
--- | Euclidean (L2) norm of a Signed 8 vector, returned as Float.
-normVec' :: C.Vec n (C.Signed 8) -> Float
-normVec' v = sqrt (sum squares)
-  where
-    floats = vecToFloatList' v
-    squares = map (\x -> x * x) floats
-
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
   :: T.Tokenizer
@@ -188,38 +170,24 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, ddrMaster, ddrSlave, introspection) = bundledOutputs inputSignals
-
-    -- Sample DDR write signals
-    ddrWValidSampled = C.sampleN simSteps (Master.wvalid ddrMaster)
-    ddrWReadySampled = C.sampleN simSteps (Slave.wready ddrSlave)
-    ddrBValidSampled = C.sampleN simSteps (Slave.bvalid ddrSlave)
+    (coreOutputsSignal, introspection) = bundledOutputs inputSignals
 
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
     -- Sample introspection fields separately
-    stagesSampled         = C.sampleN simSteps (Decoder.stage introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
     layerValidInsSampled        = C.sampleN simSteps (Decoder.layerValidIn introspection)
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
-    weightValidSampled = C.sampleN simSteps (Decoder.weightStreamValid introspection)
     layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
-    sysStateSampled = C.sampleN simSteps (Decoder.sysState introspection)
     layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
     layerDataSampled :: [LayerData]
     layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
-    bufferFullyLoadedSampled = C.sampleN simSteps (Decoder.bufferFullyLoaded introspection)
     loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
-    mantissaSampled = C.sampleN simSteps (Decoder.firstQMantissa introspection)
-    rawWeightStreamSampled = C.sampleN simSteps (Decoder.rawWeightStream introspection)
-    mdRowOutSampleSampled = C.sampleN simSteps (Decoder.mdRowOutSample introspection)
-    parsedWeightsHeldSampled = C.sampleN simSteps (Decoder.parsedWeightsHeld introspection)
-    firstMantissaFromRowSampled = C.sampleN simSteps (Decoder.firstMantissaFromRow introspection)
     paramQ0Row0Sampled = C.sampleN simSteps (Decoder.paramQ0Row0 introspection)
 
     -- Extract top-level outputs
@@ -250,30 +218,21 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           attnOut = attentionOutput (layerDataSampled !! cycleIdx)
 
           li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
-          ps     = stagesSampled !! cycleIdx
           rdy    = readiesSampled !! cycleIdx
           qkv    = qkvDonesSampled !! cycleIdx
           attn    = attnDonesSampled !! cycleIdx
           ffn    = ffnDonesSampled !! cycleIdx
-          wValid = weightValidSampled !! cycleIdx
           layChg = layerChangeSampled !! cycleIdx
           layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
           attnOutNorm = normVec attnOut
           token  = coreOutputs !! cycleIdx
-          sysSt  = sysStateSampled !! cycleIdx
           layerValidIn = layerValidInsSampled !! cycleIdx
-          bufferFullyLoaded = bufferFullyLoadedSampled !! cycleIdx
           loadTriggerActive = loadTriggerActiveSampled !! cycleIdx
-          mantissa = mantissaSampled !! cycleIdx
-          rawWeightStream = rawWeightStreamSampled !! cycleIdx
-          mdRowOutSample = mdRowOutSampleSampled !! cycleIdx
-          parsedWeightsHeld = parsedWeightsHeldSampled !! cycleIdx
-          firstMantissaFromRow = firstMantissaFromRowSampled !! cycleIdx
           paramQ0Row0 = paramQ0Row0Sampled !! cycleIdx
 
         when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %7s | %8s | %8s | %10.4f | %9.4f | %8s | %11s | %10s | %18s | %15s | %10s | %15s | %15s | %18s | %18s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %18s"
               cycleIdx
               li
               --(show ps)
@@ -281,20 +240,13 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show qkv)
               (show attn)
               (show ffn)
-              (show wValid)
               (show layChg)
               attnOutNorm
               layerOutputNorm
               (show $ decodeToken tokenizer (fst token))
-              (show sysSt)
               (show layerValidIn)
-              (show bufferFullyLoaded)
               (show loadTriggerActive)
-              (show mantissa)
               --(if wValid then showHex rawWeightStream "" else "N/A")
-              (show $ normVec' mdRowOutSample)
-              (show $ normVec' parsedWeightsHeld)
-              (show firstMantissaFromRow)
               (show paramQ0Row0)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
@@ -307,31 +259,20 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 bundledOutputs
   :: C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
-     , Master.AxiMasterOut C.System
-     , Slave.AxiSlaveIn C.System
      , Decoder.DecoderIntrospection C.System
      )
 bundledOutputs bundledInputs =
-  (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave, introspection)
+  (C.bundle (tokenOut, validOut), introspection)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
-
-  powerOn = C.pure True
 
   params :: DecoderParameters
   params = PARAM.decoderConst
 
-  -- For DDR: also serve from file (simulating that boot already copied data there)
-  ddrSlave = C.exposeClockResetEnable
-    (DRAM.createDRAMBackedAxiSlave params ddrMaster)
-    C.systemClockGen
-    C.resetGen
-    C.enableGen
-
   -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, ddrMaster, introspection) =
+  (tokenOut, validOut, introspection) =
     C.exposeClockResetEnable
-      (Decoder.decoder ddrSlave powerOn params token isValid temperature seed)
+      (Decoder.decoder params token isValid temperature seed)
       C.systemClockGen
       C.resetGen
       C.enableGen

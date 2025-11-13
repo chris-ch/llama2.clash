@@ -103,7 +103,6 @@ library
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.RotaryEncoding
-      LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
       LLaMa2.Layer.FeedForward.Activation
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.TransformerLayer
@@ -113,10 +112,7 @@ library
       LLaMa2.Memory.AxiReadMaster
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM
-      LLaMa2.Memory.I8EDynamicRower
       LLaMa2.Memory.KVCacheBank
-      LLaMa2.Memory.LayerAddressing
-      LLaMa2.Memory.WeightLoader
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -160,21 +156,12 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Decoder.MultiTokenSpec
-      LLaMa2.Decoder.TimingValidationSpec
-      LLaMa2.Layer.Attention.LayerWeightBufferSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
-      LLaMa2.Decoder.EnableAttentionTimingSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.DRAMBackedAxiSlaveSpec
-      Simulation.SingleLayerOutputSpec
-      Simulation.WeightLoadingDiagnosticSpec
-      Simulation.WeightLoaderSpec
       Simulation.DynamicMatMulSpec
-      Simulation.DRAMSimpleSpec
-      Simulation.MemoryDiagnosticSpec
   hs-source-dirs:
       test
   build-depends:

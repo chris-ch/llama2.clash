@@ -8,7 +8,6 @@ import LLaMa2.Types.ModelConfig (NumLayers, SequenceLength, ModelDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM (TransformerLayerComponent)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer)
 
 -- | All intermediate layer outputs (QKV, Attention, FeedForward)
 data LayerOutputs dom = LayerOutputs
@@ -28,10 +27,9 @@ processActiveLayer :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
   -> Signal dom Bool  -- inputValid
-  -> Signal dom QKVProjectionWeightBuffer
   -> Vec NumLayers PARAM.TransformerLayerComponent
   -> LayerOutputs dom
-processActiveLayer activeLayerIdx seqPos inputData inputValid weightsBuffer params =
+processActiveLayer activeLayerIdx seqPos inputData inputValid params =
   LayerOutputs
     { qkvOutput  = selectedQkvOutput
     , attnOutput = selectedAttnOutput
@@ -77,7 +75,6 @@ processActiveLayer activeLayerIdx seqPos inputData inputValid weightsBuffer para
               layerParams
               seqPos
               inputData'
-              weightsBuffer
               validIn'
 
         qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
