@@ -39,10 +39,10 @@ token0Expected =
 token1Expected :: [(Int, ExpectedNorms)]
 token1Expected =
   [ (0, ExpectedNorms 2.7743 3.8518)
-  , (1, ExpectedNorms 4.1234 5.6789)  -- TODO: fill from Python
-  , (2, ExpectedNorms 6.7890 7.8901)  -- TODO: fill from Python
-  , (3, ExpectedNorms 8.9012 9.0123)  -- TODO: fill from Python
-  , (4, ExpectedNorms 10.1234 11.2345) -- TODO: fill from Python
+  , (1, ExpectedNorms 4.5273 5.3427)
+  , (2, ExpectedNorms 6.4987 6.8089)
+  , (3, ExpectedNorms 8.5103 9.4203)
+  , (4, ExpectedNorms 9.9178 13.6559)
   ]
 
 type DecoderInputState = (Token, [Token], Bool)
