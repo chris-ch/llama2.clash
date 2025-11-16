@@ -14,11 +14,9 @@ import Test.Hspec
 import qualified Prelude as P
 import qualified LLaMa2.Memory.AXI.Master as Master
 
-import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension)
+import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, VocabularySize, HiddenDimension)
 import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec, DRAMConfig (..))
 import Clash.Sized.Vector (unsafeFromList)
-import LLaMa2.Numeric.Operations (MultiplierState(..))
-import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo (..))
 
 spec :: Spec
 spec = do
@@ -51,6 +49,31 @@ spec = do
                     { PARAM.headsQ = repeat testHead  -- 8 identical heads
                     , PARAM.mWoQ = repeat testWOMatrix  -- 8 identical WO matrices
                     , PARAM.rmsAttF = repeat 1.0 :< 0  -- RMS norm weights
+                    }
+
+                -- FFN weights (all 1s for simplicity)
+                ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+
+                ffnParams = PARAM.FeedForwardNetworkComponentQ
+                    { PARAM.fW1Q = ffnW1
+                    , PARAM.fW2Q = ffnW2
+                    , PARAM.fW3Q = ffnW3
+                    , PARAM.fRMSFfnF = repeat 1.0 :< 0
+                    }
+                    
+                layerParams = PARAM.TransformerLayerComponent
+                    { PARAM.multiHeadAttention = mhaParams
+                    , PARAM.feedforwardNetwork = ffnParams
+                    }
+
+                params = PARAM.DecoderParameters
+                    { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
+                        { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
+                        , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
+                        }
+                    , PARAM.modelLayers = repeat layerParams
                     }
 
                 -- Mock DRAM that returns test pattern (all 1s)
@@ -110,7 +133,7 @@ spec = do
                     (multiHeadAttentionStage
                         (mockDRAM arvalidSignal)
                         0  -- layer 0
-                        mhaParams
+                        params
                         seqPos
                         layerData
                         validIn)
@@ -202,6 +225,31 @@ spec = do
                     , PARAM.rmsAttF = repeat 1.0 :< 0
                     }
 
+                -- FFN weights (all 1s for simplicity)
+                ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+
+                ffnParams = PARAM.FeedForwardNetworkComponentQ
+                    { PARAM.fW1Q = ffnW1
+                    , PARAM.fW2Q = ffnW2
+                    , PARAM.fW3Q = ffnW3
+                    , PARAM.fRMSFfnF = repeat 1.0 :< 0
+                    }
+                    
+                layerParams = PARAM.TransformerLayerComponent
+                    { PARAM.multiHeadAttention = mhaParams
+                    , PARAM.feedforwardNetwork = ffnParams
+                    }
+
+                params = PARAM.DecoderParameters
+                    { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
+                        { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
+                        , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
+                        }
+                    , PARAM.modelLayers = repeat layerParams
+                    }
+
                 -- Mock DRAM that returns test pattern (all 1s)
                 testPattern :: BitVector 512
                 testPattern = pack $ replicate (SNat @63) (1 :: BitVector 8)
@@ -273,7 +321,7 @@ spec = do
                     (multiHeadAttentionStage
                         (mockDRAM arvalidSignal)
                         0  -- layer 0
-                        mhaParams
+                        params
                         seqPos
                         layerData
                         validIn)
@@ -364,6 +412,30 @@ spec = do
                     , PARAM.rmsAttF = repeat 1.0 :< 0
                     }
 
+                -- FFN weights (all 1s for simplicity)
+                ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+
+                ffnParams = PARAM.FeedForwardNetworkComponentQ
+                    { PARAM.fW1Q = ffnW1
+                    , PARAM.fW2Q = ffnW2
+                    , PARAM.fW3Q = ffnW3
+                    , PARAM.fRMSFfnF = repeat 1.0 :< 0
+                    }
+                    
+                layerParams = PARAM.TransformerLayerComponent
+                    { PARAM.multiHeadAttention = mhaParams
+                    , PARAM.feedforwardNetwork = ffnParams
+                    }
+
+                params = PARAM.DecoderParameters
+                    { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
+                        { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
+                        , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
+                        }
+                    , PARAM.modelLayers = repeat layerParams
+                    }
                 -- Build DRAM contents with test weights
                 -- For simplicity, create a small DRAM with just Q weights at the start
                 -- Each Q head needs HeadDim (8) rows × 65 bytes = 520 bytes per head
@@ -445,7 +517,7 @@ spec = do
                     (multiHeadAttentionStage
                     (realDRAM masterOut)
                     0
-                    mhaParams
+                    params
                     seqPos
                     layerData
                     validIn)

@@ -12,6 +12,7 @@ import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Numeric.Quantization (RowI8E, MatI8E)
+import LLaMa2.Types.ModelConfig
 
 spec :: Spec
 spec = do
@@ -61,6 +62,41 @@ spec = do
             , PARAM.rotaryF = mockRotary
             }
 
+          -- Create test weights: simple identity-like matrices
+          testRow' = (repeat 1, 0) :: RowI8E HeadDimension
+          testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
+
+          mhaParams = PARAM.MultiHeadAttentionComponentQ
+              { PARAM.headsQ = repeat mockHeadParams
+              , PARAM.mWoQ = repeat testWOMatrix
+              , PARAM.rmsAttF = repeat 1.0 :< 0
+              }
+
+          -- FFN weights (all 1s for simplicity)
+          ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+          ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+          ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
+
+          ffnParams = PARAM.FeedForwardNetworkComponentQ
+              { PARAM.fW1Q = ffnW1
+              , PARAM.fW2Q = ffnW2
+              , PARAM.fW3Q = ffnW3
+              , PARAM.fRMSFfnF = repeat 1.0 :< 0
+              }
+              
+          layerParams = PARAM.TransformerLayerComponent
+              { PARAM.multiHeadAttention = mhaParams
+              , PARAM.feedforwardNetwork = ffnParams
+              }
+
+          params = PARAM.DecoderParameters
+              { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
+                  { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
+                  , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
+                  }
+              , PARAM.modelLayers = repeat layerParams
+              }
+
           -- Two transactions: validIn pulses at cycle 1 and cycle 50
           validStream =
             [False, True] P.++ P.replicate 48 False P.++  -- First transaction
@@ -82,7 +118,7 @@ spec = do
                 downStreamReady
                 stepCount
                 input
-                mockHeadParams)
+                params)
               CS.systemClockGen
               CS.resetGen
               CS.enableGen

@@ -7,7 +7,7 @@ import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension)
+import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize)
 import LLaMa2.Layer.Attention.MultiHeadAttention (singleHeadController)
 import qualified Simulation.Parameters as PARAM
 import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec, DRAMConfig (..))
@@ -95,6 +95,14 @@ spec = do
             , PARAM.feedforwardNetwork = ffnParams
             }
 
+          params = PARAM.DecoderParameters
+            { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
+                { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
+                , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
+                }
+            , PARAM.modelLayers = repeat layerParams
+            }
+
           -- Build DRAM with Q weights
           buildQWeights :: [BitVector 8]
           buildQWeights = P.concatMap headWeights [(0 :: Int) ..7]
@@ -162,7 +170,7 @@ spec = do
               (transformerLayer
                 (realDRAM masterOut)
                 0  -- layer 0
-                layerParams
+                params
                 seqPos
                 layerData
                 validIn)

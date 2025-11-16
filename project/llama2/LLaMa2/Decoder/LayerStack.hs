@@ -8,7 +8,7 @@ import LLaMa2.Types.LayerData (LayerData(..))
 import LLaMa2.Types.ModelConfig (NumLayers, SequenceLength, ModelDimension, HeadDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
-import qualified Simulation.Parameters as PARAM (TransformerLayerComponent)
+import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo (..))
@@ -39,7 +39,7 @@ processActiveLayer :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
   -> Signal dom Bool
-  -> Vec NumLayers PARAM.TransformerLayerComponent
+  -> PARAM.DecoderParameters
   -> LayerOutputs dom
 processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params =
   LayerOutputs
@@ -64,7 +64,7 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
     layerOutputs :: Vec NumLayers (Master.AxiMasterOut dom, Signal dom LayerData, Signal dom LayerData,
       Signal dom LayerData, Signal dom Bool, Signal dom Bool,
       Signal dom Bool, Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
-    layerOutputs = imap (layerPipeline inputData) params
+    layerOutputs = map (layerPipeline inputData params) indicesI
 
     -- Extract AXI masters and other outputs
     layerAxiMasters :: Vec NumLayers (Master.AxiMasterOut dom)
@@ -162,8 +162,8 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
     selectedDbgFetchValid = selectActive activeLayerIdx dbgFetchValids
 
     layerPipeline :: Signal dom LayerData
+                  -> PARAM.DecoderParameters
                   -> Index NumLayers
-                  -> PARAM.TransformerLayerComponent
                   -> ( Master.AxiMasterOut dom
                      , Signal dom LayerData
                      , Signal dom LayerData
@@ -175,7 +175,7 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
                      , Signal dom Bool
                      , QHeadDebugInfo dom
                      )
-    layerPipeline inputData' layerIdx layerParams =
+    layerPipeline inputData' params' layerIdx =
       ( axiMaster, qkvData, attnData, ffnData
       , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo )
       where
@@ -187,7 +187,7 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
           TransformerLayer.transformerLayer
             dramSlaveIn
             layerIdx
-            layerParams
+            params'
             seqPos
             inputData'
             validIn'

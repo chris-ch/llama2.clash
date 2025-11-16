@@ -4,7 +4,7 @@ module LLaMa2.Layer.Attention.MultiHeadAttention (
 ) where
 
 import Clash.Prelude
-import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..))
+import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..), DecoderParameters, TransformerLayerComponent (..))
 import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -15,12 +15,13 @@ import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
+import Simulation.Parameters (DecoderParameters(..))
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
   Slave.AxiSlaveIn dom ->                     -- DRAM interface
   Index NumLayers ->                          -- layer index
-  PARAM.MultiHeadAttentionComponentQ ->
+  PARAM.DecoderParameters ->
   Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
   Signal dom Bool ->  -- validIn
@@ -36,9 +37,12 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool     
     , QHeadDebugInfo dom
   )
-multiHeadAttentionStage dramSlaveIn layerIdx mhaParams seqPos layerData validIn =
+multiHeadAttentionStage dramSlaveIn layerIdx params seqPos layerData validIn =
   (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
   where
+    layerParams = modelLayers params !! layerIdx
+    mhaParams = PARAM.multiHeadAttention layerParams
+
     -- Write-back controller
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeDone, writeReadyIn, writeEnable) =
@@ -76,7 +80,7 @@ multiHeadAttentionStage dramSlaveIn layerIdx mhaParams seqPos layerData validIn 
         validIn
         writeReadyIn
         input
-        mhaParams
+        params
         seqPos
 
     (q, k, v) = unbundle qkvProjected

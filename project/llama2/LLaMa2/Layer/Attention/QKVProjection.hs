@@ -20,6 +20,7 @@ import qualified LLaMa2.Numeric.Operations as OPS
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import Simulation.Parameters (DecoderParameters(..))
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -31,12 +32,12 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhFirstMant    :: Signal dom Mantissa
   , qhRowResult    :: Signal dom FixedPoint
   , qhRowDone      :: Signal dom Bool
-  , qhFetchValid   :: Signal dom Bool 
+  , qhFetchValid   :: Signal dom Bool
   , qhRowReset     :: Signal dom Bool  -- When is reset active?
   , qhRowEnable    :: Signal dom Bool  -- When is enable active?
   , qhAccumValue   :: Signal dom FixedPoint  -- What's in the accumulator?
   , qhQOut         :: Signal dom (Vec HeadDimension FixedPoint)  -- Current qOut register
- 
+
   } deriving (Generic, NFDataX)
 
 --------------------------------------------------------------------------------
@@ -44,113 +45,45 @@ data QHeadDebugInfo dom = QHeadDebugInfo
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  =>
-   Slave.AxiSlaveIn dom                     -- ^ DRAM interface
-  -> Index NumLayers                          -- ^ layer index
-  -> Unsigned NumQueryHeads                   -- ^ head index
-  -> Signal dom Bool                          -- ^ inputValid
-  -> Signal dom Bool                          -- ^ downStreamReady
-  -> Signal dom (Index SequenceLength)
-  -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.SingleHeadComponentQ               -- ^ hardcoded (fallback)
-  -> ( Master.AxiMasterOut dom                -- ^ To DRAM
-     ,  Signal dom (Vec HeadDimension FixedPoint)
-     , Signal dom Bool                        -- ^ outputValid
-     , Signal dom Bool                        -- ^ readyForInput
-     , QHeadDebugInfo dom
-     )
-queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCountSig xHatSig headParams =
-  (axiMaster, qRoOut, outputValid, readyForInput, debugInfo)
- where
-
-  -- Row counter drives weight fetches
-  rowIndex :: Signal dom (Index HeadDimension)
-  rowIndex = register 0 nextRowIndex
-
-  -- Calculate DDR address for current row
-  rowAddr = STREAM.calculateRowAddress layerIdx STREAM.QMatrix headIdx <$> (fromIntegral . fromEnum <$> rowIndex)
-
-  -- Fetch row when starting new row
-  (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn rowReset rowAddr
-
-  -- Parse fetched word into row format
-  currentRow :: Signal dom (RowI8E ModelDimension)
-  currentRow = STREAM.parseRow <$> fetchedWord
-
-  -- Row processor
-  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHatSig
-
-  -- State machine
-  (state, rowReset, rowEnable, outputValid', readyForInput') =
-    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
-
-  -- Row index sequencing
-  nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-                     (rowIndex + 1)
-                     (mux ((state .==. pure OPS.MDone) .&&. downStreamReady)
-                          (pure 0)
-                          rowIndex)
-
-  -- Extract first mantissa for debugging
-  firstMantissa = head . fst <$> currentRow
-
-  -- Package debug info
-  debugInfo = QHeadDebugInfo
-    { qhRowIndex   = rowIndex
-    , qhState      = state
-    , qhFirstMant  = register 0 firstMantissa
-    , qhRowResult  = register 0 rowResult
-    , qhRowDone    = rowDone
-    , qhFetchValid = fetchValid
-    , qhRowReset   = rowReset
-    , qhRowEnable  = rowEnable
-    , qhAccumValue = accValue
-    , qhQOut       = qOut
-    }
-
-  selectedQ :: Signal dom (MatI8E HeadDimension ModelDimension)
-  selectedQ = pure (PARAM.wqHeadQ headParams) -- should be ramQ
-
-  (qOut, outputValid, readyForInput) =
-    OPS.parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedQ xHatSig
-
-  qRoOut = (rotaryEncoder (PARAM.rotaryF headParams) <$> stepCountSig) <*> qOut
-
-queryHeadProjector' :: forall dom.
-  HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom                     -- ^ DRAM interface
   -> Index NumLayers                          -- ^ layer index
-  -> Unsigned NumQueryHeads                   -- ^ head index
+  -> Index NumQueryHeads                   -- ^ head index
   -> Signal dom Bool                          -- ^ inputValid
   -> Signal dom Bool                          -- ^ downStreamReady
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.SingleHeadComponentQ               -- ^ headParams (for rotary only)
+  -> PARAM.DecoderParameters               -- ^ hardcoded (fallback)
   -> ( Master.AxiMasterOut dom                -- ^ To DRAM
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool                        -- ^ outputValid
      , Signal dom Bool                        -- ^ readyForInput
      , QHeadDebugInfo dom
      )
-queryHeadProjector' dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCountSig xHatSig headParams =
+queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCount xHat params =
   (axiMaster, qRoOut, outputValid, readyForInput, debugInfo)
  where
+
   -- Row counter drives weight fetches
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
   -- Calculate DDR address for current row
-  rowAddr = STREAM.calculateRowAddress layerIdx STREAM.QMatrix headIdx <$> (fromIntegral . fromEnum <$> rowIndex)
+  rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowIndex
 
   -- Fetch row when starting new row
+  fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn rowReset rowAddr
 
   -- Parse fetched word into row format
+  currentRow' :: Signal dom (RowI8E ModelDimension)
+  currentRow' = STREAM.parseRow <$> fetchedWord
+
+  -- Fetch current row from the runtime matrix
   currentRow :: Signal dom (RowI8E ModelDimension)
-  currentRow = STREAM.parseRow <$> fetchedWord
+  currentRow = (!!) (PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> rowIndex
 
   -- Row processor
-  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHatSig
+  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
 
   -- State machine
   (state, rowReset, rowEnable, outputValid, readyForInput) =
@@ -169,8 +102,7 @@ queryHeadProjector' dramSlaveIn layerIdx headIdx inputValid downStreamReady step
                    (replace <$> rowIndex <*> rowResult <*> qOut)
                    qOut
 
-  -- Apply rotary encoding (still using headParams)
-  qRoOut = (rotaryEncoder (PARAM.rotaryF headParams) <$> stepCountSig) <*> qOut
+  qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qOut
 
   -- Extract first mantissa for debugging
   firstMantissa = head . fst <$> currentRow
@@ -272,7 +204,7 @@ qkvProjector :: forall dom.
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.MultiHeadAttentionComponentQ
+  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
@@ -281,23 +213,27 @@ qkvProjector :: forall dom.
      , Signal dom Bool
      , QHeadDebugInfo dom  -- Debug info from head 0
      )
-qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPosSig xSig mhaParams =
+qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
   (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
  where
-  xNorm = rmsNormFwFix <$> xSig <*> pure (PARAM.rmsAttF mhaParams)
 
-  qResults = imap qHead (PARAM.headsQ mhaParams)
-   where
-    qHead :: Index NumQueryHeads
-          -> PARAM.SingleHeadComponentQ
-          -> ( Master.AxiMasterOut dom
-             , Signal dom (Vec HeadDimension FixedPoint)
-             , Signal dom Bool
-             , Signal dom Bool 
-             , QHeadDebugInfo dom
-             )
-    qHead headIdx = queryHeadProjector dramSlaveIn layerIdx (fromIntegral $ fromEnum headIdx)
-                         inputValid downStreamReady seqPosSig xNorm
+  layerParams = modelLayers params !! layerIdx
+  mhaParams = PARAM.multiHeadAttention layerParams
+
+  xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
+
+  qResults = map (qHead params) indicesI
+    where
+      qHead :: PARAM.DecoderParameters
+            -> Index NumQueryHeads
+            -> ( Master.AxiMasterOut dom
+              , Signal dom (Vec HeadDimension FixedPoint)
+              , Signal dom Bool
+              , Signal dom Bool
+              , QHeadDebugInfo dom
+              )
+      qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
+                          inputValid downStreamReady seqPos xNorm params'
 
   -- Extract debug info from head 0
   head0Debug = head qDebugInfos
@@ -323,7 +259,7 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPosSig xSig mhaP
               , Signal dom Bool )
     kvHead qIx =
       let headParams' = PARAM.headsQ mhaParams !! qIx
-      in keyValueHeadProjector inputValid downStreamReady seqPosSig xNorm headParams'
+      in keyValueHeadProjector inputValid downStreamReady seqPos xNorm headParams'
 
   kVecs    = map (\(k, _, _, _) -> k) kvResults
   vVecs    = map (\(_, v, _, _) -> v) kvResults
@@ -342,17 +278,17 @@ qkvProjectionController ::
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.MultiHeadAttentionComponentQ
+  -> PARAM.DecoderParameters
   -> Signal dom (Index SequenceLength)
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
-     , Signal dom Bool 
+     , Signal dom Bool
      , QHeadDebugInfo dom
      )
-qkvProjectionController dramSlaveIn layerIdx inputValid downStreamReady input mhaParams seqPos =
+qkvProjectionController dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
   (axiMasterOut, result, outputValid, readyForInput, debugInfo)
  where
   (enableRaw, outputValid, inReadyRaw) =
@@ -360,7 +296,7 @@ qkvProjectionController dramSlaveIn layerIdx inputValid downStreamReady input mh
 
   (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
     qkvProjector dramSlaveIn layerIdx enableGated downStreamReady
-                 seqPos input mhaParams
+                 seqPos input params
 
   projReadyOut_d = register True projReadyOut
   enableGated    = enableRaw  .&&. projReadyOut_d

@@ -19,7 +19,6 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
 import LLaMa2.Numeric.Operations (MultiplierState)
-import LLaMa2.Decoder.DataFlowController (DataFlowController(seqPosition))
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -162,12 +161,10 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
       seqPosition
       layerInput
       actualLayerValid
-      (PARAM.modelLayers params)
+      params
 
     -- AXI arbitration
     axiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
-
-    tokenComplete = readyPulse .&&. (layerIdx .==. pure maxBound)
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =

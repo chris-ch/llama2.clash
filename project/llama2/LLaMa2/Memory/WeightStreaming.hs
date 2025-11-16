@@ -23,12 +23,12 @@ data MatrixType = QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix |
 -- | Calculate DDR byte address for a specific matrix row
 -- Example: calculateRowAddress 0 QMatrix 0 0 = 33345 (first Q byte)
 calculateRowAddress ::
-     Index NumLayers      -- ^ which layer (0-based)
-  -> MatrixType           -- ^ which matrix
-  -> Unsigned 8           -- ^ head index (for Q/K/V)
-  -> Unsigned 16          -- ^ row index within matrix
+  MatrixType           -- ^ which matrix
+  -> Index NumLayers      -- ^ which layer (0-based)
+  -> Index NumQueryHeads  -- ^ head index (for Q/K/V)
+  -> Index HeadDimension  -- ^ row index within matrix
   -> Unsigned 32          -- ^ output: DDR byte address
-calculateRowAddress layerIdx matType headIdx rowIdx =
+calculateRowAddress matType layerIdx headIdx rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
   where
