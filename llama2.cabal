@@ -113,6 +113,7 @@ library
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM
       LLaMa2.Memory.KVCacheBank
+      LLaMa2.Memory.WeightStreaming
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -156,8 +157,12 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
+      LLaMa2.Decoder.DecoderSpec
+      LLaMa2.Layer.Attention.QKVProjectionSpec
+      LLaMa2.Layer.Attention.MultiHeadAttentionSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Memory.WeightStreamingSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.DRAMBackedAxiSlaveSpec

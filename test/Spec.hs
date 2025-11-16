@@ -9,7 +9,10 @@ import qualified LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec (spec)
 import qualified Simulation.AxiWriteMasterSpec (spec)
 import qualified Simulation.DRAMBackedAxiSlaveSpec  (spec)
 import qualified Simulation.DynamicMatMulSpec (spec)
-
+import qualified LLaMa2.Memory.WeightStreamingSpec (spec)
+import qualified LLaMa2.Layer.Attention.QKVProjectionSpec (spec)
+import qualified LLaMa2.Layer.Attention.MultiHeadAttentionSpec (spec)
+import qualified LLaMa2.Decoder.DecoderSpec (spec)
 
 main :: IO ()
 main = hspec $ do
@@ -22,4 +25,7 @@ main = hspec $ do
   -- too long:
   --Simulation.WeightLoadingDiagnosticSpec.spec
   Simulation.DynamicMatMulSpec.spec
-
+  LLaMa2.Memory.WeightStreamingSpec.spec
+  LLaMa2.Layer.Attention.QKVProjectionSpec.spec
+  LLaMa2.Layer.Attention.MultiHeadAttentionSpec.spec
+  LLaMa2.Decoder.DecoderSpec.spec

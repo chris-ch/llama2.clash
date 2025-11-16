@@ -1,3 +1,4 @@
+-- File: LLaMa2/Decoder/Decoder.hs (minimal AXI additions)
 module LLaMa2.Decoder.Decoder (
     decoder, DecoderIntrospection(..)
 ) where
@@ -5,9 +6,8 @@ module LLaMa2.Decoder.Decoder (
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..), SingleHeadComponentQ (..), MultiHeadAttentionComponentQ (..))
-import LLaMa2.Types.ModelConfig
-  ( NumLayers, ModelDimension )
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, HeadDimension, SequenceLength)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Decoder.DataFlowController as Controller
@@ -15,8 +15,11 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
-import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
+import LLaMa2.Numeric.Operations (MultiplierState)
+import LLaMa2.Decoder.DataFlowController (DataFlowController(seqPosition))
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -42,21 +45,60 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
   , layerData           :: Signal dom LayerData
   , loadTriggerActive   :: Signal dom Bool
-  , paramQ0Row0  :: Signal dom (Signed 8)
+  , paramQ0Row0         :: Signal dom Mantissa
+
+  -- Debug fields propagated from LayerOutputs
+  , dbgRowIndex         :: Signal dom (Index HeadDimension)
+  , dbgState            :: Signal dom MultiplierState
+  , dbgFirstMant        :: Signal dom Mantissa
+  , dbgRowResult        :: Signal dom FixedPoint
+  , dbgRowDone          :: Signal dom Bool
+  , dbgFetchValid       :: Signal dom Bool
+  , seqPos       :: Signal dom (Index SequenceLength)
   } deriving (Generic, NFDataX)
 
--- | Main decoder with simplified control flow
+-- | Layer AXI arbiter: select active layer's AXI request
+layerAxiArbiter :: forall dom.
+  (KnownNat NumLayers)
+  => Signal dom (Index NumLayers)
+  -> Vec NumLayers (Master.AxiMasterOut dom)
+  -> Master.AxiMasterOut dom
+layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
+  { arvalid = sel Master.arvalid
+  , ardata  = sel Master.ardata
+  , rready  = sel Master.rready
+  , awvalid = sel Master.awvalid
+  , awdata  = sel Master.awdata
+  , wvalid  = sel Master.wvalid
+  , wdata   = sel Master.wdata
+  , bready  = sel Master.bready
+  }
+ where
+  -- Helper that gathers a field from all masters into a Signal (Vec n a),
+  -- then selects the element at runtime using the Signal index.
+  sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
+  sel field =
+    let fieldVec    :: Vec NumLayers (Signal dom a)
+        fieldVec    = map field axiMasters
+
+        fieldVecSig :: Signal dom (Vec NumLayers a)
+        fieldVecSig = sequenceA fieldVec
+    in (!!) <$> fieldVecSig <*> activeLayerIdx
+
+-- | Main decoder with AXI interface
 decoder :: forall dom. HiddenClockResetEnable dom
-  => PARAM.DecoderParameters
+  => Slave.AxiSlaveIn dom                     -- DRAM interface
+  -> PARAM.DecoderParameters
   -> Signal dom Token
   -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token
+  -> ( Master.AxiMasterOut dom   -- AXI master out
+     , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
-decoder params inputToken forceInputToken temperature seed =
-  (outputToken, readyPulse, introspection)
+decoder dramSlaveIn params inputToken forceInputToken temperature seed =
+  (axiMasterOut, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
     -- CONTROLLER
@@ -71,7 +113,7 @@ decoder params inputToken forceInputToken temperature seed =
     readyPulse      = Controller.readyPulse controller
 
     -- Extract enable signals from controller
-    layerValid       = Controller.layerValidIn controller
+    layerValid      = Controller.layerValidIn controller
 
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
@@ -80,9 +122,8 @@ decoder params inputToken forceInputToken temperature seed =
     loadTrigger  = register True (pure False) .||. layerChanged
 
     -- =======================================================================
-    -- LAYER PROCESSING (direct active layer)
+    -- LAYER PROCESSING (with AXI)
     -- =======================================================================
-
     embeddedVector :: Signal dom (Vec ModelDimension FixedPoint)
     embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
@@ -95,7 +136,7 @@ decoder params inputToken forceInputToken temperature seed =
     -- Capture the controller's layerValid signal from earlier
     controllerLayerValid = Controller.layerValidIn controller
 
-    -- Create a latched version that holds until handshake completes
+    -- Latched version that holds until handshake completes
     layerValidLatched :: Signal dom Bool
     layerValidLatched = register False nextLayerValidLatched
       where
@@ -114,29 +155,35 @@ decoder params inputToken forceInputToken temperature seed =
     actualLayerValid :: Signal dom Bool
     actualLayerValid = layerValidLatched
 
-    -- Use actualLayerValid everywhere instead of layerValid
+    -- Layer processing with AXI
     layerOutputs = LayerStack.processActiveLayer
+      dramSlaveIn
       layerIdx
       seqPosition
       layerInput
-      actualLayerValid  -- <-- Use latched & gated signal
+      actualLayerValid
       (PARAM.modelLayers params)
+
+    -- AXI arbitration
+    axiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
+
+    tokenComplete = readyPulse .&&. (layerIdx .==. pure maxBound)
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =
-      mux layerFfnDone
-        (LayerStack.ffnOutput layerOutputs)
-        (mux layerAttnDone
-            (LayerStack.attnOutput layerOutputs)
-            (mux layerQkvDone
-                (LayerStack.qkvOutput layerOutputs)
-                layerDataReg))  -- Hold previous value when nothing completes
+        mux layerFfnDone
+          (LayerStack.ffnOutput layerOutputs)
+          (mux layerAttnDone
+              (LayerStack.attnOutput layerOutputs)
+              (mux layerQkvDone
+                  (LayerStack.qkvOutput layerOutputs)
+                  layerDataReg))
 
     layerDataReg = register initialLayerData nextLayerData
 
-    layerAttnDone  = LayerStack.attnDone layerOutputs
-    layerQkvDone   = LayerStack.qkvDone layerOutputs
-    layerFfnDone   = LayerStack.ffnDone layerOutputs
+    layerAttnDone = LayerStack.attnDone layerOutputs
+    layerQkvDone  = LayerStack.qkvDone layerOutputs
+    layerFfnDone  = LayerStack.ffnDone layerOutputs
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
@@ -146,7 +193,7 @@ decoder params inputToken forceInputToken temperature seed =
 
     (logits, logitsValid) = OutputProjection.logitsProjector
       lastLayerComplete
-      (pure True) -- always teady to consume (?)
+      (pure True) -- always ready to consume (?)
       params
       ffnOutput
 
@@ -161,7 +208,6 @@ decoder params inputToken forceInputToken temperature seed =
     -- =======================================================================
     -- INTROSPECTION
     -- =======================================================================
-
     introspection = DecoderIntrospection
       { stage               = processingStage
       , layerIndex          = layerIdx
@@ -173,11 +219,19 @@ decoder params inputToken forceInputToken temperature seed =
       , layerChangeDetected = layerChanged
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
-      , loadTriggerActive = loadTrigger  -- Should pulse on layer change
-
-      , paramQ0Row0 = let
+      , loadTriggerActive   = loadTrigger
+      , paramQ0Row0         = let
             mhaParams = multiHeadAttention $ head (modelLayers params)
             qMat = PARAM.wqHeadQ (head (PARAM.headsQ mhaParams))
             (mants, _exp) = qMat !! (0 :: Int)
-            in pure $ head mants  -- First mantissa from hardcoded params
+          in pure $ head mants
+
+      -- Propagate debug fields from layerOutputs
+      , dbgRowIndex         = LayerStack.dbgRowIndex layerOutputs
+      , dbgState            = LayerStack.dbgState layerOutputs
+      , dbgFirstMant        = LayerStack.dbgFirstMant layerOutputs
+      , dbgRowResult        = LayerStack.dbgRowResult layerOutputs
+      , dbgRowDone          = LayerStack.dbgRowDone layerOutputs
+      , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
+      , seqPos = seqPosition
       }

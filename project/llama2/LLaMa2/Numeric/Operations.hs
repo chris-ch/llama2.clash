@@ -136,8 +136,10 @@ parallel64RowProcessor :: forall dom size.
   -> Signal dom (Vec size FixedPoint)          -- ^ input column
   -> ( Signal dom FixedPoint                   -- ^ output scalar
      , Signal dom Bool                         -- ^ done flag
+     , Signal dom (Index size)
+     , Signal dom FixedPoint
   )
-parallel64RowProcessor reset enable row columnVec = (output, rowDone)
+parallel64RowProcessor reset enable row columnVec = (output, rowDone, columnIndex, acc)
   where
     mant = fst <$> row
     expon = snd <$> row
@@ -167,7 +169,10 @@ parallel64RowProcessor reset enable row columnVec = (output, rowDone)
     -- Accumulate sum
     accInput = mux rowDone 0 laneSum
 
+    acc :: Signal dom FixedPoint
     acc = accumulator reset enable accInput
+
+    output :: Signal dom FixedPoint
     output = scalePow2F <$> expon <*> acc
 
     -- Done when index + 63 >= maxBound
@@ -215,7 +220,7 @@ parallel64RowMatrixMultiplier validIn readyIn rowVectors inputVector =
     currentRow = (!!) rowVectors <$> rowIndex
 
     -- Parallel 64-lane row processor
-    (rowResult, rowDone) = parallel64RowProcessor rowReset rowEnable currentRow inputVector
+    (rowResult, rowDone, _ , _) = parallel64RowProcessor rowReset rowEnable currentRow inputVector
 
     -- State machine controls the protocol
     (state, rowReset, rowEnable, validOut, readyOut) =
@@ -268,7 +273,7 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   currentRowReg :: Signal dom (RowI8E cols)
   currentRowReg = register initialRow currentRow
 
-  (rowResult, rowDone) =
+  (rowResult, rowDone, colIdx, accValue) =
       parallel64RowProcessor rowReset rowEnable currentRowReg inputVector
 
   -- Protocol FSM

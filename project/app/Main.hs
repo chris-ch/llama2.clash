@@ -22,6 +22,7 @@ import Control.Monad (when)
 import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
+import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -190,6 +191,14 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
     paramQ0Row0Sampled = C.sampleN simSteps (Decoder.paramQ0Row0 introspection)
 
+    dbgRowIndexSampled  = C.sampleN simSteps (Decoder.dbgRowIndex introspection)
+    dbgStateSampled     = C.sampleN simSteps (Decoder.dbgState introspection)
+    dbgFirstMantSampled = C.sampleN simSteps (Decoder.dbgFirstMant introspection)
+    dbgRowResultSampled = C.sampleN simSteps (Decoder.dbgRowResult introspection)
+    dbgRowDoneSampled   = C.sampleN simSteps (Decoder.dbgRowDone introspection)
+    dbgFetchValidSampled= C.sampleN simSteps (Decoder.dbgFetchValid introspection)
+    seqPosSampled = C.sampleN simSteps (Decoder.seqPos introspection)
+
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
 
@@ -207,9 +216,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid | bufferFullyLoaded | loadTriggerActive | firstQMantissa | rawWeightStream | mdRowOutSample | parsedWeightsHeld | firstMantissaFromRow | paramQ0Row0"
-  putStrLn "--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-  
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid | bufferFullyLoaded | loadTriggerActive | firstQMantissa | rawWeightStream | mdRowOutSample | parsedWeightsHeld | firstMantissaFromRow | paramQ0Row0 | dbgRowIdx | dbgState | dbgFirstMant | dbgRowResult | dbgRowDone | dbgFetchValid"
+  putStrLn "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+
   -- Loop through sampled outputs and display selected signals
   let printCycle (cycleIdx, token') = do
         let
@@ -230,9 +239,17 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           loadTriggerActive = loadTriggerActiveSampled !! cycleIdx
           paramQ0Row0 = paramQ0Row0Sampled !! cycleIdx
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive) $
+          dbgRowIdx      = dbgRowIndexSampled !! cycleIdx
+          dbgSt          = dbgStateSampled !! cycleIdx
+          dbgFirstMant   = dbgFirstMantSampled !! cycleIdx
+          dbgRowRes      = dbgRowResultSampled !! cycleIdx
+          dbgRowDone     = dbgRowDoneSampled !! cycleIdx
+          dbgFetchValid  = dbgFetchValidSampled !! cycleIdx
+          seqPosition  = seqPosSampled !! cycleIdx
+
+        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone || dbgFetchValid) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %18s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %18s| %7s | %8s | %13s | %12s | %11s | %11s | %11s"
               cycleIdx
               li
               --(show ps)
@@ -248,6 +265,14 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show loadTriggerActive)
               --(if wValid then showHex rawWeightStream "" else "N/A")
               (show paramQ0Row0)
+              (show dbgRowIdx)
+              (show dbgSt)
+              (show dbgFirstMant)
+              (show dbgRowRes)
+              (show dbgRowDone)
+              (show dbgFetchValid)
+              (show seqPosition)
+
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 
@@ -269,10 +294,18 @@ bundledOutputs bundledInputs =
   params :: DecoderParameters
   params = PARAM.decoderConst
 
-  -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, introspection) =
+  -- Create DDR simulator
+  dramSlaveIn = C.exposeClockResetEnable
+    (DRAMSlave.createDRAMBackedAxiSlave params ddrMaster)
+    C.systemClockGen
+    C.resetGen
+    C.enableGen
+
+  -- Decoder with AXI feedback loop
+  (ddrMaster, tokenOut, validOut, introspection) =
     C.exposeClockResetEnable
-      (Decoder.decoder params token isValid temperature seed)
+      (Decoder.decoder dramSlaveIn params token isValid temperature seed)
       C.systemClockGen
       C.resetGen
       C.enableGen
+

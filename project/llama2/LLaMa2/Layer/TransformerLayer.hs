@@ -1,3 +1,4 @@
+-- File: LLaMa2/Layer/TransformerLayer.hs (add AXI threading)
 module LLaMa2.Layer.TransformerLayer
   ( transformerLayer )
 where
@@ -6,22 +7,15 @@ import Clash.Prelude
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData
-  ( LayerData (..),
-  )
+import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig
-  ( HeadDimension,
-    ModelDimension,
-    NumKeyValueHeads,
-    NumQueryHeads,
-    SequenceLength,
-  )
+  ( HeadDimension, ModelDimension, NumKeyValueHeads, NumQueryHeads, SequenceLength, NumLayers)
 import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo)
 
---------------------------------------------------------------------------------
--- Feed-forward controller
---------------------------------------------------------------------------------
 ffnController ::
   (HiddenClockResetEnable dom) =>
   Signal dom Bool ->
@@ -38,29 +32,34 @@ ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
     (result, ffnSeqValid, _) =
       FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
 
---------------------------------------------------------------------------------
--- Transformer layer with stage-local outputs, no internal state mutation
---------------------------------------------------------------------------------
 transformerLayer ::
   forall dom.
   (HiddenClockResetEnable dom)
-   => PARAM.TransformerLayerComponent
+   => Slave.AxiSlaveIn dom                   -- DRAM interface
+   -> Index NumLayers                        -- layer index
+   -> PARAM.TransformerLayerComponent
    -> Signal dom (Index SequenceLength)
-   -> Signal dom LayerData                -- input layer data
-   -> Signal dom Bool                     -- validIn (layer-specific)
-   -> ( Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))  -- qProj
-      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)) -- kProj
-      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)) -- vProj
-      , Signal dom (Vec ModelDimension FixedPoint)  -- attention output
-      , Signal dom (Vec ModelDimension FixedPoint)  -- feed-forward output
-      , Signal dom Bool  -- qkvDone
-      , Signal dom Bool  -- writeDone
-      , Signal dom Bool  -- attentionDone
-      , Signal dom Bool  -- ffnDone
-      , Signal dom Bool  -- qkvReady
+   -> Signal dom LayerData
+   -> Signal dom Bool
+   -> ( Master.AxiMasterOut dom -- AXI master out
+      , Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec ModelDimension FixedPoint)
+      , Signal dom (Vec ModelDimension FixedPoint)
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , QHeadDebugInfo dom
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
       )
-transformerLayer layerParams seqPos layerData validIn =
-  ( qProj
+transformerLayer dramSlaveIn layerIdx layerParams seqPos layerData validIn =
+  ( axiMasterOut
+  , qProj
   , kProj
   , vProj
   , xAfterAttn
@@ -70,30 +69,35 @@ transformerLayer layerParams seqPos layerData validIn =
   , attentionDone
   , ffnDone
   , qkvReady
+  , debugInfo
+  , ffnArmed
+  , ffnStageStart
+  , ffnValidIn
   )
   where
     mhaParams = PARAM.multiHeadAttention layerParams
     ffnParams = PARAM.feedforwardNetwork layerParams
 
-    ----------------------------------------------------------------------------
-    -- Multi-head attention stage
-    ----------------------------------------------------------------------------
-    (xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone) =
-      multiHeadAttentionStage mhaParams seqPos layerData validIn
 
-    -- ----------------------------------------------------------------------------
-    -- Feed-forward stage (Stage 4)
-    -- ----------------------------------------------------------------------------
-
-    -- latch that we are inside a valid transaction for this layer
-    -- set when validIn asserts, cleared when the FFN finishes for this transaction
+    -- Feed-forward stage
+    layerBusy = register False nextLayerBusy
+      where
+        nextLayerBusy = mux validInGated (pure True)
+                       (mux ffnDone (pure False) layerBusy)
+    
+    validInGated = validIn .&&. (not <$> layerBusy)
+    
+    -- Use validInGated everywhere instead of validIn
+    (axiMasterOut, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
+      multiHeadAttentionStage dramSlaveIn layerIdx mhaParams seqPos layerData validInGated
+    
     ffnArmed :: Signal dom Bool
     ffnArmed = register False nextFfnArmed
       where
-        setArm = validIn                              -- transaction begins
-        clearArm = ffnDone                            -- transaction ends when FFN done
+        setArm = validInGated  -- Use gated version
+        clearArm = ffnDone
         nextFfnArmed = mux setArm (pure True) (mux clearArm (pure False) ffnArmed)
-
+    
     -- ffnStageStart: only start FFN when attentionDone *and* we are armed for this layer
     -- note: attentionDone is already a pulse; no extra risingEdge is required
     ffnStageStart :: Signal dom Bool

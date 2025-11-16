@@ -1,24 +1,31 @@
+-- File: LLaMa2/Layer/Attention/MultiHeadAttention.hs (add AXI parameters)
 module LLaMa2.Layer.Attention.MultiHeadAttention (
     multiHeadAttentionStage, singleHeadController
 ) where
+
 import Clash.Prelude
 import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..))
 import LLaMa2.Types.LayerData (LayerData (..))
-import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength)
+import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
+import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController, QHeadDebugInfo)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
+  Slave.AxiSlaveIn dom ->                     -- DRAM interface
+  Index NumLayers ->                          -- layer index
   PARAM.MultiHeadAttentionComponentQ ->
   Signal dom (Index SequenceLength) ->
   Signal dom LayerData ->
   Signal dom Bool ->  -- validIn
   (
+    Master.AxiMasterOut dom,     -- AXI master out
     Signal dom (Vec ModelDimension FixedPoint),
     Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
     Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
@@ -26,10 +33,11 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool,
     Signal dom Bool,
-    Signal dom Bool
+    Signal dom Bool     
+    , QHeadDebugInfo dom
   )
-multiHeadAttentionStage mhaParams seqPos layerData validIn =
-  (xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone)
+multiHeadAttentionStage dramSlaveIn layerIdx mhaParams seqPos layerData validIn =
+  (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
   where
     -- Write-back controller
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
@@ -60,8 +68,11 @@ multiHeadAttentionStage mhaParams seqPos layerData validIn =
 
     input = inputVector <$> layerData
 
-    (qkvProjected, qkvDone, qkvReady) =
+    -- QKV projection with AXI
+    (axiMasterOut, qkvProjected, qkvDone, qkvReady, debugInfo) =
       qkvProjectionController
+        dramSlaveIn
+        layerIdx
         validIn
         writeReadyIn
         input
@@ -84,11 +95,10 @@ multiHeadAttentionStage mhaParams seqPos layerData validIn =
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
 
-    -- WO projection over heads
+    -- WO projection
     (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs) =
       perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mhaParams)
 
-    -- IMPORTANT: gate the accumulation by valid (not readyForInput)
     validProjection proj valid _ready = mux valid proj (pure (repeat 0))
     gatedHeads =
       zipWith3 validProjection

@@ -3,7 +3,7 @@ module LLaMa2.Numeric.OperationsSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..), 
+import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..),
   matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor,
   parallel64RowMatrixMultiplier)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
@@ -135,7 +135,7 @@ spec = do
             fromList $ DL.replicate 5 columnVector
               P.++ DL.repeat (pure 0)
 
-          (outputComponent, rowDone) =
+          (outputComponent, rowDone, _ , _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -222,7 +222,7 @@ spec = do
           column :: Signal System (Vec 4 FixedPoint)
           column = fromList columnStream
 
-          (outputComponent, rowDone) =
+          (outputComponent, rowDone, _, _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -262,7 +262,7 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = fromList $ pure 0 : pure 0 : P.replicate maxCycles columnVector -- padding with zero before enable
-          (outputComponent, rowDone) =
+          (outputComponent, rowDone, _ , _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -301,8 +301,8 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = pure columnVector
-          
-          (outputComponent, rowDone) =
+
+          (outputComponent, rowDone, _ ,_) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -831,3 +831,257 @@ spec = do
         outputInts `shouldBe` expected
       it "never exceeds maxBound (127)" $ do
         all (<= maxBoundVal) outputInts `shouldBe` True
+
+  describe "matrixMultiplier - Sequential Transactions" $ do
+    context "produces identical results for two sequential identical transactions" $ do
+      let maxCycles = 50
+
+          -- Define a 3x4 matrix (same for both transactions)
+          row0 :: RowI8E 4
+          row0 = (2 :> 1 :> 3 :> 2 :> Nil, 0)
+          row1 :: RowI8E 4
+          row1 = (1 :> 2 :> 1 :> 3 :> Nil, 0)
+          row2 :: RowI8E 4
+          row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
+          matrix :: MatI8E 3 4
+          matrix = row0 :> row1 :> row2 :> Nil
+
+          -- Input vector (same for both transactions)
+          inputVector :: Vec 4 FixedPoint
+          inputVector = 2.0 :> 1.5 :> 1.0 :> 0.5 :> Nil
+
+          -- Expected output for each transaction
+          expectedResult :: Vec 3 FixedPoint
+          expectedResult = 9.5 :> 7.5 :> 11.5 :> Nil
+          tolerance = 0.01
+
+          -- Input signals: two transactions with gap
+          -- Transaction 1: validIn pulse at cycle 1
+          -- Transaction 2: validIn pulse at cycle 25 (after first completes)
+          validIn :: Signal System Bool
+          validIn = fromList $
+            [False, True] P.++ P.replicate 23 False P.++  -- First transaction
+            [True] P.++ P.replicate (maxCycles - 26) False  -- Second transaction
+
+          -- readyIn: always ready to consume (accept output immediately)
+          readyIn :: Signal System Bool
+          readyIn = pure True
+
+          (outputVec, validOut, readyOut) =
+            exposeClockResetEnable
+              parallel64RowMatrixMultiplier
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              validIn
+              readyIn
+              matrix
+              (pure inputVector)
+
+          outputs = P.take maxCycles $ sample outputVec
+          validOuts = P.take maxCycles $ sample validOut
+          readyOuts = P.take maxCycles $ sample readyOut
+
+          -- Find completion cycles
+          validIndices = DL.findIndices id validOuts
+          firstCompletion = if P.not (DL.null validIndices) then DL.head validIndices else 0
+          secondCompletion = if P.length validIndices >= 2 then validIndices P.!! 1 else 0
+
+          firstResult = if firstCompletion < maxCycles then outputs P.!! firstCompletion else repeat 0
+          secondResult = if secondCompletion < maxCycles then outputs P.!! secondCompletion else repeat 0
+
+      it "completes first transaction" $ do
+        P.length validIndices `shouldSatisfy` (>= 1)
+
+      it "completes second transaction" $ do
+        P.length validIndices `shouldSatisfy` (>= 2)
+
+      it "first transaction produces correct result" $ do
+        let matches = P.zipWith (\a e -> abs (a - e) < tolerance)
+                                (toList firstResult)
+                                (toList expectedResult)
+        DL.and matches `shouldBe` True
+
+      it "second transaction produces correct result" $ do
+        let matches = P.zipWith (\a e -> abs (a - e) < tolerance)
+                                (toList secondResult)
+                                (toList expectedResult)
+        DL.and matches `shouldBe` True
+
+      it "both transactions produce identical results (no state pollution)" $ do
+        let matches = P.zipWith (\a b -> abs (a - b) < tolerance)
+                                (toList firstResult)
+                                (toList secondResult)
+        DL.and matches `shouldBe` True
+
+      it "returns to ready state between transactions" $ do
+        -- After first completion, should return to ready
+        if firstCompletion < maxCycles - 1
+          then readyOuts P.!! (firstCompletion + 1) `shouldBe` True
+          else True `shouldBe` True  -- Can't test if at boundary
+
+    context "accumulator resets properly between transactions" $ do
+      let maxCycles = 50
+
+          -- Simple 2x2 matrix for easier validation
+          row0 :: RowI8E 2
+          row0 = (1 :> 1 :> Nil, 0)
+          row1 :: RowI8E 2
+          row1 = (2 :> 2 :> Nil, 0)
+          matrix :: MatI8E 2 2
+          matrix = row0 :> row1 :> Nil
+
+          -- Different input vectors for each transaction to detect accumulation bugs
+          inputVec1 :: Vec 2 FixedPoint
+          inputVec1 = 1.0 :> 1.0 :> Nil  -- Should give [2.0, 4.0]
+
+          inputVec2 :: Vec 2 FixedPoint
+          inputVec2 = 2.0 :> 2.0 :> Nil  -- Should give [4.0, 8.0]
+
+          expectedResult1 :: Vec 2 FixedPoint
+          expectedResult1 = 2.0 :> 4.0 :> Nil
+
+          expectedResult2 :: Vec 2 FixedPoint
+          expectedResult2 = 4.0 :> 8.0 :> Nil
+
+          tolerance = 0.01
+
+          -- Two transactions with different inputs
+          validIn :: Signal System Bool
+          validIn = fromList $
+            [False, True] P.++ P.replicate 13 False P.++  -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+              -- First at cycle 1
+            [True] P.++ P.replicate (maxCycles - 17) False  -- Second at cycle 16
+
+          readyIn :: Signal System Bool
+          readyIn = pure True
+
+          -- Switch input vectors based on transaction
+          inputVecStream =
+            P.replicate 16 inputVec1 P.++  -- First transaction
+            P.replicate (maxCycles - 16) inputVec2  -- Second transaction
+          inputVec :: Signal System (Vec 2 FixedPoint)
+          inputVec = fromList inputVecStream
+
+          (outputVec, validOut, _readyOut) =
+            exposeClockResetEnable
+              parallel64RowMatrixMultiplier
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+              validIn
+              readyIn
+              matrix
+              inputVec
+
+          outputs = P.take maxCycles $ sample outputVec
+          validOuts = P.take maxCycles $ sample validOut
+
+          validIndices = DL.findIndices id validOuts
+          firstCompletion = if P.not (DL.null validIndices) then DL.head validIndices else 0
+          secondCompletion = if P.length validIndices >= 2 then validIndices P.!! 1 else 0
+
+          firstResult = outputs P.!! firstCompletion
+          secondResult = outputs P.!! secondCompletion
+
+      it "first transaction with inputVec1 produces correct result" $ do
+        let matches = P.zipWith (\a e -> abs (a - e) < tolerance)
+                                (toList firstResult)
+                                (toList expectedResult1)
+        DL.and matches `shouldBe` True
+
+      it "second transaction with inputVec2 produces correct result (not contaminated)" $ do
+        let matches = P.zipWith (\a e -> abs (a - e) < tolerance)
+                                (toList secondResult)
+                                (toList expectedResult2)
+        DL.and matches `shouldBe` True
+
+      it "second result is NOT equal to first (proving different inputs processed)" $ do
+        let allEqual = P.all (\(a, b) -> abs (a - b) < tolerance)
+                             (P.zip (toList firstResult) (toList secondResult))
+        allEqual `shouldBe` False
+
+  context "output immediately reflects reset signal (no one-cycle delay)" $ do
+    let maxCycles = 15
+
+        -- First row computation
+        rowVector1 :: RowI8E 4
+        rowVector1 = (1 :> 2 :> 3 :> 4 :> Nil, 0)
+        
+        -- Second row computation
+        rowVector2 :: RowI8E 4
+        rowVector2 = (5 :> 6 :> 7 :> 8 :> Nil, 0)
+        
+        columnVector :: Vec 4 FixedPoint
+        columnVector = 1.0 :> 1.0 :> 1.0 :> 1.0 :> Nil
+        
+        -- Expected: Row 1 sum = 10.0, Row 2 sum = 26.0
+        
+        -- Critical timing:
+        -- Cycle 0: reset=True (initial)
+        -- Cycle 1: enable=True, start row 1
+        -- Cycle 2-4: processing row 1, output=10.0
+        -- Cycle 5: reset=True (THIS IS THE KEY CYCLE)
+        -- Cycle 6: enable=True, start row 2
+        -- Cycle 7-9: processing row 2, output=26.0
+        
+        rowStream = rowVector1 : rowVector1 : rowVector1 : rowVector1 : rowVector1 :
+                    rowVector2 : rowVector2 : rowVector2 : rowVector2 : 
+                    P.replicate (maxCycles - 9) rowVector2
+        row = fromList rowStream :: Signal System (RowI8E 4)
+        
+        resetStream = [True, False, False, False, False, True, False, False, False] P.++ 
+                      P.replicate (maxCycles - 9) False
+        reset = fromList resetStream :: Signal System Bool
+        
+        enableStream = [False, True, True, True, True, False, True, True, True] P.++
+                      P.replicate (maxCycles - 9) False
+        enable = fromList enableStream :: Signal System Bool
+        
+        column = pure columnVector :: Signal System (Vec 4 FixedPoint)
+        
+        (outputComponent, _rowDone, _ , _) =
+          exposeClockResetEnable
+            parallel64RowProcessor
+            CS.systemClockGen
+            CS.resetGen
+            CS.enableGen
+            reset
+            enable
+            row
+            column
+        
+        outs = P.take maxCycles $ sample outputComponent
+        
+    it "output is ZERO on the same cycle when reset is asserted (cycle 5)" $ do
+      -- This is the failing assertion that reveals the bug!
+      -- Currently, outs !! 5 will be 10.0 (stale value from row 1)
+      -- Should be 0.0 because reset is True on cycle 5
+      outs P.!! 5 `shouldBe` 0.0
+      
+    it "first row completes with correct value" $ do
+      -- Row 1: 1+2+3+4 = 10.0
+      outs P.!! 2 `shouldBe` 10.0
+      
+    it "output returns to zero IMMEDIATELY when reset pulses between rows" $ do
+      -- The critical test: cycle 5 has reset=True
+      -- Output should be 0, NOT the previous row's accumulated value
+      outs P.!! 5 `shouldBe` 0.0
+      
+    it "second row starts fresh (not contaminated by first row)" $ do
+      -- Row 2: 5+6+7+8 = 26.0 (not 36.0 if contaminated)
+      outs P.!! 7 `shouldBe` 26.0
