@@ -324,8 +324,6 @@ spec = do
       let sampledR = sampleN 20 (bundle (Slave.rvalid slaveIn,
                                         AXITypes.rdata <$> Slave.rdata slaveIn))
 
-      P.putStrLn $ "Sequential reads to addr 0: " P.++ show sampledR
-
       let validReads = [d | (True, d) <- sampledR]
 
       -- Should get exactly 2 reads

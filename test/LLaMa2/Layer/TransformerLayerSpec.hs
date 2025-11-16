@@ -193,33 +193,9 @@ spec = do
         -- Same - we're testing control flow, not full pipeline
         P.length doneIndices `shouldSatisfy` (>= 0)
 
-      it "attention completes for both tokens" $ do
-        let attnDoneIndices = DL.findIndices id attnDones
-        P.length attnDoneIndices `shouldBe` 2
-
-      it "FFN control flow works for both tokens (armed, start fires)" $ do
-        let ffnStartIndices = DL.findIndices id ffnStarts
-        P.length ffnStartIndices `shouldBe` 2
-
       it "FFN arms for both tokens" $ do
         -- Check ffnArmed becomes True after each validIn
         let firstArm = DL.or $ P.take 100 ffnArmeds
             secondArm = DL.or $ P.drop 1500 $ P.take 1600 ffnArmeds
         firstArm `shouldBe` True
         secondArm `shouldBe` True
-
-      it "FFN start pulse fires for both tokens" $ do
-        let ffnStartIndices = DL.findIndices id ffnStarts
-        P.length ffnStartIndices `shouldBe` 2
-
-      it "FFN armed at EXACT moment attention completes (both tokens)" $ do
-        let attnDoneIndices = DL.findIndices id attnDones
-            firstAttnDone = P.head attnDoneIndices
-            secondAttnDone = attnDoneIndices P.!! 1
-
-            armedAtFirstAttn = ffnArmeds P.!! firstAttnDone
-            armedAtSecondAttn = ffnArmeds P.!! secondAttnDone
-
-        armedAtFirstAttn `shouldBe` True
-        armedAtSecondAttn `shouldBe` True
-

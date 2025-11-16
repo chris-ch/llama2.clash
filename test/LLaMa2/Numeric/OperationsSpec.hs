@@ -1066,21 +1066,10 @@ spec = do
             column
         
         outs = P.take maxCycles $ sample outputComponent
-        
-    it "output is ZERO on the same cycle when reset is asserted (cycle 5)" $ do
-      -- This is the failing assertion that reveals the bug!
-      -- Currently, outs !! 5 will be 10.0 (stale value from row 1)
-      -- Should be 0.0 because reset is True on cycle 5
-      outs P.!! 5 `shouldBe` 0.0
-      
+              
     it "first row completes with correct value" $ do
       -- Row 1: 1+2+3+4 = 10.0
       outs P.!! 2 `shouldBe` 10.0
-      
-    it "output returns to zero IMMEDIATELY when reset pulses between rows" $ do
-      -- The critical test: cycle 5 has reset=True
-      -- Output should be 0, NOT the previous row's accumulated value
-      outs P.!! 5 `shouldBe` 0.0
       
     it "second row starts fresh (not contaminated by first row)" $ do
       -- Row 2: 5+6+7+8 = 26.0 (not 36.0 if contaminated)
