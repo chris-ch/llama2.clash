@@ -22,7 +22,6 @@ import LLaMa2.Types.ModelConfig
   ( ModelDimension
   , NumQueryHeads, NumKeyValueHeads, SequenceLength, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Quantization (RowI8E (..))
-import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import Simulation.Parameters (DecoderParameters)
 import Clash.Sized.Vector (unsafeFromList)
 

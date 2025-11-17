@@ -1,4 +1,3 @@
-{-# LANGUAGE DerivingVia #-}
 module LLaMa2.Numeric.Quantization
   ( expF
   , dequantRowToF
