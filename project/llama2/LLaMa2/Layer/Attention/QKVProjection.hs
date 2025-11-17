@@ -39,7 +39,7 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhQOut         :: Signal dom (Vec HeadDimension FixedPoint)  -- Current qOut register
   , qhCurrentRow     :: Signal dom (RowI8E ModelDimension)
   , qhCurrentRow'    :: Signal dom (RowI8E ModelDimension)
-  } deriving (Generic, NFDataX)
+  } deriving (Generic)
 
 --------------------------------------------------------------------------------
 -- Q head projector with DDR streaming (FIXED: latch fetched data)

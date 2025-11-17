@@ -159,31 +159,36 @@ spec = do
               , currentRow'= currentRows'    P.!! i
               }
             where
-              rowIdxs      = P.take maxCycles $ sample (qhRowIndex     debugInfoDRAM)
-              states       = P.take maxCycles $ sample (qhState        debugInfoDRAM)
-              rowResets    = P.take maxCycles $ sample (qhRowReset     debugInfoDRAM)
-              rowEnables   = P.take maxCycles $ sample (qhRowEnable    debugInfoDRAM)
-              fetchValids  = P.take maxCycles $ sample (qhFetchValid   debugInfoDRAM)
-              firstMants   = P.take maxCycles $ sample (qhFirstMant    debugInfoDRAM)
-              accumVals    = P.take maxCycles $ sample (qhAccumValue   debugInfoDRAM)
-              rowResults   = P.take maxCycles $ sample (qhRowResult    debugInfoDRAM)
-              rowDones     = P.take maxCycles $ sample (qhRowDone      debugInfoDRAM)
-              qOutVecs     = P.take maxCycles $ sample (qhQOut         debugInfoDRAM)
-              currentRows  = P.take maxCycles $ sample (qhCurrentRow     debugInfoDRAM)
-              currentRows' = P.take maxCycles $ sample (qhCurrentRow'    debugInfoDRAM)
+              rowIdxs      = sampleN maxCycles (qhRowIndex     debugInfoDRAM)
+              states       = sampleN maxCycles (qhState        debugInfoDRAM)
+              rowResets    = sampleN maxCycles (qhRowReset     debugInfoDRAM)
+              rowEnables   = sampleN maxCycles (qhRowEnable    debugInfoDRAM)
+              fetchValids  = sampleN maxCycles (qhFetchValid   debugInfoDRAM)
+              firstMants   = sampleN maxCycles (qhFirstMant    debugInfoDRAM)
+              accumVals    = sampleN maxCycles (qhAccumValue   debugInfoDRAM)
+              rowResults   = sampleN maxCycles (qhRowResult    debugInfoDRAM)
+              rowDones     = sampleN maxCycles (qhRowDone      debugInfoDRAM)
+              qOutVecs     = sampleN maxCycles (qhQOut         debugInfoDRAM)
+              currentRows  = sampleN maxCycles (qhCurrentRow     debugInfoDRAM)
+              currentRows' = sampleN maxCycles (qhCurrentRow'    debugInfoDRAM)
               
       it "DRAM version completes transaction" $ do
-        let valids = P.take maxCycles $ sample validOutDRAM
+        let valids = sampleN maxCycles validOutDRAM
             validIndices = DL.findIndices id valids
         P.length validIndices `shouldSatisfy` (>= 1)
 
       it "shows cycle-by-cycle progression (DRAM version)" $ do
         -- Print first 20 cycles for inspection
         let 
+          printDiag :: CycleDiagnostic -> IO ()
           printDiag d = do
             let
               cr = currentRow d
+              mantPreview = P.take 6 (toList $ rowMantissas cr)
               cr' = currentRow' d
+              mantPreview' = P.take 6 (toList $ rowMantissas cr')
+              -- show how many of the preview elements we printed, not the full length
+              previewLen = P.length mantPreview
             P.putStrLn $ "Cycle " P.++ show (cycleNum d) P.++ ":"
             P.putStrLn $ "  rowIdx=" P.++ show (rowIdx d)
             P.putStrLn $ "  state=" P.++ show (state d)
@@ -195,9 +200,9 @@ spec = do
             P.putStrLn $ "  rowResult=" P.++ show (rowResult d)
             P.putStrLn $ "  rowDone=" P.++ show (rowDone d)
             P.putStrLn $ "  qOut[0]=" P.++ show (P.head $ toList $ qOutVec d)
-            --P.putStrLn $ "  currentRow=" P.++ show cr
-            --P.putStrLn $ "  currentRow'=" P.++ show cr'
-        
+            P.putStrLn $ "  currentRow=exp=" P.++ show (rowExponent cr) P.++
+                        " firstFew(" P.++ show previewLen P.++ "): " P.++ show mantPreview
+
         mapM_ printDiag (P.take 20 dramDiagnostics)
         True `shouldBe` True
 
