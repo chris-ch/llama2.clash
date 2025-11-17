@@ -8,7 +8,7 @@ import LLaMa2.Types.LayerData (LayerData(..))
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.Quantization (RowI8E, MatI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Prelude as P
@@ -27,8 +27,8 @@ spec = do
             let maxCycles = 500
 
                 -- Create test weights: simple identity-like matrices
-                testRow = (repeat 1, 0) :: RowI8E ModelDimension
-                testRow' = (repeat 1, 0) :: RowI8E HeadDimension
+                testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E ModelDimension
+                testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
                 testQMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension  -- HeadDim x ModelDim
                 testKMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
                 testVMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
@@ -53,7 +53,7 @@ spec = do
 
                 -- FFN weights (all 1s for simplicity)
                 ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW2 = repeat RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: MatI8E ModelDimension HiddenDimension
                 ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
 
                 ffnParams = PARAM.FeedForwardNetworkComponentQ
@@ -201,8 +201,8 @@ spec = do
             let maxCycles = 500
 
                 -- Create test weights: simple identity-like matrices
-                testRow = (repeat 1, 0) :: RowI8E ModelDimension
-                testRow' = (repeat 1, 0) :: RowI8E HeadDimension
+                testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E ModelDimension
+                testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
                 testQMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
                 testKMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
                 testVMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
@@ -227,7 +227,7 @@ spec = do
 
                 -- FFN weights (all 1s for simplicity)
                 ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW2 = repeat (RowI8E { rowMantissas = repeat 1, rowExponent = 0}) :: MatI8E ModelDimension HiddenDimension
                 ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
 
                 ffnParams = PARAM.FeedForwardNetworkComponentQ
@@ -389,8 +389,8 @@ spec = do
             let maxCycles = 500
 
                 -- Create test weights in memory format
-                testRow = (repeat 1, 0) :: RowI8E ModelDimension
-                testRow' = (repeat 1, 0) :: RowI8E HeadDimension
+                testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E ModelDimension
+                testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
                 testQMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
                 testKMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
                 testVMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
@@ -414,7 +414,7 @@ spec = do
 
                 -- FFN weights (all 1s for simplicity)
                 ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-                ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+                ffnW2 = repeat RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: MatI8E ModelDimension HiddenDimension
                 ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
 
                 ffnParams = PARAM.FeedForwardNetworkComponentQ

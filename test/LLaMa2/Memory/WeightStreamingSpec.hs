@@ -9,6 +9,7 @@ import LLaMa2.Memory.AXI.Types
 import LLaMa2.Memory.WeightStreaming (axiRowFetcher, parseRow)
 import Test.Hspec
 import qualified Prelude as P
+import LLaMa2.Numeric.Quantization (RowI8E(..))
 
 spec :: Spec
 spec = do
@@ -106,7 +107,7 @@ spec = do
                         :> (20 :: BitVector 8)
                         :> (-2 :: BitVector 8)
                         :> iterateI (+ 1) (5 :: BitVector 8)
-                (mantissas, _exponent) = parseRow @64 testWord
+                RowI8E { rowMantissas = mantissas, rowExponent = _exponent} = parseRow @64 testWord
 
             it "extracts first mantissa correctly" $ do
                 head mantissas `shouldBe` 11

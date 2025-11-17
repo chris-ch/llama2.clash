@@ -9,7 +9,7 @@ import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplierDyn)
 import Simulation.Parameters (DecoderParameters(..), wqHeadQ, MultiHeadAttentionComponentQ(..), multiHeadAttention)
 import qualified Simulation.ParamsPlaceholder as PARAM
 import LLaMa2.Types.ModelConfig (HeadDimension, ModelDimension)
-import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 
 -- Compute elementwise closeness
 listsClose :: [FixedPoint] ->[FixedPoint] -> Bool
@@ -19,7 +19,7 @@ listsClose v1 v2 =
 
 -- Convert a row of (mantissa, exponent) to FixedPoint vector
 rowToFixedPoint :: RowI8E n -> [FixedPoint]
-rowToFixedPoint (mant, expon) = P.map (scalePow2F expon . fromIntegral) (toList mant)
+rowToFixedPoint RowI8E { rowMantissas = mant, rowExponent = expon} = P.map (scalePow2F expon . fromIntegral) (toList mant)
 
 spec :: Spec
 spec =

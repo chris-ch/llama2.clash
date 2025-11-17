@@ -11,7 +11,7 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
 import qualified Simulation.Parameters as PARAM
@@ -37,7 +37,8 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhRowEnable    :: Signal dom Bool  -- When is enable active?
   , qhAccumValue   :: Signal dom FixedPoint  -- What's in the accumulator?
   , qhQOut         :: Signal dom (Vec HeadDimension FixedPoint)  -- Current qOut register
-
+  , qhCurrentRow     :: Signal dom (RowI8E ModelDimension)
+  , qhCurrentRow'    :: Signal dom (RowI8E ModelDimension)
   } deriving (Generic, NFDataX)
 
 --------------------------------------------------------------------------------
@@ -74,7 +75,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn rowReset rowAddr
 
-  -- Parse fetched word into row format
+  -- Parse the LATCHED word
   currentRow' :: Signal dom (RowI8E ModelDimension)
   currentRow' = STREAM.parseRow <$> fetchedWord
 
@@ -105,7 +106,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qOut
 
   -- Extract first mantissa for debugging
-  firstMantissa = head . fst <$> currentRow
+  firstMantissa = head . rowMantissas <$> currentRow
 
   -- Package debug info
   debugInfo = QHeadDebugInfo
@@ -119,6 +120,8 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
     , qhRowEnable  = rowEnable
     , qhAccumValue = accValue
     , qhQOut       = qOut
+    , qhCurrentRow   = currentRow
+    , qhCurrentRow'  = currentRow'
     }
 
 --------------------------------------------------------------------------------

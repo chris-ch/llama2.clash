@@ -10,7 +10,7 @@ import qualified Prelude as P
 import Clash.Sized.Vector (unsafeFromList)
 
 import LLaMa2.Types.ModelConfig
-import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
@@ -168,7 +168,7 @@ axiRowFetcher slaveIn request address = (masterOut, dataOut, validOut)
 -- For ModelDimension=64: bytes 0-62 are mantissas, byte 63 is exponent
 -- (limited to 63 mantissas due to 64-byte word size)
 parseRow :: forall n. KnownNat n => BitVector 512 -> RowI8E n
-parseRow word = (mantissas, exponent')
+parseRow word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
   where
     byteVec = unpack word :: Vec 64 (BitVector 8)
     bytes = toList byteVec :: [BitVector 8]

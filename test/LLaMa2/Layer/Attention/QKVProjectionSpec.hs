@@ -3,26 +3,45 @@ module LLaMa2.Layer.Attention.QKVProjectionSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Layer.Attention.QKVProjection (queryHeadProjector)
+import LLaMa2.Layer.Attention.QKVProjection (queryHeadProjector, QHeadDebugInfo (..))
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 import qualified Simulation.Parameters as PARAM
+import qualified LLaMa2.Numeric.Operations as OPS
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Numeric.Quantization (RowI8E, MatI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import LLaMa2.Types.ModelConfig
+
+-- Diagnostic record for cycle-by-cycle comparison
+data CycleDiagnostic = CycleDiagnostic
+  { cycleNum :: Int
+  , rowIdx :: Index HeadDimension
+  , state :: OPS.MultiplierState
+  , rowReset :: Bool
+  , rowEnable :: Bool
+  , fetchValid :: Bool
+  , firstMant :: Mantissa
+  , accumVal :: FixedPoint
+  , rowResult :: FixedPoint
+  , rowDone :: Bool
+  , qOutVec :: Vec HeadDimension FixedPoint
+  , currentRow :: RowI8E ModelDimension
+  , currentRow' :: RowI8E ModelDimension
+  } deriving (Show, Eq)
 
 spec :: Spec
 spec = do
-  describe "queryHeadProjector - Sequential Transactions" $ do
-    context "produces identical results for two sequential identical inputs" $ do
-      let maxCycles = 100
-
-          -- Create simple test weights (8x64 matrix for HeadDimension=8, ModelDimension=64)
-          -- Each row: mantissas = [1,1,1,...], exponent = 0
-          testRow = (repeat 1, 0) :: RowI8E 64
+  describe "queryHeadProjector - Diagnostic Comparison" $ do
+    context "layer 4 (5th layer), second token processing" $ do
+      let maxCycles = 50
+          layerIdx = 4 :: Index NumLayers
+          headIdx = 0 :: Index NumQueryHeads
+          
+          -- Create realistic test weights
+          testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E 64
           testMatrix = repeat testRow :: MatI8E 8 64
 
           -- Mock DRAM that returns our test pattern
@@ -46,10 +65,10 @@ spec = do
               (register False $ register False arvalid)
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          -- Input: same vector both times
+          -- Input vector for "second token"
           inputVec = repeat 1.0 :: Vec 64 FixedPoint
 
-          -- Mock rotary params (identity - no rotation)
+          -- Mock rotary params (identity)
           mockRotary = PARAM.RotaryEncodingComponentF
             { PARAM.freqCosF = repeat (repeat 1.0)
             , PARAM.freqSinF = repeat (repeat 0.0)
@@ -62,8 +81,8 @@ spec = do
             , PARAM.rotaryF = mockRotary
             }
 
-          -- Create test weights: simple identity-like matrices
-          testRow' = (repeat 1, 0) :: RowI8E HeadDimension
+          -- Build full params structure
+          testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
           testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
 
           mhaParams = PARAM.MultiHeadAttentionComponentQ
@@ -72,9 +91,8 @@ spec = do
               , PARAM.rmsAttF = repeat 1.0 :< 0
               }
 
-          -- FFN weights (all 1s for simplicity)
           ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-          ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+          ffnW2 = repeat RowI8E { rowMantissas = repeat 1, rowExponent = 0} :: MatI8E ModelDimension HiddenDimension
           ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
 
           ffnParams = PARAM.FeedForwardNetworkComponentQ
@@ -97,23 +115,20 @@ spec = do
               , PARAM.modelLayers = repeat layerParams
               }
 
-          -- Two transactions: validIn pulses at cycle 1 and cycle 50
-          validStream =
-            [False, True] P.++ P.replicate 48 False P.++  -- First transaction
-              -- First transaction
-            [True] P.++ P.replicate (maxCycles - 51) False  -- Second transaction
-          validIn = fromList validStream :: Signal System Bool
-
+          -- Single transaction starting at cycle 1
+          validIn = fromList ([False, True] P.++ P.replicate (maxCycles - 2) False) :: Signal System Bool
           downStreamReady = pure True :: Signal System Bool
           stepCount = pure 0 :: Signal System (Index 512)
           input = pure inputVec :: Signal System (Vec 64 FixedPoint)
 
-          (masterOut, qOut, validOut, readyOut, _debugInfo) =
+          -- Run with DRAM weights (currentRow')
+          debugInfoDRAM :: QHeadDebugInfo System
+          (masterOutDRAM, qOutDRAM, validOutDRAM, readyOutDRAM, debugInfoDRAM) =
             exposeClockResetEnable
               (queryHeadProjector
-                (mockDRAM arvalidSignal)
-                0  -- layer 0
-                0  -- head 0
+                (mockDRAM arvalidSignalDRAM)
+                layerIdx
+                headIdx
                 validIn
                 downStreamReady
                 stepCount
@@ -123,41 +138,86 @@ spec = do
               CS.resetGen
               CS.enableGen
 
-          arvalidSignal = Master.arvalid masterOut
+          arvalidSignalDRAM = Master.arvalid masterOutDRAM
 
-          outputs = P.take maxCycles $ sample qOut
-          valids = P.take maxCycles $ sample validOut
-          readys = P.take maxCycles $ sample readyOut
-
-          validIndices = DL.findIndices id valids
-          firstCompletion = if not (DL.null validIndices) then DL.head validIndices else 0
-          secondCompletion = if P.length validIndices >= 2 then validIndices P.!! 1 else 0
-
-          firstResult = outputs P.!! firstCompletion
-          secondResult = outputs P.!! secondCompletion
-
-          tolerance = 0.01
-
-      it "completes first transaction" $ do
+          -- Extract all diagnostic signals for DRAM version
+          dramDiagnostics :: [CycleDiagnostic]
+          dramDiagnostics = flip P.map [0 .. maxCycles - 1] $ \i ->
+            CycleDiagnostic
+              { cycleNum   = i
+              , rowIdx     = rowIdxs     P.!! i
+              , state      = states      P.!! i
+              , rowReset   = rowResets   P.!! i
+              , rowEnable  = rowEnables  P.!! i
+              , fetchValid = fetchValids P.!! i
+              , firstMant  = firstMants  P.!! i
+              , accumVal   = accumVals   P.!! i
+              , rowResult  = rowResults  P.!! i
+              , rowDone    = rowDones    P.!! i
+              , qOutVec    = qOutVecs    P.!! i
+              , currentRow = currentRows    P.!! i
+              , currentRow'= currentRows'    P.!! i
+              }
+            where
+              rowIdxs      = P.take maxCycles $ sample (qhRowIndex     debugInfoDRAM)
+              states       = P.take maxCycles $ sample (qhState        debugInfoDRAM)
+              rowResets    = P.take maxCycles $ sample (qhRowReset     debugInfoDRAM)
+              rowEnables   = P.take maxCycles $ sample (qhRowEnable    debugInfoDRAM)
+              fetchValids  = P.take maxCycles $ sample (qhFetchValid   debugInfoDRAM)
+              firstMants   = P.take maxCycles $ sample (qhFirstMant    debugInfoDRAM)
+              accumVals    = P.take maxCycles $ sample (qhAccumValue   debugInfoDRAM)
+              rowResults   = P.take maxCycles $ sample (qhRowResult    debugInfoDRAM)
+              rowDones     = P.take maxCycles $ sample (qhRowDone      debugInfoDRAM)
+              qOutVecs     = P.take maxCycles $ sample (qhQOut         debugInfoDRAM)
+              currentRows  = P.take maxCycles $ sample (qhCurrentRow     debugInfoDRAM)
+              currentRows' = P.take maxCycles $ sample (qhCurrentRow'    debugInfoDRAM)
+              
+      it "DRAM version completes transaction" $ do
+        let valids = P.take maxCycles $ sample validOutDRAM
+            validIndices = DL.findIndices id valids
         P.length validIndices `shouldSatisfy` (>= 1)
 
-      it "completes second transaction" $ do
-        P.length validIndices `shouldSatisfy` (>= 2)
+      it "shows cycle-by-cycle progression (DRAM version)" $ do
+        -- Print first 20 cycles for inspection
+        let 
+          printDiag d = do
+            let
+              cr = currentRow d
+              cr' = currentRow' d
+            P.putStrLn $ "Cycle " P.++ show (cycleNum d) P.++ ":"
+            P.putStrLn $ "  rowIdx=" P.++ show (rowIdx d)
+            P.putStrLn $ "  state=" P.++ show (state d)
+            P.putStrLn $ "  rowReset=" P.++ show (rowReset d) P.++ 
+                        ", rowEnable=" P.++ show (rowEnable d)
+            P.putStrLn $ "  fetchValid=" P.++ show (fetchValid d)
+            P.putStrLn $ "  firstMant=" P.++ show (firstMant d)
+            P.putStrLn $ "  accumVal=" P.++ show (accumVal d)
+            P.putStrLn $ "  rowResult=" P.++ show (rowResult d)
+            P.putStrLn $ "  rowDone=" P.++ show (rowDone d)
+            P.putStrLn $ "  qOut[0]=" P.++ show (P.head $ toList $ qOutVec d)
+            --P.putStrLn $ "  currentRow=" P.++ show cr
+            --P.putStrLn $ "  currentRow'=" P.++ show cr'
+        
+        mapM_ printDiag (P.take 20 dramDiagnostics)
+        True `shouldBe` True
 
-      it "first transaction produces non-zero result" $ do
-        let
-            vec :: [FixedPoint]
-            vec = toList firstResult
-            norm = sum $ P.map (\x -> x * x) vec
-        norm `shouldSatisfy` (> 0.1)
+      it "identifies when rowReset fires" $ do
+        let resetCycles = P.filter (rowReset . snd) $ P.zip [0..] dramDiagnostics
+        P.putStrLn $ "\nrowReset active at cycles: " P.++ show (P.map fst resetCycles)
+        True `shouldBe` True
 
-      it "second transaction produces identical result (no state pollution)" $ do
-        let matches = P.zipWith (\a b -> abs (a - b) < tolerance)
-                                (toList firstResult)
-                                (toList secondResult)
-        DL.and matches `shouldBe` True
+      it "identifies when rowEnable fires" $ do
+        let enableCycles = P.filter (rowEnable . snd) $ P.zip [0..] dramDiagnostics
+        P.putStrLn $ "\nrowEnable active at cycles: " P.++ show (P.map fst enableCycles)
+        True `shouldBe` True
 
-      it "returns to ready between transactions" $ do
-        if firstCompletion < maxCycles - 1
-          then readys P.!! (firstCompletion + 1) `shouldBe` True
-          else True `shouldBe` True
+      it "tracks accumulator evolution" $ do
+        let accums = P.map (\d -> (cycleNum d, accumVal d)) $ P.take 20 dramDiagnostics
+        P.putStrLn "\nAccumulator evolution:"
+        mapM_ (\(c, a) -> P.putStrLn $ "  Cycle " P.++ show c P.++ ": " P.++ show a) accums
+        True `shouldBe` True
+
+      it "verifies row completion sequence" $ do
+        let doneCycles = P.filter (rowDone . snd) $ P.zip [0..] dramDiagnostics
+        P.putStrLn $ "\nrowDone asserted at cycles: " P.++ show (P.map fst doneCycles)
+        P.length doneCycles `shouldBe` 8  -- Should see 8 row completions

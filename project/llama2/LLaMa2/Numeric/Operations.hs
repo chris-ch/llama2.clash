@@ -11,7 +11,7 @@ module LLaMa2.Numeric.Operations
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import qualified Simulation.MatVecSim (matrixMultiplierStub)
 
 parallelRowMatrixMultiplier :: forall dom rows cols .
@@ -141,8 +141,8 @@ parallel64RowProcessor :: forall dom size.
   )
 parallel64RowProcessor reset enable row columnVec = (output, rowDone, columnIndex, acc)
   where
-    mant = fst <$> row
-    expon = snd <$> row
+    mant = rowMantissas <$> row
+    expon = rowExponent <$> row
 
     -- Column index advances by 64 each cycle
     columnIndex :: Signal dom (Index size)
@@ -267,7 +267,7 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   currentRow = (!!) <$> matSig <*> rowIndex
 
   initialRow :: RowI8E cols
-  initialRow = (repeat 0, 0)
+  initialRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0}
 
   -- Parallel row engine
   currentRowReg :: Signal dom (RowI8E cols)

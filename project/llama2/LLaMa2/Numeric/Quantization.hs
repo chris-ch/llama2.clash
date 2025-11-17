@@ -1,7 +1,8 @@
+{-# LANGUAGE DerivingVia #-}
 module LLaMa2.Numeric.Quantization
   ( expF
   , dequantRowToF
-  , RowI8E
+  , RowI8E (..)
   , MatI8E
   ) where
 import Clash.Prelude
@@ -43,13 +44,15 @@ expF x =
   in scalePow2F nC b
 
 -- One row of parameters as (int8 mantissas, shared exponent).
-type RowI8E n = (Vec n Mantissa, Exponent)
+data RowI8E n = RowI8E { rowMantissas :: Vec n Mantissa, rowExponent :: Exponent}
+  deriving stock (Eq, Show, Generic)
+  deriving NFDataX via (RowI8E n)
 
 -- Matrix of rows.
 type MatI8E rows cols = Vec rows (RowI8E cols)
 
 -- Lightweight dequantization to FixedPoint for reuse of F-kernels.
 dequantRowToF :: RowI8E n -> Vec n FixedPoint
-dequantRowToF (mant, e) =
+dequantRowToF (RowI8E {rowMantissas = mant, rowExponent = e}) =
   let s = scalePow2F e 1
   in map (\q -> fromIntegral q * s) mant

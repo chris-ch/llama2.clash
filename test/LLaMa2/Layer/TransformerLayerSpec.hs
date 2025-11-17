@@ -3,8 +3,8 @@ module LLaMa2.Layer.TransformerLayerSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
+import LLaMa2.Numeric.Types (FixedPoint, Exponent, Mantissa)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize)
@@ -18,15 +18,26 @@ import Clash.Sized.Vector (unsafeFromList)
 import LLaMa2.Layer.TransformerLayer (transformerLayer)
 
 -- | Simple deterministic WO matrix for testing
-makeSimpleWOMatrix :: MatI8E ModelDimension HeadDimension
-makeSimpleWOMatrix = imap
-      (\i _ ->
-         ( imap (\j _ -> fromIntegral (i * headDim) + (fromIntegral j + 1) :: Signed 8)
-                (repeat 0 :: Vec HeadDimension (Signed 8))
-         , 0))
-      (repeat (repeat 0 :: Vec HeadDimension Int, 0 :: Int) :: Vec ModelDimension (Vec HeadDimension Int, Int))
- where
-   headDim = snatToNum (SNat @HeadDimension)
+-- Row i contains values: i*headDim + 1, i*headDim + 2, ..., i*headDim + headDim
+-- Shared exponent = 0 for every row
+makeSimpleWOMatrix :: forall modelDim headDim .
+                      (KnownNat modelDim, KnownNat headDim)
+                   => MatI8E modelDim headDim
+makeSimpleWOMatrix = imap buildRow ignoredVec
+  where
+    -- We need a Vec of the right length but its contents are ignored
+    ignoredVec :: Vec modelDim ()
+    ignoredVec = repeat ()
+
+    headDimVal :: Int
+    headDimVal = snatToNum (SNat @headDim)
+
+    buildRow :: Index modelDim -> () -> RowI8E headDim
+    buildRow i _ = RowI8E
+      { rowMantissas = imap (\j _ -> fromIntegral (fromIntegral i * headDimVal + fromIntegral j + 1))
+                          (repeat () :: Vec headDim ())
+      , rowExponent = 0
+      }
 
 -- | Head output with decreasing values: [1.0, 0.5, 0.333..., ...]
 makeSimpleHeadOutput :: Vec HeadDimension FixedPoint
@@ -57,8 +68,8 @@ spec = do
       let maxCycles = 3000  -- Need time for attention + FFN
 
           -- Create test weights
-          testRow = (repeat 1, 0) :: RowI8E 64
-          testRow' = (repeat 1, 0) :: RowI8E 8
+          testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E 64
+          testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E 8
           testQMatrix = repeat testRow :: MatI8E 8 64
           testWOMatrix = repeat testRow' :: MatI8E 64 8
 
@@ -80,7 +91,7 @@ spec = do
 
           -- FFN weights (all 1s for simplicity)
           ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-          ffnW2 = repeat (repeat 1, 0) :: MatI8E ModelDimension HiddenDimension
+          ffnW2 = repeat RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: MatI8E ModelDimension HiddenDimension
           ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
 
           ffnParams = PARAM.FeedForwardNetworkComponentQ

@@ -3,8 +3,8 @@ module Simulation.ParametersQuantization (
 ) where
 import Clash.Prelude
 import LLaMa2.Types.LayerData (CArray2D (..))
-import LLaMa2.Numeric.Quantization (MatI8E)
-import LLaMa2.Numeric.Types (FixedPoint, Exponent, Activation, scalePow2F, clampExp, satRoundToI8)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
+import LLaMa2.Numeric.Types (FixedPoint, Exponent, scalePow2F, clampExp, satRoundToI8)
 
 -- Elaborate-time quantization: Float -> FixedPoint -> I8E per row.
 -- Safe for synthesis because inputs are structural constants.
@@ -23,7 +23,7 @@ quantizeMatI8E (CArray2D rowsF) =
 -- Quantize a vector to Signed 8 mantissas with a shared Signed 7 exponent.
 -- Nearest-PoT exponent (reduces MSE vs floor-PoT)
 -- No Floating is used to find the exponent: we compare against a ROM of 2^i.
-quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> (Vec n Activation, Exponent)
+quantizeI8E :: forall n. KnownNat n => Vec n FixedPoint -> RowI8E n
 quantizeI8E xs =
   let maxAbs :: FixedPoint
       maxAbs = foldl max 0 (map abs xs)
@@ -57,4 +57,4 @@ quantizeI8E xs =
         let y  = x * k
             yr = if y >= 0 then floor (y + 0.5) else ceiling (y - 0.5) :: Integer
         in satRoundToI8 yr
-  in (map qElem xs, eBest)
+  in RowI8E {rowMantissas = map qElem xs, rowExponent = eBest}

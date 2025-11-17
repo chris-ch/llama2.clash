@@ -6,7 +6,7 @@ import qualified Data.List as DL
 import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..),
   matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor,
   parallel64RowMatrixMultiplier)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
@@ -112,7 +112,7 @@ spec = do
       let maxCycles = 12
 
           rowVector :: RowI8E 4
-          rowVector = (1 :> 2 :> 3 :> 4 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> 4 :> Nil, rowExponent = 0}
 
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil
@@ -170,9 +170,9 @@ spec = do
       let maxCycles = 12
           -- Define two different rows
           rowVector1 :: RowI8E 4
-          rowVector1 = (1 :> 2 :> 3 :> 4 :> Nil, 0) -- First row: [1, 2, 3, 4], exponent 0
+          rowVector1 = RowI8E {rowMantissas = 1 :> 2 :> 3 :> 4 :> Nil, rowExponent = 0} -- First row: [1, 2, 3, 4], exponent 0
           rowVector2 :: RowI8E 4
-          rowVector2 = (2 :> 3 :> 4 :> 5 :> Nil, 0) -- Second row: [2, 3, 4, 5], exponent 0
+          rowVector2 = RowI8E {rowMantissas = 2 :> 3 :> 4 :> 5 :> Nil, rowExponent = 0} -- Second row: [2, 3, 4, 5], exponent 0
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil -- Column: [1.0, 0.5, 0.25, 0.125]
           -- Expected dot products
@@ -250,7 +250,7 @@ spec = do
     context "computes dot product for a 3-column row" $ do
       let maxCycles = 7
           rowVector :: RowI8E 3
-          rowVector = (1 :> 2 :> 3 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> Nil, rowExponent = 0}
           columnVector :: Vec 3 FixedPoint
           columnVector = 1.0 :> 2.0 :> 3.0 :> Nil
           expected = 14.0 :: FixedPoint -- 1*1.0 + 2*2.0 + 3*3.0
@@ -289,7 +289,7 @@ spec = do
     context "computes dot product for a 3-column row, independently from components before enable" $ do
       let maxCycles = 7
           rowVector :: RowI8E 3
-          rowVector = (1 :> 2 :> 3 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> Nil, rowExponent = 0}
           columnVector :: Vec 3 FixedPoint
           columnVector = 1.0 :> 2.0 :> 3.0 :> Nil
           expected = 14.0 :: FixedPoint -- 1*1.0 + 2*2.0 + 3*3.0
@@ -692,13 +692,13 @@ spec = do
           -- Row 1: [1, 2, 1, 3]
           -- Row 2: [3, 2, 2, 1]
           row0 :: RowI8E 4
-          row0 = (2 :> 1 :> 3 :> 2 :> Nil, 0)
+          row0 = RowI8E {rowMantissas = 2 :> 1 :> 3 :> 2 :> Nil, rowExponent = 0}
 
           row1 :: RowI8E 4
-          row1 = (1 :> 2 :> 1 :> 3 :> Nil, 0)
+          row1 = RowI8E {rowMantissas = 1 :> 2 :> 1 :> 3 :> Nil, rowExponent = 0}
 
           row2 :: RowI8E 4
-          row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
+          row2 = RowI8E {rowMantissas = 3 :> 2 :> 2 :> 1 :> Nil, rowExponent = 0}
 
           matrix :: MatI8E 3 4
           matrix = row0 :> row1 :> row2 :> Nil
@@ -838,11 +838,11 @@ spec = do
 
           -- Define a 3x4 matrix (same for both transactions)
           row0 :: RowI8E 4
-          row0 = (2 :> 1 :> 3 :> 2 :> Nil, 0)
+          row0 = RowI8E {rowMantissas = 2 :> 1 :> 3 :> 2 :> Nil, rowExponent = 0}
           row1 :: RowI8E 4
-          row1 = (1 :> 2 :> 1 :> 3 :> Nil, 0)
+          row1 = RowI8E {rowMantissas = 1 :> 2 :> 1 :> 3 :> Nil, rowExponent = 0}
           row2 :: RowI8E 4
-          row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
+          row2 = RowI8E {rowMantissas = 3 :> 2 :> 2 :> 1 :> Nil, rowExponent = 0}
           matrix :: MatI8E 3 4
           matrix = row0 :> row1 :> row2 :> Nil
 
@@ -925,9 +925,9 @@ spec = do
 
           -- Simple 2x2 matrix for easier validation
           row0 :: RowI8E 2
-          row0 = (1 :> 1 :> Nil, 0)
+          row0 = RowI8E {rowMantissas = 1 :> 1:> Nil, rowExponent = 0}
           row1 :: RowI8E 2
-          row1 = (2 :> 2 :> Nil, 0)
+          row1 = RowI8E {rowMantissas = 2 :> 2:> Nil, rowExponent = 0}
           matrix :: MatI8E 2 2
           matrix = row0 :> row1 :> Nil
 
@@ -1020,11 +1020,11 @@ spec = do
 
         -- First row computation
         rowVector1 :: RowI8E 4
-        rowVector1 = (1 :> 2 :> 3 :> 4 :> Nil, 0)
+        rowVector1 = RowI8E {rowMantissas = 1 :> 2 :> 3 :> 4 :> Nil, rowExponent = 0}
         
         -- Second row computation
         rowVector2 :: RowI8E 4
-        rowVector2 = (5 :> 6 :> 7 :> 8 :> Nil, 0)
+        rowVector2 = RowI8E {rowMantissas = 5 :> 6 :> 7 :> 8 :> Nil, rowExponent = 0}
         
         columnVector :: Vec 4 FixedPoint
         columnVector = 1.0 :> 1.0 :> 1.0 :> 1.0 :> Nil

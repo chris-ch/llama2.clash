@@ -21,7 +21,7 @@ import qualified Simulation.Parameters as PARAM
 import LLaMa2.Types.ModelConfig
   ( ModelDimension
   , NumQueryHeads, NumKeyValueHeads, SequenceLength, RotaryPositionalEmbeddingDimension )
-import LLaMa2.Numeric.Quantization (RowI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import Simulation.Parameters (DecoderParameters)
 import Clash.Sized.Vector (unsafeFromList)
@@ -115,7 +115,7 @@ listToVecTH' xs =
 
 -- Pack a RowI8E into a 512-bit word (64 bytes)
 packRowToWord :: RowI8E ModelDimension -> WordData
-packRowToWord (mantissas, expon) =
+packRowToWord RowI8E { rowMantissas = mantissas, rowExponent = expon} =
   let -- Take up to 63 mantissas (adjust if ModelDimension > 63)
       mantBytes = take (SNat @63) (map pack mantissas) :: Vec 63 (BitVector 8)
       expByte = resize (pack expon) :: BitVector 8
@@ -331,8 +331,8 @@ writePath masterOut = WritePathData
     bData = AxiB 0 <$> wIDReg
 
 -- Helper: convert one RowI8E to bytes
-rowToBytes :: (Vec n Mantissa, Exponent) -> [BitVector 8]
-rowToBytes (mantissas, expon) =
+rowToBytes :: RowI8E n -> [BitVector 8]
+rowToBytes RowI8E { rowMantissas = mantissas, rowExponent= expon} =
   let
     mantBytes :: [BitVector 8]
     mantBytes = P.map pack (toList mantissas)

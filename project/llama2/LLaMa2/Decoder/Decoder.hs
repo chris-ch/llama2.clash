@@ -19,6 +19,7 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
 import LLaMa2.Numeric.Operations (MultiplierState)
+import LLaMa2.Numeric.Quantization (RowI8E(..))
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -220,7 +221,7 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
       , paramQ0Row0         = let
             mhaParams = multiHeadAttention $ head (modelLayers params)
             qMat = PARAM.wqHeadQ (head (PARAM.headsQ mhaParams))
-            (mants, _exp) = qMat !! (0 :: Int)
+            RowI8E {rowMantissas = mants, rowExponent =_exp} = qMat !! (0 :: Int)
           in pure $ head mants
 
       -- Propagate debug fields from layerOutputs
