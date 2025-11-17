@@ -38,6 +38,7 @@ common project-defaults
     DataKinds
     DeriveAnyClass
     DeriveGeneric
+    DerivingVia
     DoAndIfThenElse
     FlexibleContexts
     GeneralizedNewtypeDeriving
