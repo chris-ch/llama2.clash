@@ -388,3 +388,33 @@ spec = do
         let doneCycles = P.filter rowDone diagnostics
             finalAccums = P.map accumVal doneCycles
         P.all (== 64.0) finalAccums `shouldBe` True
+
+      it "CRITICAL BUG: row 0 processes before DRAM fetch completes" $ do
+        let row0ProcessingCycles = P.filter (\d -> rowIdx d == 0 && rowEnable d) diagnostics
+            firstFetchCycle = P.head $ P.map cycleNum $ P.filter fetchValid diagnostics
+            row0EnableCycle = P.head $ P.map cycleNum row0ProcessingCycles
+        
+        P.putStrLn $ "\nRow 0 processing starts at cycle: " P.++ show row0EnableCycle
+        P.putStrLn $ "First DRAM fetch completes at cycle: " P.++ show firstFetchCycle
+        
+        -- This SHOULD fail (and currently does) - processing happens before data arrives
+        row0EnableCycle `shouldSatisfy` (< firstFetchCycle)
+        -- This documents the bug
+        expectationFailure $ "Row 0 processes at cycle " P.++ show row0EnableCycle 
+          P.++ " but DRAM data not valid until cycle " P.++ show firstFetchCycle
+
+      it "shows which row gets corrupted data" $ do
+        let rowResults = P.map (\i -> 
+              let rowCycles = P.filter (\d -> rowIdx d == i) diagnostics
+                  finalCycle = P.last rowCycles
+              in (i, P.head $ toList $ qOutVec finalCycle, cycleNum finalCycle)
+              ) [0..7]
+        
+        P.putStrLn "\nFinal qOut values per row:"
+        mapM_ (\(row, val, cyc) -> 
+          P.putStrLn $ "  Row " P.++ show row P.++ " @ cycle " P.++ show cyc P.++ ": " P.++ show val
+          ) rowResults
+        
+        -- Expect all to be 128.0 if using DRAM correctly, but likely row 0 will be wrong
+        let wrongRows = P.filter (\(_, val, _) -> val /= 128.0) rowResults
+        P.length wrongRows `shouldSatisfy` (> 0)

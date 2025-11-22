@@ -262,8 +262,8 @@ spec = do
           -- Input: enable signal (high on cycle 1)
           enableStream =
             [False, True] P.++ P.replicate (maxCycles - 2) False
-          enable :: Signal System Bool
-          enable = fromList enableStream
+          validIn :: Signal System Bool
+          validIn = fromList enableStream
 
           -- Input: rowDone signal (pulses after each row completes)
           -- Row processing takes numCols cycles, done appears 1 cycle after last enable
@@ -294,7 +294,7 @@ spec = do
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
-              enable
+              validIn
               readyIn
               rowDone
               currentRow
@@ -421,8 +421,8 @@ spec = do
               -- Input: enable signal (high on cycle 1)
               enableStream =
                 [False, True] P.++ P.replicate (maxCycles - 2) False
-              enable :: Signal System Bool
-              enable = fromList enableStream
+              validIn :: Signal System Bool
+              validIn = fromList enableStream
 
               -- Input: rowDone signal (pulses after each row completes)
               -- Row processing takes numCols cycles, done appears 1 cycle after last enable
@@ -461,7 +461,7 @@ spec = do
                   CS.systemClockGen
                   CS.resetGen
                   CS.enableGen
-                  enable
+                  validIn
                   readyIn
                   rowDone
                   currentRow
