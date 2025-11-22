@@ -108,7 +108,7 @@ spec :: Spec
 spec = do
   describe "queryHeadProjector - DRAM vs Hardcoded Comparison" $ do
     context "when DRAM matches hardcoded params" $ do
-      let maxCycles = 30
+      let maxCycles = 35
           layerIdx = 4 :: Index NumLayers
           headIdx = 0 :: Index NumQueryHeads
 
@@ -189,7 +189,7 @@ spec = do
 
       it "DRAM fetches occur at expected intervals" $ do
         let fetchCycles = P.map cycleNum $ P.filter fetchValid diagnostics
-            expectedPattern = [5, 11, 17, 23] -- Every 6 cycles after first completion
+            expectedPattern = [6, 10, 14, 18, 22, 26, 30, 34] -- Every 4 cycles
         fetchCycles `shouldBe` expectedPattern
 
       it "completes 8 rows successfully" $ do
@@ -296,7 +296,7 @@ spec = do
         actualResult `shouldNotBe` expectedDRAM
 
     context "FSM and timing verification" $ do
-      let maxCycles = 30
+      let maxCycles = 34
           layerIdx = 0 :: Index NumLayers
           headIdx = 0 :: Index NumQueryHeads
           testRowHC = RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: RowI8E ModelDimension
@@ -361,18 +361,20 @@ spec = do
               mant0HCs = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
               mant0DRAMs = sampleN maxCycles (qhCurrentRow'Mant0 debugInfo)
 
-      it "FSM transitions: MIdle -> MReset -> MProcessing" $ do
+      it "FSM transitions: MIdle -> MFetching -> MReset -> MProcessing" $ do
         let stateTransitions = P.zip (P.map state diagnostics) (P.tail $ P.map state diagnostics)
-            hasIdleToReset = P.any (\(s1, s2) -> s1 == OPS.MIdle && s2 == OPS.MReset) stateTransitions
+            hasIdleToFetching = P.any (\(s1, s2) -> s1 == OPS.MIdle && s2 == OPS.MFetching) stateTransitions
+            hasFetchingToReset = P.any (\(s1, s2) -> s1 == OPS.MFetching && s2 == OPS.MReset) stateTransitions
             hasResetToProcessing = P.any (\(s1, s2) -> s1 == OPS.MReset && s2 == OPS.MProcessing) stateTransitions
-        hasIdleToReset `shouldBe` True
+        hasIdleToFetching `shouldBe` True
+        hasFetchingToReset `shouldBe` True
         hasResetToProcessing `shouldBe` True
 
       it "each row takes exactly 3 cycles (Reset + Processing + Done)" $ do
         let rowCompletions = P.filter rowDone diagnostics
             rowCycles = P.map cycleNum rowCompletions
-            -- Expected: 4, 7, 10, 13, 16, 19, 22, 25 (every 3 cycles)
-            expectedCycles = [4, 7, 10, 13, 16, 19, 22, 25]
+            -- Expected: 5, 9, 13, 17, 21, 25, 29, 33 (every 4 cycles)
+            expectedCycles = [5, 9, 13, 17, 21, 25, 29, 33]
         rowCycles `shouldBe` expectedCycles
 
       it "rowReset fires exactly once per row" $ do

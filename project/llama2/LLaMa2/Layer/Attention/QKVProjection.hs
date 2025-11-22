@@ -89,8 +89,8 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
 
   -- State machine
-  (state, rowReset, rowEnable, outputValid, readyForInput) =
-    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
+  (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
+    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone (pure True) rowIndex
 
   -- Row index sequencing
   nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))

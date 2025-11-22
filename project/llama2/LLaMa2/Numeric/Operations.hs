@@ -63,48 +63,43 @@ accumulator reset enable input = acc
 -- The function processes one column per cycle, completing one row before moving to the next.
 
 -- | State for the matrix multiplier state machine
-data MultiplierState = MIdle | MReset | MProcessing | MDone
+data MultiplierState = MIdle | MFetching | MReset | MProcessing | MDone
   deriving (Show, Eq, Generic, NFDataX)
 
--- | State machine for matrix multiplier
--- Manages state transitions and control signals
 matrixMultiplierStateMachine :: forall dom rows .
   (HiddenClockResetEnable dom, KnownNat rows)
-  => Signal dom Bool
-  -> Signal dom Bool -- readyIn from downstream
-  -> Signal dom Bool
+  => Signal dom Bool  -- validIn
+  -> Signal dom Bool  -- readyIn
+  -> Signal dom Bool  -- rowDone
+  -> Signal dom Bool  -- fetchDone
   -> Signal dom (Index rows)
-  -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
-matrixMultiplierStateMachine validIn readyIn rowDone currentRow =
-  (state, rowReset, rowEnable, validOut, readyOut)
+  -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
+matrixMultiplierStateMachine validIn readyIn rowDone fetchDone currentRow =
+  (state, fetchTrigger, rowReset, rowEnable, validOut, readyOut)
   where
     state = register MIdle nextState
-
     lastRow = currentRow .==. pure (maxBound :: Index rows)
 
-    -- Accept input when idle and validIn is high
-    acceptInput = (state .==. pure MIdle) .&&. validIn
-
-    -- Move to next state when done and downstream is ready
-    outputAccepted = (state .==. pure MDone) .&&. readyIn
-
-    nextState = mux acceptInput
-                    (pure MReset)
-                    (mux (state .==. pure MReset)
-                         (pure MProcessing)
+    nextState = 
+      mux (state .==. pure MIdle .&&. validIn)
+          (pure MFetching)  -- Start fetch
+          (mux (state .==. pure MFetching .&&. fetchDone)
+               (pure MReset)  -- Fetch done, now reset
+               (mux (state .==. pure MReset)
+                    (pure MProcessing)  -- Reset always takes 1 cycle
+                    (mux (state .==. pure MProcessing .&&. rowDone .&&. (not <$> lastRow))
+                         (pure MFetching)  -- Next row: fetch again
                          (mux (state .==. pure MProcessing .&&. rowDone .&&. lastRow)
                               (pure MDone)
-                              (mux (state .==. pure MProcessing .&&. rowDone .&&. (not <$> lastRow))
-                                   (pure MReset)
-                                   (mux outputAccepted
-                                        (pure MIdle)
-                                        state))))
+                              (mux (state .==. pure MDone .&&. readyIn)
+                                   (pure MIdle)
+                                   state)))))
 
-    rowReset = state .==. pure MReset
+    -- Control signals
+    fetchTrigger = state .==. pure MFetching  -- Trigger fetch while in this state
+    rowReset = state .==. pure MReset  -- Single cycle pulse!
     rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. readyIn
     validOut = state .==. pure MDone
-
-    -- Ready to accept new input when idle
     readyOut = state .==. pure MIdle
 
 -- | Process a single column of a row (one lane)
@@ -223,8 +218,11 @@ parallel64RowMatrixMultiplier validIn readyIn rowVectors inputVector =
     (rowResult, rowDone, _ , _) = parallel64RowProcessor rowReset rowEnable currentRow inputVector
 
     -- State machine controls the protocol
-    (state, rowReset, rowEnable, validOut, readyOut) =
-      matrixMultiplierStateMachine validIn readyIn rowDone rowIndex
+    -- For non-DRAM: fetchDone is always True (data immediately available)
+    (state, _fetchTrigger, rowReset, rowEnable, validOut, readyOut) =
+      matrixMultiplierStateMachine validIn readyIn rowDone (pure True) rowIndex
+      --                                                    ^^^^^^^^^^ Always ready
+      -- Note: we ignore fetchTrigger since we don't fetch anything
 
     -- Increment row index when row completes, reset after last row
     nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
@@ -277,8 +275,11 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
       parallel64RowProcessor rowReset rowEnable currentRowReg inputVector
 
   -- Protocol FSM
-  (state, rowReset, rowEnable, outputValid, readyForInput) =
-    matrixMultiplierStateMachine inputValid downStreamReady rowDone rowIndex
+  -- For non-DRAM: fetchDone is always True (data immediately available)
+  (state, _fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
+    matrixMultiplierStateMachine inputValid downStreamReady rowDone (pure True) rowIndex
+    --                                                              ^^^^^^^^^^ Always ready
+    -- Note: we ignore fetchTrigger since we don't fetch anything
 
   -- Row index sequencing
   nextRowIndex =
@@ -293,3 +294,4 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   nextOutput   = mux rowDone
                    (replace <$> rowIndex <*> rowResult <*> outputVector)
                    outputVector
+  

@@ -288,7 +288,7 @@ spec = do
           readyIn :: Signal System Bool
           readyIn = pure True
 
-          (state, rowReset, rowEnable, validOut, readyOut) =
+          (state, _, rowReset, rowEnable, validOut, readyOut) =
             exposeClockResetEnable
               matrixMultiplierStateMachine
               CS.systemClockGen
@@ -297,6 +297,7 @@ spec = do
               validIn
               readyIn
               rowDone
+              (pure True)
               currentRow
 
           states = P.take maxCycles $ sample state
@@ -455,7 +456,7 @@ spec = do
               readyIn :: Signal System Bool
               readyIn = fromList readyInStream
 
-              (state, rowReset, rowEnable, validOut, readyOut) =
+              (state, _, rowReset, rowEnable, validOut, readyOut) =
                 exposeClockResetEnable
                   matrixMultiplierStateMachine
                   CS.systemClockGen
@@ -464,6 +465,7 @@ spec = do
                   validIn
                   readyIn
                   rowDone
+                  (pure True)
                   currentRow
 
               states = P.take maxCycles $ sample state
