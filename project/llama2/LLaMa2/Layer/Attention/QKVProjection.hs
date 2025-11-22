@@ -9,7 +9,7 @@ module LLaMa2.Layer.Attention.QKVProjection
 import Clash.Prelude
 
 import LLaMa2.Types.ModelConfig
-import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
@@ -37,8 +37,10 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhRowEnable    :: Signal dom Bool  -- When is enable active?
   , qhAccumValue   :: Signal dom FixedPoint  -- What's in the accumulator?
   , qhQOut         :: Signal dom (Vec HeadDimension FixedPoint)  -- Current qOut register
-  , qhCurrentRow     :: Signal dom (RowI8E ModelDimension)
-  , qhCurrentRow'    :: Signal dom (RowI8E ModelDimension)
+    , qhCurrentRowExp    :: Signal dom Exponent  -- Exponent from hardcoded
+    , qhCurrentRow'Exp   :: Signal dom Exponent  -- Exponent from DRAM
+    , qhCurrentRowMant0  :: Signal dom Mantissa  -- First mantissa hardcoded
+    , qhCurrentRow'Mant0 :: Signal dom Mantissa  -- First mantissa DRAM
   } deriving (Generic)
 
 --------------------------------------------------------------------------------
@@ -108,6 +110,11 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   -- Extract first mantissa for debugging
   firstMantissa = head . rowMantissas <$> currentRow
 
+  currentRowExp = rowExponent <$> currentRow
+  currentRow'Exp = rowExponent <$> currentRow'
+  currentRowMant0 = head . rowMantissas <$> currentRow
+  currentRow'Mant0 = head . rowMantissas <$> currentRow'
+
   -- Package debug info
   debugInfo = QHeadDebugInfo
     { qhRowIndex   = rowIndex
@@ -119,9 +126,11 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
     , qhRowReset   = rowReset
     , qhRowEnable  = rowEnable
     , qhAccumValue = accValue
-    , qhQOut       = qOut
-    , qhCurrentRow   = currentRow
-    , qhCurrentRow'  = currentRow'
+    , qhQOut       = qOut 
+    , qhCurrentRowExp    = register 0 currentRowExp
+    , qhCurrentRow'Exp   = register 0 currentRow'Exp
+    , qhCurrentRowMant0  = register 0 currentRowMant0
+    , qhCurrentRow'Mant0 = register 0 currentRow'Mant0
     }
 
 --------------------------------------------------------------------------------
