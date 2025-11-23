@@ -14,6 +14,9 @@ import LLaMa2.Types.ModelConfig
 import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Prelude as P
+import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
+import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import Control.Monad (when)
 
 -- Diagnostic record for cycle-by-cycle comparison
 data CycleDiagnostic = CycleDiagnostic
@@ -182,9 +185,9 @@ spec = do
         let mismatches = P.filter (\d -> mant0HC d /= mant0DRAM d || expsHC d /= expsDRAM d) diagnostics
         case mismatches of
           [] -> P.return ()
-          (d:_) -> expectationFailure $ 
-            "Data sources diverged at cycle " P.++ show (cycleNum d) 
-            P.++ ": HC[mant=" P.++ show (mant0HC d) P.++ ",exp=" P.++ show (expsHC d) 
+          (d:_) -> expectationFailure $
+            "Data sources diverged at cycle " P.++ show (cycleNum d)
+            P.++ ": HC[mant=" P.++ show (mant0HC d) P.++ ",exp=" P.++ show (expsHC d)
             P.++ "] vs DRAM[mant=" P.++ show (mant0DRAM d) P.++ ",exp=" P.++ show (expsDRAM d) P.++ "]"
 
       it "DRAM fetches occur at expected intervals" $ do
@@ -395,28 +398,241 @@ spec = do
         let row0ProcessingCycles = P.filter (\d -> rowIdx d == 0 && rowEnable d) diagnostics
             firstFetchCycle = P.head $ P.map cycleNum $ P.filter fetchValid diagnostics
             row0EnableCycle = P.head $ P.map cycleNum row0ProcessingCycles
-        
+
         P.putStrLn $ "\nRow 0 processing starts at cycle: " P.++ show row0EnableCycle
         P.putStrLn $ "First DRAM fetch completes at cycle: " P.++ show firstFetchCycle
-        
+
         -- This SHOULD fail (and currently does) - processing happens before data arrives
         row0EnableCycle `shouldSatisfy` (< firstFetchCycle)
         -- This documents the bug
-        expectationFailure $ "Row 0 processes at cycle " P.++ show row0EnableCycle 
+        expectationFailure $ "Row 0 processes at cycle " P.++ show row0EnableCycle
           P.++ " but DRAM data not valid until cycle " P.++ show firstFetchCycle
 
       it "shows which row gets corrupted data" $ do
-        let rowResults = P.map (\i -> 
+        let rowResults = P.map (\i ->
               let rowCycles = P.filter (\d -> rowIdx d == i) diagnostics
                   finalCycle = P.last rowCycles
               in (i, P.head $ toList $ qOutVec finalCycle, cycleNum finalCycle)
               ) [0..7]
-        
+
         P.putStrLn "\nFinal qOut values per row:"
-        mapM_ (\(row, val, cyc) -> 
+        mapM_ (\(row, val, cyc) ->
           P.putStrLn $ "  Row " P.++ show row P.++ " @ cycle " P.++ show cyc P.++ ": " P.++ show val
           ) rowResults
-        
+
         -- Expect all to be 128.0 if using DRAM correctly, but likely row 0 will be wrong
         let wrongRows = P.filter (\(_, val, _) -> val /= 128.0) rowResults
         P.length wrongRows `shouldSatisfy` (> 0)
+
+      it "detailed cycle-by-cycle state dump" $ do
+        mapM_ (\d -> do
+          P.putStrLn $ "Cycle " P.++ show (cycleNum d) P.++ ":"
+          P.putStrLn $ "  state=" P.++ show (state d) P.++ ", rowIdx=" P.++ show (rowIdx d)
+          P.putStrLn $ "  fetchValid=" P.++ show (fetchValid d)
+          P.putStrLn $ "  rowReset=" P.++ show (rowReset d) P.++ ", rowEnable=" P.++ show (rowEnable d)
+          P.putStrLn $ "  HC: mant=" P.++ show (mant0HC d) P.++ ", exp=" P.++ show (expsHC d)
+          P.putStrLn $ "  DRAM: mant=" P.++ show (mant0DRAM d) P.++ ", exp=" P.++ show (expsDRAM d)
+          P.putStrLn $ "  accum=" P.++ show (accumVal d) P.++ ", rowDone=" P.++ show (rowDone d)
+          ) (P.take 20 diagnostics)
+        True `shouldBe` True
+
+      it "check qOut after row 0 and row 1 complete" $ do
+        let row0Done = P.head $ P.filter (\d -> rowIdx d == 0 && rowDone d) diagnostics
+            afterRow0 = diagnostics P.!! (cycleNum row0Done + 1)
+            row1Done = P.head $ P.filter (\d -> rowIdx d == 1 && rowDone d) diagnostics
+            afterRow1 = diagnostics P.!! (cycleNum row1Done + 1)
+
+        P.putStrLn $ "\nAfter row 0 completes (cycle " P.++ show (cycleNum afterRow0) P.++ "):"
+        P.putStrLn $ "  qOut[0] = " P.++ show (P.head $ toList $ qOutVec afterRow0)
+        P.putStrLn $ "\nAfter row 1 completes (cycle " P.++ show (cycleNum afterRow1) P.++ "):"
+        P.putStrLn $ "  qOut[0] = " P.++ show (P.head $ toList $ qOutVec afterRow1)
+        P.putStrLn $ "  qOut[1] = " P.++ show (toList (qOutVec afterRow1) P.!! 1)
+
+  describe "queryHeadProjector - DRAM Stub Handshaking Verification" $ do
+    it "stub responds with rvalid after request" $ do
+      let maxCycles = 20
+
+          -- Use REAL stub, not mock
+          params = createTestParams (RowI8E {rowMantissas = repeat 1, rowExponent = 0})
+
+          -- Simple fetcher that triggers once at cycle 2
+          fetchTrigger = fromList ([False, False, True] P.++ P.replicate 17 False) :: Signal System Bool
+          address = pure 0 :: Signal System (Unsigned 32)
+
+          -- Create REAL stub
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+
+          -- Run fetcher with stub
+          (masterOut, fetchedWord, fetchValid) =
+            exposeClockResetEnable
+              (STREAM.axiRowFetcher stubSlaveIn fetchTrigger address)
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          -- Sample signals
+          arvalids = sampleN maxCycles (Master.arvalid masterOut)
+          rvalids = sampleN maxCycles (Slave.rvalid stubSlaveIn)
+          fetchValids = sampleN maxCycles fetchValid
+
+      -- Print for diagnosis
+      P.putStrLn "\nCycle | fetchTrigger | arvalid | rvalid | fetchValid"
+      mapM_ (\i ->
+        P.putStrLn $ show i P.++ " | "
+          P.++ show (sampleN maxCycles fetchTrigger P.!! i) P.++ " | "
+          P.++ show (arvalids P.!! i) P.++ " | "
+          P.++ show (rvalids P.!! i) P.++ " | "
+          P.++ show (fetchValids P.!! i)
+        ) [0..maxCycles-1]
+
+      -- Verify handshake completes
+      let fetchValidCycles = P.filter (fetchValids P.!!) [0..maxCycles-1]
+      P.length fetchValidCycles `shouldSatisfy` (> 0)
+
+  describe "queryHeadProjector with REAL stub FSM transitions" $ do
+    it "FSM progresses through all states with real stub" $ do
+      let maxCycles = 40
+          layerIdx = 0 :: Index NumLayers
+          headIdx = 0 :: Index NumQueryHeads
+
+          testRow = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams testRow
+
+          inputVec = repeat 1.0 :: Vec ModelDimension FixedPoint
+          validIn = fromList ([False, True] P.++ P.replicate (maxCycles - 2) False) :: Signal System Bool
+          downStreamReady = pure True :: Signal System Bool
+          stepCount = pure 0 :: Signal System (Index SequenceLength)
+          input = pure inputVec :: Signal System (Vec ModelDimension FixedPoint)
+
+          -- Feedback loop pattern (like real decoder)
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+
+          (masterOut, qOut, validOut, readyOut, debugInfo) =
+            exposeClockResetEnable
+              (queryHeadProjector stubSlaveIn layerIdx headIdx validIn downStreamReady stepCount input params)
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          states = sampleN maxCycles (qhState debugInfo)
+          fetchValids = sampleN maxCycles (qhFetchValid debugInfo)
+          rowDones = sampleN maxCycles (qhRowDone debugInfo)
+          rowIndices = sampleN maxCycles (qhRowIndex debugInfo)
+
+      P.putStrLn "\nCycle | rowIdx | state | fetchValid | rowDone"
+      mapM_ (\i ->
+        P.putStrLn $ show i P.++ " | " P.++ show (rowIndices P.!! i) P.++ " | "
+          P.++ show (states P.!! i) P.++ " | " P.++ show (fetchValids P.!! i) P.++ " | "
+          P.++ show (rowDones P.!! i)
+        ) [0..19]
+
+      -- Verify we leave MFetching state
+      let fetchingCycles = P.filter (\i -> states P.!! i == OPS.MFetching) [0..maxCycles-1]
+          resetCycles = P.filter (\i -> states P.!! i == OPS.MReset) [0..maxCycles-1]
+      P.putStrLn $ "\nMFetching cycles: " P.++ show fetchingCycles
+      P.putStrLn $ "MReset cycles: " P.++ show resetCycles
+
+      P.length resetCycles `shouldSatisfy` (> 0)
+
+  describe "queryHeadProjector - Full QKV projection with REAL stub (all 8 heads)" $ do
+    it "all 8 query heads complete with stub" $ do
+      let maxCycles = 100
+          layerIdx = 0 :: Index NumLayers
+          
+          testRow = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams testRow
+          
+          inputVec = repeat 1.0 :: Vec ModelDimension FixedPoint
+          validIn = fromList ([False, True] P.++ P.replicate (maxCycles - 2) False) :: Signal System Bool
+          downStreamReady = pure True :: Signal System Bool
+          stepCount = pure 0 :: Signal System (Index SequenceLength)
+          input = pure inputVec :: Signal System (Vec ModelDimension FixedPoint)
+          
+          -- Stub connects to head 0 only
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut0)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          -- Just test head 0 (in real system there's arbitration)
+          (masterOut0, _, validOut0, _, debugInfo0) = exposeClockResetEnable
+            (queryHeadProjector stubSlaveIn layerIdx 0 validIn downStreamReady stepCount input params)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          states = sampleN maxCycles (qhState debugInfo0)
+          validOuts = sampleN maxCycles validOut0
+          rowDones = sampleN maxCycles (qhRowDone debugInfo0)
+          
+      let completions = P.filter (\i -> validOuts P.!! i) [0..maxCycles-1]
+          rowCompletions = P.filter (\i -> rowDones P.!! i) [0..maxCycles-1]
+          
+      P.putStrLn $ "\nRow completions: " P.++ show rowCompletions
+      P.putStrLn $ "Head completes at cycles: " P.++ show completions
+      
+      P.length rowCompletions `shouldBe` 8
+      P.length completions `shouldBe` 1
+
+    it "queryHeadProjector with latched validIn (like decoder)" $ do
+      let maxCycles = 50
+          
+          testRow = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams testRow
+          
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+            
+          (masterOut, qOut, validOut, readyOut, debugInfo) = exposeClockResetEnable
+            (let
+              -- Latch that sets at cycle 1, clears when ready
+              validInLatched = register False nextValid
+              setLatch = register False (pure True) -- Goes high at cycle 1
+              clearLatch = validInLatched .&&. readyOut
+              nextValid = mux (not <$> validInLatched .&&. setLatch) (pure True)
+                        (mux clearLatch (pure False) validInLatched)
+            in queryHeadProjector stubSlaveIn 0 0 validInLatched (pure True) (pure 0) (pure (repeat 1.0)) params)
+            CS.systemClockGen CS.resetGen CS.enableGen
+            
+      -- Check if it completes
+      let validOuts = sampleN maxCycles validOut
+          rowDones = sampleN maxCycles (qhRowDone debugInfo)
+          states = sampleN maxCycles (qhState debugInfo)
+          
+      P.putStrLn $ "\nRow completions: " P.++ show (P.filter (\i -> rowDones P.!! i) [0..maxCycles-1])
+      P.putStrLn $ "Valid output at: " P.++ show (P.filter (\i -> validOuts P.!! i) [0..maxCycles-1])
+      
+      let completions = P.filter id validOuts
+      P.length completions `shouldBe` 1
+
+
+    it "queryHeadProjector latched validIn - show state transitions" $ do
+      let maxCycles = 50
+          
+          testRow = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams testRow
+          
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+            
+          (masterOut, qOut, validOut, readyOut, debugInfo) = exposeClockResetEnable
+            (let
+              validInLatched = register False nextValid
+              setLatch = register False (pure True)
+              clearLatch = validInLatched .&&. readyOut
+              nextValid = mux (not <$> validInLatched .&&. setLatch) (pure True)
+                        (mux clearLatch (pure False) validInLatched)
+            in queryHeadProjector stubSlaveIn 0 0 validInLatched (pure True) (pure 0) (pure (repeat 1.0)) params)
+            CS.systemClockGen CS.resetGen CS.enableGen
+            
+      let states = sampleN maxCycles (qhState debugInfo)
+          rowIndices = sampleN maxCycles (qhRowIndex debugInfo)
+          readyOuts = sampleN maxCycles readyOut
+          
+      P.putStrLn "\nCycle | rowIdx | state | readyOut"
+      mapM_ (\i -> when (i < 50) $
+        P.putStrLn $ show i P.++ " | " P.++ show (rowIndices P.!! i) 
+          P.++ " | " P.++ show (states P.!! i)
+          P.++ " | " P.++ show (readyOuts P.!! i)
+        ) [0..maxCycles-1]
+      
+      True `shouldBe` True

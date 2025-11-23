@@ -75,8 +75,8 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
 
   -- Fetch row when starting new row
   fetchedWord :: Signal dom (BitVector 512)
-  (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn rowReset rowAddr
-
+  (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
+ 
   -- Parse the LATCHED word
   currentRow' :: Signal dom (RowI8E ModelDimension)
   currentRow' = STREAM.parseRow <$> fetchedWord
@@ -90,7 +90,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
 
   -- State machine
   (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
-    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone (pure True) rowIndex
+      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone (pure True) rowIndex
 
   -- Row index sequencing
   nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
@@ -169,10 +169,10 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig headParams
   readyForInput = kReadyOut .&&. vReadyOut
 
 --------------------------------------------------------------------------------
--- AXI arbiter (unchanged)
+-- AXI arbiter
 --------------------------------------------------------------------------------
 axiArbiter :: forall dom n.
-  ( KnownNat n)
+  (HiddenClockResetEnable dom, KnownNat n)
   => Vec n (Master.AxiMasterOut dom)
   -> Master.AxiMasterOut dom
 axiArbiter masters = Master.AxiMasterOut
@@ -189,21 +189,32 @@ axiArbiter masters = Master.AxiMasterOut
     arRequests :: Vec n (Signal dom Bool)
     arRequests = map Master.arvalid masters
 
-    arRequestsVecSig :: Signal dom (Vec n Bool)
-    arRequestsVecSig = sequenceA arRequests
-
+    -- Priority with fairness: increment when we grant
+    lastGranted :: Signal dom (Index n)
+    lastGranted = register 0 nextGranted
+    
+    -- Find next requester starting from lastGranted+1
+    -- This ensures fairness while being responsive
     selectedIdx :: Signal dom (Index n)
-    selectedIdx = fmap
-      (foldr (\(i,b) acc -> if b then i else acc) (0 :: Index n) . zip indicesI)
-      arRequestsVecSig
+    selectedIdx = findNextRequester <$> bundle arRequests <*> lastGranted
+    
+    findNextRequester :: Vec n Bool -> Index n -> Index n
+    findNextRequester reqs lastR = 
+      let start = if lastR == maxBound then 0 else lastR + 1
+          -- Check each position starting from 'start'
+          go i n 
+            | n == (0 :: Int) = lastR  -- No requesters, keep last
+            | reqs !! i = i   -- Found one!
+            | i == maxBound = go 0 (n-1)
+            | otherwise = go (i+1) (n-1)
+      in go start (natToNum @n)
+    
+    -- Update lastGranted only when we actually grant
+    anyRequest = or <$> bundle arRequests
+    nextGranted = mux anyRequest selectedIdx lastGranted
 
     sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
-    sel field =
-      let fieldVec :: Vec n (Signal dom a)
-          fieldVec = map field masters
-          fieldVecSig :: Signal dom (Vec n a)
-          fieldVecSig = sequenceA fieldVec
-      in (!!) <$> fieldVecSig <*> selectedIdx
+    sel f = (!!) <$> bundle (map f masters) <*> selectedIdx
 
 --------------------------------------------------------------------------------
 -- QKV projector and controller (unchanged)

@@ -67,40 +67,46 @@ data MultiplierState = MIdle | MFetching | MReset | MProcessing | MDone
   deriving (Show, Eq, Generic, NFDataX)
 
 matrixMultiplierStateMachine :: forall dom rows .
-  (HiddenClockResetEnable dom, KnownNat rows)
-  => Signal dom Bool  -- validIn
-  -> Signal dom Bool  -- readyIn
-  -> Signal dom Bool  -- rowDone
-  -> Signal dom Bool  -- fetchDone
-  -> Signal dom (Index rows)
-  -> (Signal dom MultiplierState, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool, Signal dom Bool)
-matrixMultiplierStateMachine validIn readyIn rowDone fetchDone currentRow =
-  (state, fetchTrigger, rowReset, rowEnable, validOut, readyOut)
+  (HiddenClockResetEnable dom, KnownNat rows)  =>
+  Signal dom Bool ->  -- inputValid
+  Signal dom Bool ->  -- downStreamReady  
+  Signal dom Bool ->  -- rowDone
+  Signal dom Bool ->  -- fetchValid (NEW: actual fetch completion)
+  Signal dom (Index rows) ->  -- rowIndex
+  ( Signal dom MultiplierState
+  , Signal dom Bool  -- fetchTrigger
+  , Signal dom Bool  -- rowReset
+  , Signal dom Bool  -- rowEnable
+  , Signal dom Bool  -- outputValid
+  , Signal dom Bool  -- readyForInput
+  )
+matrixMultiplierStateMachine inputValid downStreamReady rowDone fetchValid rowIndex =
+  (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput)
   where
     state = register MIdle nextState
-    lastRow = currentRow .==. pure (maxBound :: Index rows)
-
-    nextState = 
-      mux (state .==. pure MIdle .&&. validIn)
-          (pure MFetching)  -- Start fetch
-          (mux (state .==. pure MFetching .&&. fetchDone)
-               (pure MReset)  -- Fetch done, now reset
-               (mux (state .==. pure MReset)
-                    (pure MProcessing)  -- Reset always takes 1 cycle
-                    (mux (state .==. pure MProcessing .&&. rowDone .&&. (not <$> lastRow))
-                         (pure MFetching)  -- Next row: fetch again
-                         (mux (state .==. pure MProcessing .&&. rowDone .&&. lastRow)
-                              (pure MDone)
-                              (mux (state .==. pure MDone .&&. readyIn)
-                                   (pure MIdle)
-                                   state)))))
-
-    -- Control signals
-    fetchTrigger = state .==. pure MFetching  -- Trigger fetch while in this state
-    rowReset = state .==. pure MReset  -- Single cycle pulse!
-    rowEnable = (state .==. pure MProcessing) .&&. (not <$> rowDone) .&&. readyIn
-    validOut = state .==. pure MDone
-    readyOut = state .==. pure MIdle
+    
+    -- Pure function for state transitions
+    stateTransition :: MultiplierState -> Bool -> Bool -> Bool -> Bool -> Index rows -> MultiplierState
+    stateTransition currentState inValid downReady done fetched idx =
+      case currentState of
+        MIdle -> if inValid then MFetching else MIdle
+        MFetching -> if fetched then MReset else MFetching  -- Wait for fetch!
+        MReset -> MProcessing
+        MProcessing -> if done 
+                       then (if idx == maxBound then MDone else MFetching)
+                       else MProcessing
+        MDone -> if downReady then MIdle else MDone
+    
+    -- Apply the pure function to the signals
+    nextState = stateTransition <$> state <*> inputValid <*> downStreamReady 
+                                 <*> rowDone <*> fetchValid <*> rowIndex
+    
+    -- Clear output signals based on state
+    fetchTrigger = (== MFetching) <$> state
+    rowReset = (== MReset) <$> state
+    rowEnable = (== MProcessing) <$> state .&&. not <$> rowDone
+    outputValid = (== MDone) <$> state
+    readyForInput = (== MIdle) <$> state
 
 -- | Process a single column of a row (one lane)
 singleLaneProcessor :: forall dom . Signal dom (Signed 8)           -- mantissa element
@@ -294,4 +300,4 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   nextOutput   = mux rowDone
                    (replace <$> rowIndex <*> rowResult <*> outputVector)
                    outputVector
-  
+
