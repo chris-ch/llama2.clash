@@ -249,7 +249,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 
         when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone || dbgFetchValid) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %18s| %7s | %8s | %13s | %12s | %11s | %11s | %11s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %18s| %7s | %8s"
               cycleIdx
               li
               --(show ps)
@@ -267,11 +267,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show paramQ0Row0)
               (show dbgRowIdx)
               (show dbgSt)
-              (show dbgFirstMant)
-              (show dbgRowRes)
-              (show dbgRowDone)
-              (show dbgFetchValid)
-              (show seqPosition)
 
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)

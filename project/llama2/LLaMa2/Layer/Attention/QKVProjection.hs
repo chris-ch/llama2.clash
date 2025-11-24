@@ -47,15 +47,15 @@ data QHeadDebugInfo dom = QHeadDebugInfo
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
-  -> Index NumLayers
-  -> Index NumQueryHeads
+  => Slave.AxiSlaveIn dom                     -- ^ DRAM interface
+  -> Index NumLayers                          -- ^ layer index
+  -> Index NumQueryHeads                      -- ^ head index
   -> Signal dom Bool                          -- ^ inputValid
   -> Signal dom Bool                          -- ^ downStreamReady
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.DecoderParameters
-  -> ( Master.AxiMasterOut dom
+  -> PARAM.DecoderParameters                  -- ^ hardcoded (fallback)
+  -> ( Master.AxiMasterOut dom                -- ^ To DRAM
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool                        -- ^ outputValid
      , Signal dom Bool                        -- ^ readyForInput
@@ -65,52 +65,41 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   (axiMaster, qRoOut, outputValid, readyForInput, debugInfo)
  where
 
-  -- 1. State Machine
-  (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
-      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone fetchValid rowIndex
-
-  -- 2. Row Index Logic (FIXED: NATURAL WRAP AROUND)
-  -- Previous logic prevented wrapping, causing the index to stick at 7 until MIdle.
-  -- By allowing natural wrapping (7+1->0), rowIndex becomes 0 immediately after
-  -- the last row is finished. It sits at 0 during MDone and MIdle, ensuring
-  -- the address bus is perfectly stable for the next Token's fetch.
--- 2. Row Index Logic (FINAL FIX: Bounds-Safe Wrap)
+  -- Row counter drives weight fetches
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
-  nextRowIndex = 
-    mux (state .==. pure OPS.MIdle) 
-        (pure 0) -- Safety: Force 0 in Idle
-        (mux rowDone
-             (mux (rowIndex .==. pure maxBound)
-                  (pure 0)     -- CRITICAL: Wrap 7 -> 0 manually
-                  (rowIndex + 1) -- Safe increment for 0..6
-             )
-             rowIndex)
-
-  -- 3. Real DRAM Interface
+  -- Calculate DDR address for current row
   rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowIndex
+
+  -- Fetch row using fetchTrigger from state machine
+  fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
-  
-  parsedRow :: Signal dom (RowI8E ModelDimension)
-  parsedRow = STREAM.parseRow <$> fetchedWord
 
-  -- 4. Robust Data Latching
-  -- Prevents stale data from overwriting the register during processing.
+  -- Parse the fetched word from DRAM
   currentRow' :: Signal dom (RowI8E ModelDimension)
-  currentRow' = register (RowI8E (repeat 0) 0) $
-                  mux (fetchValid .&&. (state .==. pure OPS.MFetching)) 
-                      parsedRow 
-                      currentRow'
+  currentRow' = STREAM.parseRow <$> fetchedWord
 
-  -- Reference Hardcoded Data (Debug/Comparison)
+  -- Fetch current row from hardcoded params (for debugging comparison)
   currentRow :: Signal dom (RowI8E ModelDimension)
   currentRow = (!!) (PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> rowIndex
 
-  -- 5. Processor (Uses LATCHED DRAM DATA)
+  -- Row processor - NOW USES DRAM DATA (currentRow')
   (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
 
-  -- 6. Output Accumulation
+  -- State machine with DRAM synchronization
+  -- fetchValid tells the FSM when DRAM data is ready
+  (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
+      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone fetchValid rowIndex
+
+  -- Row index sequencing
+  nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
+                     (rowIndex + 1)
+                     (mux ((state .==. pure OPS.MDone) .&&. downStreamReady)
+                          (pure 0)
+                          rowIndex)
+
+  -- Accumulate results
   qOut = register (repeat 0) nextOutput
   nextOutput = mux rowDone
                    (replace <$> rowIndex <*> rowResult <*> qOut)
