@@ -54,6 +54,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , dbgRowResult        :: Signal dom FixedPoint
   , dbgRowDone          :: Signal dom Bool
   , dbgFetchValid       :: Signal dom Bool
+  , dbgFetchedWord       :: Signal dom (BitVector 512)
   , seqPos       :: Signal dom (Index SequenceLength)
   } deriving (Generic, NFDataX)
 
@@ -231,5 +232,6 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
       , dbgRowResult        = LayerStack.dbgRowResult layerOutputs
       , dbgRowDone          = LayerStack.dbgRowDone layerOutputs
       , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
+      , dbgFetchedWord       = LayerStack.dbgFetchedWord layerOutputs
       , seqPos = seqPosition
       }

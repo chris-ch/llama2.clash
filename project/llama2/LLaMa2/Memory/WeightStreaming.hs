@@ -176,7 +176,7 @@ parseRow word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
     n = natToNum @n :: Int
 
     -- Extract mantissas: up to min(n, 63) to leave room for exponent
-    numMantissas = min n 63  -- ⚡ CRITICAL FIX
+    numMantissas = min n 63
     mantBytes = P.take numMantissas bytes P.++ P.repeat 0  -- Pad to n if needed
     mantSigned = P.map (unpack :: BitVector 8 -> Mantissa) (P.take n mantBytes)
     mantissas = unsafeFromList mantSigned :: Vec n Mantissa

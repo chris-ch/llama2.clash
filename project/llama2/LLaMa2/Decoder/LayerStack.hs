@@ -30,6 +30,7 @@ data LayerOutputs dom = LayerOutputs
   , dbgRowResult   :: Signal dom FixedPoint
   , dbgRowDone     :: Signal dom Bool
   , dbgFetchValid  :: Signal dom Bool
+  , dbgFetchedWord :: Signal dom (BitVector 512)
   }
 
 processActiveLayer :: forall dom.
@@ -56,8 +57,9 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
     , dbgState       = selectedDbgState
     , dbgFirstMant   = selectedDbgFirstMant
     , dbgRowResult   = selectedDbgRowResult
-    , dbgRowDone     = selectedDbgRowDone       -- NEW
-    , dbgFetchValid  = selectedDbgFetchValid    -- NEW
+    , dbgRowDone     = selectedDbgRowDone
+    , dbgFetchValid  = selectedDbgFetchValid
+    , dbgFetchedWord = selectedDbgFetchedWord
     }
   where
     -- Run all layers in parallel
@@ -117,6 +119,9 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
     dbgFetchValids :: Vec NumLayers (Signal dom Bool)
     dbgFetchValids = map qhFetchValid dbgInfos
 
+    dbgFetchedWords :: Vec NumLayers (Signal dom (BitVector 512))
+    dbgFetchedWords = map qhFetchedWord dbgInfos
+
     -- Select outputs for the active layer
     selectedQkvOutput :: Signal dom LayerData
     selectedQkvOutput = selectActive activeLayerIdx qkvOutputs
@@ -160,6 +165,9 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
 
     selectedDbgFetchValid :: Signal dom Bool
     selectedDbgFetchValid = selectActive activeLayerIdx dbgFetchValids
+
+    selectedDbgFetchedWord :: Signal dom (BitVector 512)
+    selectedDbgFetchedWord = selectActive activeLayerIdx dbgFetchedWords
 
     layerPipeline :: Signal dom LayerData
                   -> PARAM.DecoderParameters

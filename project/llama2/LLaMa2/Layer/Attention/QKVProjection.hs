@@ -32,6 +32,7 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhRowResult    :: Signal dom FixedPoint
   , qhRowDone      :: Signal dom Bool
   , qhFetchValid   :: Signal dom Bool
+  , qhFetchedWord :: Signal dom (BitVector 512)
   , qhRowReset     :: Signal dom Bool
   , qhRowEnable    :: Signal dom Bool
   , qhAccumValue   :: Signal dom FixedPoint
@@ -76,16 +77,28 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
 
-  -- Parse the fetched word from DRAM
-  currentRow' :: Signal dom (RowI8E ModelDimension)
-  currentRow' = STREAM.parseRow <$> fetchedWord
+  -- Parse the fetched word from DRAM (unregistered parsed data)
+  parsedRow :: Signal dom (RowI8E ModelDimension)
+  parsedRow = STREAM.parseRow <$> fetchedWord
 
-  -- Fetch current row from hardcoded params (for debugging comparison)
-  currentRow :: Signal dom (RowI8E ModelDimension)
-  currentRow = (!!) (PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> rowIndex
+  -- ===== Synchronize DRAM row into a stable registered value =====
+  -- default zero row for initialization
+  zeroRow :: RowI8E ModelDimension
+  zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
 
-  -- Row processor - NOW USES DRAM DATA (currentRow')
-  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
+  -- currentRowDRAM holds the last parsedRow that was signalled as valid by fetchValid.
+  -- It only updates when fetchValid is true, and otherwise holds its previous value.
+  currentRowDRAM :: Signal dom (RowI8E ModelDimension)
+  currentRowDRAM = register zeroRow nextCurrentRow
+    where
+      nextCurrentRow = mux fetchValid parsedRow currentRowDRAM
+
+  -- Fetch current row from hardcoded params (kept for side-by-side debug / fallback)
+  currentRowHC :: Signal dom (RowI8E ModelDimension)
+  currentRowHC = (!!) (PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> rowIndex
+
+  -- Row processor - NOW USES synchronized DRAM data (currentRowDRAM)
+  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRowDRAM xHat
 
   -- State machine with DRAM synchronization
   -- fetchValid tells the FSM when DRAM data is ready
@@ -107,22 +120,23 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
 
   qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qOut
 
-  -- Debug Info
+  -- Debug Info (expose both HC and DRAM views)
   debugInfo = QHeadDebugInfo
     { qhRowIndex   = rowIndex
     , qhState      = state
-    , qhFirstMant  = register 0 (head . rowMantissas <$> currentRow)
+    , qhFirstMant  = register 0 (head . rowMantissas <$> currentRowHC)             -- keep HC for quick sanity
     , qhRowResult  = register 0 rowResult
     , qhRowDone    = rowDone
     , qhFetchValid = fetchValid
+    , qhFetchedWord = fetchedWord
     , qhRowReset   = rowReset
     , qhRowEnable  = rowEnable
     , qhAccumValue = accValue
-    , qhQOut       = qOut 
-    , qhCurrentRowExp    = register 0 (rowExponent <$> currentRow)
-    , qhCurrentRow'Exp   = register 0 (rowExponent <$> currentRow')
-    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRow)
-    , qhCurrentRow'Mant0 = register 0 (head . rowMantissas <$> currentRow')
+    , qhQOut       = qOut
+    , qhCurrentRowExp    = register 0 (rowExponent <$> currentRowHC)
+    , qhCurrentRow'Exp   = register 0 (rowExponent <$> currentRowDRAM)
+    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRowHC)
+    , qhCurrentRow'Mant0 = register 0 (head . rowMantissas <$> currentRowDRAM)
     }
 
 --------------------------------------------------------------------------------
