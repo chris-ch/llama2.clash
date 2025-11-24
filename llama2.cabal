@@ -104,6 +104,7 @@ library
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.RotaryEncoding
+      LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.TransformerLayer

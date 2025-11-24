@@ -18,8 +18,8 @@ import qualified Simulation.Parameters as PARAM
 import qualified LLaMa2.Numeric.Operations as OPS
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified LLaMa2.Memory.WeightStreaming as STREAM
 import Simulation.Parameters (DecoderParameters(..))
+import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -48,95 +48,70 @@ data QHeadDebugInfo dom = QHeadDebugInfo
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom                     -- ^ DRAM interface
-  -> Index NumLayers                          -- ^ layer index
-  -> Index NumQueryHeads                      -- ^ head index
-  -> Signal dom Bool                          -- ^ inputValid
-  -> Signal dom Bool                          -- ^ downStreamReady
+  => Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Signal dom Bool
+  -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.DecoderParameters                  -- ^ hardcoded (fallback)
-  -> ( Master.AxiMasterOut dom                -- ^ To DRAM
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
      , Signal dom (Vec HeadDimension FixedPoint)
-     , Signal dom Bool                        -- ^ outputValid
-     , Signal dom Bool                        -- ^ readyForInput
+     , Signal dom Bool
+     , Signal dom Bool
      , QHeadDebugInfo dom
      )
 queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCount xHat params =
   (axiMaster, qRoOut, outputValid, readyForInput, debugInfo)
  where
-
-  -- Row counter drives weight fetches
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
-
-  -- Calculate DDR address for current row
-  rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowIndex
-
-  -- Fetch row using fetchTrigger from state machine
-  fetchedWord :: Signal dom (BitVector 512)
-  (axiMaster, fetchedWord, fetchValid) = STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
-
-  -- Parse the fetched word from DRAM (unregistered parsed data)
-  parsedRow :: Signal dom (RowI8E ModelDimension)
-  parsedRow = STREAM.parseRow <$> fetchedWord
-
-  -- ===== Synchronize DRAM row into a stable registered value =====
-  -- default zero row for initialization
-  zeroRow :: RowI8E ModelDimension
-  zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
-
-  -- currentRowDRAM holds the last parsedRow that was signalled as valid by fetchValid.
-  -- It only updates when fetchValid is true, and otherwise holds its previous value.
-  currentRowDRAM :: Signal dom (RowI8E ModelDimension)
-  currentRowDRAM = register zeroRow nextCurrentRow
-    where
-      nextCurrentRow = mux fetchValid parsedRow currentRowDRAM
-
-  -- Fetch current row from hardcoded params (kept for side-by-side debug / fallback)
-  currentRowHC :: Signal dom (RowI8E ModelDimension)
-  currentRowHC = (!!) (PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> rowIndex
-
-  -- Row processor - NOW USES synchronized DRAM data (currentRowDRAM)
-  (rowResult, rowDone, colIdx, accValue) = OPS.parallel64RowProcessor rowReset rowEnable currentRowDRAM xHat
-
-  -- State machine with DRAM synchronization
-  -- fetchValid tells the FSM when DRAM data is ready
-  (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
-      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone fetchValid rowIndex
-
-  -- Row index sequencing
+  
+  (axiMaster, loaderOut) = 
+    LOADER.weightLoader dramSlaveIn layerIdx headIdx 
+                 rowIndex rowReqValid downStreamReady params
+  
+  -- MANUALLY SELECT YOUR SOURCE HERE:
+  currentRow = LOADER.wlRowDataHC loaderOut    -- Change to wlRowDataDRAM loaderOut to use DRAM / wlRowDataHC to use constant weights
+  weightValid = LOADER.wlDRAMValid loaderOut
+  
+  -- Processing
+  (rowResult, rowDone, colIdx, accValue) = 
+    OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
+  
+  (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInput) =
+    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
+  
   nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
                      (rowIndex + 1)
                      (mux ((state .==. pure OPS.MDone) .&&. downStreamReady)
                           (pure 0)
                           rowIndex)
-
-  -- Accumulate results
+  
   qOut = register (repeat 0) nextOutput
   nextOutput = mux rowDone
                    (replace <$> rowIndex <*> rowResult <*> qOut)
                    qOut
-
+  
   qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qOut
-
-  -- Debug Info (expose both HC and DRAM views)
+  
   debugInfo = QHeadDebugInfo
-    { qhRowIndex   = rowIndex
-    , qhState      = state
-    , qhFirstMant  = register 0 (head . rowMantissas <$> currentRowHC)             -- keep HC for quick sanity
-    , qhRowResult  = register 0 rowResult
-    , qhRowDone    = rowDone
-    , qhFetchValid = fetchValid
-    , qhFetchedWord = fetchedWord
-    , qhRowReset   = rowReset
-    , qhRowEnable  = rowEnable
-    , qhAccumValue = accValue
-    , qhQOut       = qOut
-    , qhCurrentRowExp    = register 0 (rowExponent <$> currentRowHC)
-    , qhCurrentRow'Exp   = register 0 (rowExponent <$> currentRowDRAM)
-    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRowHC)
-    , qhCurrentRow'Mant0 = register 0 (head . rowMantissas <$> currentRowDRAM)
+    { qhRowIndex     = rowIndex
+    , qhState        = state
+    , qhFirstMant    = register 0 (head . rowMantissas <$> currentRow)
+    , qhRowResult    = register 0 rowResult
+    , qhRowDone      = rowDone
+    , qhFetchValid   = weightValid
+    , qhFetchedWord  = pure 0
+    , qhRowReset     = rowReset
+    , qhRowEnable    = rowEnable
+    , qhAccumValue   = accValue
+    , qhQOut         = qOut
+    , qhCurrentRowExp    = register 0 (rowExponent <$> LOADER.wlRowDataHC loaderOut)
+    , qhCurrentRow'Exp   = register 0 (rowExponent <$> LOADER.wlRowDataDRAM loaderOut)
+    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> LOADER.wlRowDataHC loaderOut)
+    , qhCurrentRow'Mant0 = register 0 (head . rowMantissas <$> LOADER.wlRowDataDRAM loaderOut)
     }
 
 --------------------------------------------------------------------------------
