@@ -20,8 +20,12 @@ import LLaMa2.Numeric.Types (Mantissa, Exponent)
 data MatrixType = QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix | W3Matrix
   deriving (Show, Eq, Generic, NFDataX)
 
+-- | Helper to align sizes to 64-byte boundaries
+align64 :: Int -> Int
+align64 n = ((n + 63) `div` 64) * 64
+
 -- | Calculate DDR byte address for a specific matrix row
--- Example: calculateRowAddress 0 QMatrix 0 0 = 33345 (first Q byte)
+-- Enforces 64-byte alignment for all sections to match AXI word boundaries
 calculateRowAddress ::
   MatrixType           -- ^ which matrix
   -> Index NumLayers      -- ^ which layer (0-based)
@@ -38,9 +42,22 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     seqLen = natToNum @SequenceLength :: Int
     rotaryDim = natToNum @RotaryPositionalEmbeddingDimension :: Int
 
-    embeddingBytes = vocabSize * (modelDim + 1)
-    rmsFinalBytes = modelDim + 1
-    rotaryBytes = 2 * seqLen * rotaryDim * 4
+    -- FIX: All sections must be padded to 64 bytes
+    -- Note: DRAMBackedAxiSlave packs rows into 64 bytes exactly (take 63 mantissas)
+    -- So we treat row size as 64, not modelDim + 1.
+    
+    bytesPerRow = 64 :: Int -- Fixed to 64 bytes per row (512-bit word)
+
+    -- Embedding: vocabSize rows. Each row is 64 bytes.
+    embeddingBytes = vocabSize * bytesPerRow
+    
+    -- RMS Final: modelDim + 1 values. Must align to next 64 bytes.
+    rmsFinalRaw = modelDim + 1
+    rmsFinalBytes = align64 rmsFinalRaw
+    
+    -- Rotary: 
+    rotaryRaw = 2 * seqLen * rotaryDim * 4
+    rotaryBytes = align64 rotaryRaw
 
     baseAddr :: Int
     baseAddr = embeddingBytes + rmsFinalBytes + rotaryBytes
@@ -51,19 +68,29 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     headDim = natToNum @HeadDimension :: Int
     hiddenDim = natToNum @HiddenDimension :: Int
 
-    rmsAttBytes = modelDim + 1
-    qHeadBytes = headDim * (modelDim + 1)
+    -- All internal matrix components are collections of rows.
+    -- Since each row is 64 bytes, and we have N rows, the total size is N * 64.
+    -- This is naturally aligned to 64.
+    
+    rmsAttBytes = align64 (modelDim + 1)
+    
+    qHeadBytes = headDim * bytesPerRow
     qTotalBytes = numQHeads * qHeadBytes
-    kHeadBytes = headDim * (modelDim + 1)
+    
+    kHeadBytes = headDim * bytesPerRow
     kTotalBytes = numKVHeads * kHeadBytes
+    
     vTotalBytes = kTotalBytes
-    woBytes = modelDim * (numQHeads * headDim + 1)
-    rmsFfnBytes = modelDim + 1
-    w1Bytes = hiddenDim * (modelDim + 1)
-    w2Bytes = modelDim * (hiddenDim + 1)
-    w3Bytes = hiddenDim * (modelDim + 1)
+    
+    woTotalBytes = numQHeads * modelDim * bytesPerRow
 
-    layerBytes = rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woBytes +
+    rmsFfnBytes = align64 (modelDim + 1)
+    
+    w1Bytes = hiddenDim * bytesPerRow -- W1 is Hidden x Model
+    w2Bytes = modelDim * bytesPerRow  -- W2 is Model x Hidden
+    w3Bytes = hiddenDim * bytesPerRow -- W3 is Hidden x Model
+
+    layerBytes = rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes +
                  rmsFfnBytes + w1Bytes + w2Bytes + w3Bytes
 
     layerOffset :: Int
@@ -76,27 +103,25 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
       KMatrix -> rmsAttBytes + qTotalBytes
       VMatrix -> rmsAttBytes + qTotalBytes + kTotalBytes
       WOMatrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes
-      W1Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woBytes + rmsFfnBytes
-      W2Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woBytes + rmsFfnBytes + w1Bytes
-      W3Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woBytes + rmsFfnBytes + w1Bytes + w2Bytes
+      W1Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes + rmsFfnBytes
+      W2Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes + rmsFfnBytes + w1Bytes
+      W3Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes + rmsFfnBytes + w1Bytes + w2Bytes
 
     -- Head offset within matrix
     headBytes = case matType of
       QMatrix -> qHeadBytes
       KMatrix -> kHeadBytes
       VMatrix -> kHeadBytes
-      _ -> 0  -- WO, W1, W2, W3 don't have separate heads in storage
+      WOMatrix -> modelDim * bytesPerRow -- Each WO head has ModelDim rows
+      _ -> 0
 
     headOffset :: Int
     headOffset = fromIntegral headIdx * headBytes
 
     -- Row offset within head/matrix
-    rowBytes = case matType of
-      W2Matrix -> hiddenDim + 1
-      _ -> modelDim + 1
-
+    -- All rows are now treated as 64 bytes
     rowOffset :: Int
-    rowOffset = fromIntegral rowIdx * rowBytes
+    rowOffset = fromIntegral rowIdx * bytesPerRow
 
 -- State machine for AXI read
 data State = Idle | WaitAR | WaitR
@@ -182,6 +207,8 @@ parseRow word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
     mantissas = unsafeFromList mantSigned :: Vec n Mantissa
 
     -- Extract exponent (at byte min(n, 63))
+    -- Note: DRAMSlave puts exponent at end of mantissas.
+    -- If n >= 63, it's at 63.
     expIdx = min n 63
     expByte = bytes P.!! expIdx
     exponent' = unpack (resize expByte :: BitVector 7) :: Exponent

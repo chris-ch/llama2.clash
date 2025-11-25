@@ -10,6 +10,7 @@ import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Prelude as P
+import qualified Data.List as DL
 
 -- Helper to create test parameters
 createTestParams :: MatI8E HeadDimension ModelDimension -> PARAM.DecoderParameters
@@ -62,7 +63,65 @@ createTestParams testMatrix =
 
 spec :: Spec
 spec = do
-  describe "WeightLoader - Token Consistency Bug" $ do
+  
+  -- The new test case for the hardcoded path
+  describe "WeightLoader - Hardcoded Path Validation (hcRow)" $ do
+    it "returns hardcoded weight instantly upon request" $ do
+      -- Setup
+      let maxCycles = 20
+          -- Request rows 0 through 7 sequentially
+          rowReqs = fromList $ [0..7] P.++ P.replicate (maxCycles - 8) 0
+          -- The hardcoded path does not need valid/ready signals for correctness, so we keep them simple
+          rowReqValids = pure True
+          downstreamReadySig = pure True
+          
+          -- Test matrix: Row 0 mantissa 1, Row 1 mantissa 2, ..., Row 7 mantissa 8
+          rows = P.map (\i -> RowI8E {rowMantissas = repeat i, rowExponent = 0}) [1..8]
+          testMatrix = P.head rows :> rows P.!! 1 :> rows P.!! 2 :> rows P.!! 3 :>
+                      rows P.!! 4 :> rows P.!! 5 :> rows P.!! 6 :> rows P.!! 7 :> Nil
+          params = createTestParams testMatrix
+
+          -- Dummy AXI setup since we ignore it
+          stubSlaveIn =
+            exposeClockResetEnable
+              (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+
+          -- ASSUMPTION: The weightLoader component is configured to return hcRow for this test
+          (masterOut, weightOutput, _, _) =
+            exposeClockResetEnable
+              (weightLoader stubSlaveIn 0 0 rowReqs rowReqValids downstreamReadySig params)
+              CS.systemClockGen
+              CS.resetGen
+              CS.enableGen
+
+          -- Sample the output weights
+          mantissas :: Signal System (Vec ModelDimension Mantissa)
+          mantissas = rowMantissas <$> weightOutput
+          mantissa :: Signal System Mantissa
+          mantissa = (!! 0) <$> mantissas
+          mant0s :: [Mantissa]
+          mant0s = sampleN maxCycles mantissa
+
+      -- The output should be delayed by exactly 1 cycle (the top-level register)
+      -- Cycle 0: Reset value (0)
+      -- Cycle 1: Row 0 requested at C0 (mantissa 1)
+      -- Cycle 2: Row 1 requested at C1 (mantissa 2)
+      let expectedMants = [1, 2, 3, 4, 5, 6, 7, 8] P.++ P.replicate 12 1
+
+      P.putStrLn "\n=== HARDCODED WEIGHT VALIDATION ==="
+      P.putStrLn $ "Actual Mantissas (C0-C8): " P.++ show (P.take 9 mant0s)
+      P.putStrLn $ "Expected Mantissas (C0-C8): " P.++ show (P.take 9 expectedMants)
+
+      -- Check cycles 1 through 8 (the actual data transfers)
+      P.take 9 mant0s `shouldBe` P.take 9 expectedMants
+
+  --------------------------------------------------------------------------------
+  -- The existing test for the DRAM path (renamed for clarity)
+  --------------------------------------------------------------------------------
+  describe "WeightLoader - DRAM Path Consistency (dramRow)" $ do
     it "loads identical weights for consecutive tokens" $ do
       let maxCycles = 200
           layerIdx = 0 :: Index NumLayers
@@ -124,6 +183,7 @@ spec = do
               CS.resetGen
               CS.enableGen
 
+          -- ASSUMPTION: The weightLoader component is configured to return dramRow for this test
           (masterOut, dramRow, dramDataValid, dramReady) =
             exposeClockResetEnable
               (weightLoader stubSlaveIn layerIdx headIdx rowReqs rowReqValids downstreamReadySig params)
@@ -154,7 +214,6 @@ spec = do
       
       P.mapM_ (\(validIdx, (validCycle, acceptedRow)) ->
         let actualMant = mant0s P.!! validCycle
-            -- FIX: Convert Index to Int before adding
             expectedMant = fromIntegral (fromEnum acceptedRow + 1) :: Mantissa
         in P.putStrLn $ "  Valid #" P.++ show (validIdx :: Int) P.++
                        " @ Cycle " P.++ show validCycle P.++

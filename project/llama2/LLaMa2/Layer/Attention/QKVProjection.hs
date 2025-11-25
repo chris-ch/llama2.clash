@@ -69,9 +69,10 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
   
+  -- Use nextRowIndex to drive the loader so address aligns with the valid pulse
   (axiMaster, currentRow, weightValid, weightReady) = 
     LOADER.weightLoader dramSlaveIn layerIdx headIdx 
-                 rowIndex rowReqValidGated downStreamReady params
+                 nextRowIndex rowReqValidGated downStreamReady params
   
   -- Processing with gated enable
   (rowResult, rowDone, colIdx, accValue) = 
