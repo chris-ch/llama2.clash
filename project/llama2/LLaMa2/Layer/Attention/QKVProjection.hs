@@ -73,7 +73,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
     LOADER.weightLoader dramSlaveIn layerIdx headIdx 
                  rowIndex rowReqValidGated downStreamReady params
   
-  -- Processing
+  -- Processing with gated enable
   (rowResult, rowDone, colIdx, accValue) = 
     OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
   

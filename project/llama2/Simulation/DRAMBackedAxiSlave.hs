@@ -333,8 +333,9 @@ writePath masterOut = WritePathData
 rowToBytes :: RowI8E n -> [BitVector 8]
 rowToBytes RowI8E { rowMantissas = mantissas, rowExponent= expon} =
   let
+    -- FIX: Only take 63 mantissas to fit in 64 bytes (63 mantissas + 1 exponent = 64)
     mantBytes :: [BitVector 8]
-    mantBytes = P.map pack (toList mantissas)
+    mantBytes = P.map pack (P.take 63 (toList mantissas))
     expByte :: BitVector 8
     expByte = resize (pack expon)
   in mantBytes P.++ [expByte]

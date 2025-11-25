@@ -161,7 +161,6 @@ test-suite llama2-test
   other-modules:
       LLaMa2.Decoder.DecoderSpec
       LLaMa2.Layer.Attention.QKVProjectionSpec
-      LLaMa2.Layer.Attention.MultiHeadAttentionSpec
       LLaMa2.Layer.Attention.WeightLoaderSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec

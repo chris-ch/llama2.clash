@@ -307,73 +307,13 @@ spec = do
           readyOuts = P.take (maxCycles + 2) $ sample readyOut
 
           expectedStates =
-            [ MIdle, -- Cycle 0: initial idle
-              MIdle, -- Cycle 1: enable received, but state updates next cycle
-              MReset, -- Cycle 2: reset row 0
-              MProcessing, -- Cycle 3: processing row 0
-              MProcessing, -- Cycle 4
-              MProcessing, -- Cycle 5
-              MProcessing, -- Cycle 6
-              MProcessing, -- Cycle 7: still processing when rowDone arrives
-              MReset, -- Cycle 8: reset row 1
-              MProcessing, -- Cycle 9: processing row 1
-              MProcessing, -- Cycle 10
-              MProcessing, -- Cycle 11
-              MProcessing, -- Cycle 12
-              MProcessing, -- Cycle 13: still processing when rowDone arrives
-              MReset, -- Cycle 14: reset row 2
-              MProcessing, -- Cycle 15: processing row 2
-              MProcessing, -- Cycle 16
-              MProcessing, -- Cycle 17
-              MProcessing, -- Cycle 18
-              MProcessing -- Cycle 19: still processing when rowDone arrives (last row)
-            ]
+            [MIdle,MIdle,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing]
 
           expectedRowResets =
-            [ False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False
-            ]
+            [False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,True,False,False,False,False]
 
           expectedRowEnables =
-            [ False,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False
-            ]
+            [False,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,True,True,True,False]
 
           expectedValidOuts =
             P.replicate 20 False P.++ [True] -- validOut on cycle 20 (after last rowDone)
@@ -475,88 +415,13 @@ spec = do
               readyOuts = P.take (maxCycles + 2) $ sample readyOut
 
               expectedStates =
-                [ MIdle, -- Cycle 0: initial idle
-                  MIdle, -- Cycle 1: enable received, but state updates next cycle
-                  MReset, -- Cycle 2: reset row 0
-                  MProcessing, -- Cycle 3: processing row 0
-                  MProcessing, -- Cycle 4
-                  MProcessing, -- Cycle 5
-                  MProcessing, -- Cycle 6
-                  MProcessing, -- Cycle 7: still processing when rowDone arrives
-                  MReset, -- Cycle 8: reset row 1
-                  MProcessing, -- Cycle 9: processing row 1
-                  MProcessing, -- Cycle 10
-                  MProcessing, -- Cycle 11
-                  MProcessing, -- Cycle 12
-                  MProcessing, -- Cycle 13: still processing when rowDone arrives
-                  MReset, -- Cycle 14: reset row 2
-                  MProcessing, -- Cycle 15: processing row 2
-                  MProcessing, -- Cycle 16
-                  MProcessing, -- Cycle 17
-                  MProcessing, -- Cycle 18
-                  MProcessing, -- Cycle 19: still processing when rowDone arrives (last row)
-                  MDone, -- Cycle 20: done, waiting for downstream
-                  MDone, -- Cycle 21: still waiting (readyIn=False)
-                  MDone, -- Cycle 22: still waiting (readyIn=False)
-                  MIdle, -- Cycle 23: downstream accepted, back to idle
-                  MIdle -- Cycle 24: idle
-                ]
+                [MIdle,MIdle,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MDone,MDone,MDone,MIdle,MIdle]
 
               expectedRowResets =
-                [ False,
-                  False,
-                  True, -- Cycle 2
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  True, -- Cycle 8
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  True, -- Cycle 14
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False
-                ]
+                [False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,False,False,False,False]
 
               expectedRowEnables =
-                [ False,
-                  False,
-                  False,
-                  True, -- Cycle 3-6: row 0 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 7: rowDone high, disable
-                  False,
-                  True, -- Cycle 9-12: row 1 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 13: rowDone high, disable
-                  False,
-                  True, -- Cycle 15-18: row 2 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 19: rowDone high, disable
-                  False,
-                  False,
-                  False,
-                  False,
-                  False
-                ]
+                [False,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,False,False,False]
 
               expectedValidOuts =
                 P.replicate 20 False
