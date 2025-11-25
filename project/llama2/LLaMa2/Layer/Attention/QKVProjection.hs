@@ -38,9 +38,10 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhAccumValue   :: Signal dom FixedPoint
   , qhQOut         :: Signal dom (Vec HeadDimension FixedPoint)
   , qhCurrentRowExp    :: Signal dom Exponent
-  , qhCurrentRow'Exp   :: Signal dom Exponent
   , qhCurrentRowMant0  :: Signal dom Mantissa
-  , qhCurrentRow'Mant0 :: Signal dom Mantissa
+  , qhRowReqValid      :: Signal dom Bool      -- State machine's request signal
+  , qhWeightReady      :: Signal dom Bool      -- WeightLoader's ready signal
+  , qhWeightValid      :: Signal dom Bool      -- WeightLoader's valid signal
   } deriving (Generic)
 
 --------------------------------------------------------------------------------
@@ -68,20 +69,21 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
   
-  (axiMaster, loaderOut) = 
+  (axiMaster, currentRow, weightValid, weightReady) = 
     LOADER.weightLoader dramSlaveIn layerIdx headIdx 
-                 rowIndex rowReqValid downStreamReady params
-  
-  -- MANUALLY SELECT YOUR SOURCE HERE:
-  currentRow = LOADER.wlRowDataHC loaderOut    -- Change to wlRowDataDRAM loaderOut to use DRAM / wlRowDataHC to use constant weights
-  weightValid = LOADER.wlDRAMValid loaderOut
+                 rowIndex rowReqValidGated downStreamReady params
   
   -- Processing
   (rowResult, rowDone, colIdx, accValue) = 
     OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
   
-  (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInput) =
+  (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
     OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
+  
+  -- Gate rowReqValid with weightReady**
+  rowReqValidGated = rowReqValid .&&. weightReady
+
+  readyForInput = readyForInputRaw .&&. weightReady
   
   nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
                      (rowIndex + 1)
@@ -108,10 +110,11 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
     , qhRowEnable    = rowEnable
     , qhAccumValue   = accValue
     , qhQOut         = qOut
-    , qhCurrentRowExp    = register 0 (rowExponent <$> LOADER.wlRowDataHC loaderOut)
-    , qhCurrentRow'Exp   = register 0 (rowExponent <$> LOADER.wlRowDataDRAM loaderOut)
-    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> LOADER.wlRowDataHC loaderOut)
-    , qhCurrentRow'Mant0 = register 0 (head . rowMantissas <$> LOADER.wlRowDataDRAM loaderOut)
+    , qhCurrentRowExp    = register 0 (rowExponent <$> currentRow)
+    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRow)
+    , qhRowReqValid      = rowReqValid
+    , qhWeightReady      = weightReady
+    , qhWeightValid      = weightValid
     }
 
 --------------------------------------------------------------------------------

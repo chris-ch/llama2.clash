@@ -1,23 +1,14 @@
 module LLaMa2.Layer.Attention.WeightLoader
-  ( WeightLoaderOut(..)
-  , weightLoader
+  ( weightLoader
   ) where
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
-import LLaMa2.Numeric.Quantization (RowI8E (..))
+import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightStreaming as STREAM
 import qualified Simulation.Parameters as PARAM
-
-data WeightLoaderOut dom = WeightLoaderOut
-  { wlRowDataDRAM      :: Signal dom (RowI8E ModelDimension)
-  , wlRowDataHC        :: Signal dom (RowI8E ModelDimension)
-  , wlDRAMValid        :: Signal dom Bool
-  , wlHCValid          :: Signal dom Bool
-  , wlDRAMReady        :: Signal dom Bool
-  }
 
 data LoadState = LIdle | LFetching | LDone
     deriving (Show, Eq, Generic, NFDataX)
@@ -31,25 +22,35 @@ weightLoader :: forall dom.
   -> Signal dom Bool                            -- ^ row request valid
   -> Signal dom Bool                            -- ^ downstream ready
   -> PARAM.DecoderParameters
-  -> (Master.AxiMasterOut dom, WeightLoaderOut dom)
+  -> (Master.AxiMasterOut dom, Signal dom (RowI8E ModelDimension), Signal dom Bool, Signal dom Bool)
 weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady params =
-  (axiMaster, WeightLoaderOut dramRow hcRow dramDataValid hcDataValid dramReady)
+  (axiMaster, hcRow, dramDataValid, dramReady) -- MANUALLY CHANGE HERE: hcRow for constant params, dramRow for DRAM loaded
  where
   -- ==== Hardcoded path ====
+  hcWeights :: MatI8E HeadDimension ModelDimension
   hcWeights = PARAM.wqHeadQ (PARAM.headsQ (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
+
+  hcRow :: Signal dom (RowI8E ModelDimension)
   hcRow = (!!) hcWeights <$> rowReq
-  hcDataValid = rowReqValid
   
   -- ==== DRAM path ====
+  rowAddr :: Signal dom (Unsigned 32)
   rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowReq
+
+  fetchTrigger :: Signal dom Bool
   fetchTrigger = rowReqValid .&&. register True dramReady
   
+  fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = 
     STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
   
+  zeroRow :: RowI8E ModelDimension
   zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
+
+  parsedRow :: Signal dom (RowI8E ModelDimension)
   parsedRow = STREAM.parseRow <$> fetchedWord
-  
+
+  dramRow :: Signal dom (RowI8E ModelDimension)  
   dramRow = register zeroRow nextDramRow
     where nextDramRow = mux fetchValid parsedRow dramRow
   

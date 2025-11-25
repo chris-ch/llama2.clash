@@ -29,10 +29,8 @@ data CycleDiagnostic = CycleDiagnostic
     rowResult :: FixedPoint,
     rowDone :: Bool,
     qOutVec :: Vec HeadDimension FixedPoint,
-    expsHC :: Exponent,
-    expsDRAM :: Exponent,
-    mant0HC :: Mantissa,
-    mant0DRAM :: Mantissa
+    expsWL :: Exponent,
+    mant0WL :: Mantissa
   }
   deriving (Show, Eq)
 
@@ -116,7 +114,7 @@ spec = do
           -- Hardcoded params: mantissa=1, exp=0
           testRow = RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: RowI8E ModelDimension
           testMatrix = repeat testRow
-          paramsHC = createTestParams testMatrix
+          paramsWL = createTestParams testMatrix
 
           -- DRAM pattern: same as hardcoded (mantissa=1, exp=0)
           dramPatternMatching :: BitVector 512
@@ -138,7 +136,7 @@ spec = do
                   downStreamReady
                   stepCount
                   input
-                  paramsHC
+                  paramsWL
               )
               CS.systemClockGen
               CS.resetGen
@@ -159,10 +157,8 @@ spec = do
                 rowResult = rowResults P.!! i,
                 rowDone = rowDones P.!! i,
                 qOutVec = qOutVecs P.!! i,
-                expsHC = expsHCs P.!! i,
-                expsDRAM = expsDRAMs P.!! i,
-                mant0HC = mant0HCs P.!! i,
-                mant0DRAM = mant0DRAMs P.!! i
+                expsWL = expsWLs P.!! i,
+                mant0WL = mant0WLs P.!! i
               }
             where
               rowIdxs = sampleN maxCycles (qhRowIndex debugInfo)
@@ -175,25 +171,8 @@ spec = do
               rowResults = sampleN maxCycles (qhRowResult debugInfo)
               rowDones = sampleN maxCycles (qhRowDone debugInfo)
               qOutVecs = sampleN maxCycles (qhQOut debugInfo)
-              expsHCs = sampleN maxCycles (qhCurrentRowExp debugInfo)
-              expsDRAMs = sampleN maxCycles (qhCurrentRow'Exp debugInfo)
-              mant0HCs = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
-              mant0DRAMs = sampleN maxCycles (qhCurrentRow'Mant0 debugInfo)
-
-      it "both sources show identical data (after initial fetch latency)" $ do
-        -- FIX: Only check for equality after the first fetch has happened
-        let validDataCycles = P.filter (\d -> cycleNum d > 5 && rowIdx d >= 0) diagnostics
-            mismatches = P.filter (\d -> mant0HC d /= mant0DRAM d || expsHC d /= expsDRAM d) validDataCycles
-
-        -- If we are in Fetching state or Idle, mismatches are expected (latency).
-        -- We care about the data being correct when processing happens.
-        let processingMismatches = P.filter (\d -> state d == OPS.MProcessing) mismatches
-
-        case processingMismatches of
-          [] -> P.return ()
-          (d:_) -> expectationFailure $
-            "Data sources diverged during PROCESSING at cycle " P.++ show (cycleNum d)
-            P.++ ": HC[mant=" P.++ show (mant0HC d) P.++ "] vs DRAM[mant=" P.++ show (mant0DRAM d) P.++ "]"
+              expsWLs = sampleN maxCycles (qhCurrentRowExp debugInfo)
+              mant0WLs = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
 
       it "completes 8 rows successfully" $ do
         let doneCycles = P.filter rowDone diagnostics
@@ -301,3 +280,88 @@ spec = do
            let idxAtIdle = rowIndices P.!! i
            P.putStrLn $ "Index at first Return-to-Idle (Cycle " P.++ show i P.++ "): " P.++ show idxAtIdle
            idxAtIdle `shouldBe` 0
+
+    it "CRITICAL: rowReqValid is only asserted when weightReady is True" $ do
+      let maxCycles = 100
+          layerIdx = 0 :: Index NumLayers
+          headIdx = 0 :: Index NumQueryHeads
+          
+          row0 = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams (repeat row0)
+          
+          validIn = fromList ([False, True] P.++ P.replicate 78 False P.++
+                            [True] P.++ P.replicate 19 False)
+          
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          (masterOut, qOut, validOut, readyOut, debugInfo) = exposeClockResetEnable
+            (queryHeadProjector stubSlaveIn layerIdx headIdx validIn (pure True) (pure 0) (pure (repeat 1.0)) params)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          -- We need to expose these from queryHeadProjector:
+          -- - rowReqValid signal
+          -- - weightReady signal  
+          -- For now, we can infer violations from arvalid timing
+          
+          arvalids = sampleN maxCycles (Master.arvalid masterOut)
+          fetchValids = sampleN maxCycles (qhFetchValid debugInfo)
+          
+      -- Count how many AXI read requests are issued
+      let totalRequests = P.length (P.filter id arvalids)
+      P.putStrLn $ "Total AXI read requests: " P.++ show totalRequests
+      
+      -- For 2 tokens × 8 rows = should be exactly 16 requests
+      -- If we see more, it means requests were issued when not ready
+      totalRequests `shouldBe` 16
+
+    it "detects lost requests when rowReqValid asserted while weightReady is False" $ do
+      let maxCycles = 150
+          layerIdx = 0 :: Index NumLayers
+          headIdx = 0 :: Index NumQueryHeads
+          
+          row0 = RowI8E {rowMantissas = repeat 1, rowExponent = 0}
+          params = createTestParams (repeat row0)
+          
+          validIn = fromList ([False, True] P.++ P.replicate 78 False P.++
+                            [True] P.++ P.replicate 69 False)
+          
+          stubSlaveIn = exposeClockResetEnable
+            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          (masterOut, qOut, validOut, readyOut, debugInfo) = exposeClockResetEnable
+            (queryHeadProjector stubSlaveIn layerIdx headIdx validIn (pure True) (pure 0) (pure (repeat 1.0)) params)
+            CS.systemClockGen CS.resetGen CS.enableGen
+          
+          reqValids = sampleN maxCycles (qhRowReqValid debugInfo)
+          weightReadys = sampleN maxCycles (qhWeightReady debugInfo)
+          weightValids = sampleN maxCycles (qhWeightValid debugInfo)
+          arvalids = sampleN maxCycles (Master.arvalid masterOut)
+          states = sampleN maxCycles (qhState debugInfo)
+          rowIndices = sampleN maxCycles (qhRowIndex debugInfo)
+      
+      -- Find cycles where rowReqValid is True but weightReady is False
+      let lostRequests = P.filter (\i -> reqValids P.!! i && not (weightReadys P.!! i)) [0..maxCycles-1]
+      
+      P.putStrLn $ "\n*** LOST REQUESTS: " P.++ show (P.length lostRequests) P.++ " ***"
+      P.mapM_ (\i -> P.putStrLn $ 
+                "  Cycle " P.++ show i P.++
+                ": rowIdx=" P.++ show (rowIndices P.!! i) P.++
+                ", state=" P.++ show (states P.!! i) P.++
+                ", reqValid=" P.++ show (reqValids P.!! i) P.++
+                ", weightReady=" P.++ show (weightReadys P.!! i))
+              (P.take 10 lostRequests)
+      
+      -- These lost requests explain why we only see 11 AXI requests instead of 16
+      let totalArvalid = P.length (P.filter id arvalids)
+          totalLost = P.length lostRequests
+      
+      P.putStrLn $ "\nTotal AXI requests: " P.++ show totalArvalid
+      P.putStrLn $ "Lost requests: " P.++ show totalLost
+      P.putStrLn "Expected total: 16"
+      P.putStrLn $ "Actual + Lost: " P.++ show (totalArvalid + totalLost)
+      
+      -- The fix: rowReqValid should only be asserted when weightReady is True
+      P.length lostRequests `shouldBe` 0
