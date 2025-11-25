@@ -70,10 +70,14 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   rowIndex = register 0 nextRowIndex
   
   -- Use nextRowIndex to drive the loader so address aligns with the valid pulse
-  (axiMaster, currentRow, weightValid, weightReady) = 
+  (axiMaster, weightLoaderOut, weightValid, weightReady) = 
     LOADER.weightLoader dramSlaveIn layerIdx headIdx 
                  nextRowIndex rowReqValidGated downStreamReady params
   
+  -- MANUALLY select the weights type here
+  currentRow = LOADER.dramRowOut weightLoaderOut
+  currentRow' = LOADER.hcRowOut weightLoaderOut
+
   -- Processing with gated enable
   (rowResult, rowDone, colIdx, accValue) = 
     OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat

@@ -1,5 +1,5 @@
 module LLaMa2.Layer.Attention.WeightLoader
-  ( weightLoader
+  ( weightLoader, WeightLoaderOutput(..)
   ) where
 
 import Clash.Prelude
@@ -12,7 +12,12 @@ import qualified Simulation.Parameters as PARAM
 
 data LoadState = LIdle | LFetching | LDone
     deriving (Show, Eq, Generic, NFDataX)
-  
+
+data WeightLoaderOutput dom = WeightLoaderOutput {
+  hcRowOut :: Signal dom (RowI8E ModelDimension)
+  , dramRowOut :: Signal dom (RowI8E ModelDimension)
+}
+
 weightLoader :: forall dom.
   HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
@@ -22,9 +27,9 @@ weightLoader :: forall dom.
   -> Signal dom Bool                            -- ^ row request valid
   -> Signal dom Bool                            -- ^ downstream ready
   -> PARAM.DecoderParameters
-  -> (Master.AxiMasterOut dom, Signal dom (RowI8E ModelDimension), Signal dom Bool, Signal dom Bool)
+  -> (Master.AxiMasterOut dom, WeightLoaderOutput dom, Signal dom Bool, Signal dom Bool)
 weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady params =
-  (axiMaster, hcRow, dramDataValid, dramReady) -- MANUALLY CHANGE HERE: hcRow for constant params, dramRow for DRAM loaded
+  (axiMaster, WeightLoaderOutput {hcRowOut = hcRow, dramRowOut = dramRow} , dramDataValid, dramReady)
  where
   -- ==== Hardcoded path ====
   hcWeights :: MatI8E HeadDimension ModelDimension
@@ -38,7 +43,7 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
   rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowReq
 
   fetchTrigger :: Signal dom Bool
-  fetchTrigger = rowReqValid .&&. register True dramReady
+  fetchTrigger = rowReqValid .&&. dramReady
   
   fetchedWord :: Signal dom (BitVector 512)
   (axiMaster, fetchedWord, fetchValid) = 
@@ -51,19 +56,17 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
   parsedRow = STREAM.parseRow <$> fetchedWord
 
   dramRow :: Signal dom (RowI8E ModelDimension)  
-  dramRow = register zeroRow nextDramRow
-    where nextDramRow = mux fetchValid parsedRow dramRow
-  
+  dramRow = regEn zeroRow fetchValid parsedRow
+
   loadState :: Signal dom LoadState
   loadState = register LIdle nextState
     where
-      nextState = mux (loadState .==. pure LIdle .&&. rowReqValid)
-                      (pure LFetching)
-                      (mux (loadState .==. pure LFetching .&&. fetchValid)
-                           (pure LDone)
-                           (mux (loadState .==. pure LDone .&&. downstreamReady)
-                                (pure LIdle)
-                                loadState))
+      nextState :: Signal dom LoadState
+      nextState = withLoad <$> loadState <*> rowReqValid <*> fetchValid <*> downstreamReady
+        where
+          withLoad LIdle     rv _  _  = if rv then LFetching else LIdle
+          withLoad LFetching _  fv _  = if fv then LDone     else LFetching
+          withLoad LDone     _  _  rd = if rd then LIdle     else LDone
   
   dramReady = loadState .==. pure LIdle
   dramDataValid = loadState .==. pure LDone
