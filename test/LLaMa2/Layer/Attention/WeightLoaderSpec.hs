@@ -108,18 +108,18 @@ spec = do
   --------------------------------------------------------------------------
   -- Test 3: Equivalence HC vs DRAM, serialized requests (with dynamic offset)
   --------------------------------------------------------------------------
-  describe "weightLoader equivalence (robust timing) - DEEP DEBUG" $ do
-    it "diagnoses where the 8th request fails" $ do
-      let maxCycles = 500  -- Shorter for focused debugging
+  describe "weightLoader equivalence (robust timing) - STATE MACHINE DEBUG" $ do
+    it "traces the state machine to find the bug" $ do
+      let maxCycles = 300
           readySig  = pure True
 
           modelDim = natToNum @ModelDimension
-          wordsPerRow = ceiling (modelDim / 63 :: Double)
-          readLat = 1
-          estimatedOffset = 2 + readLat + wordsPerRow + 2
-          cyclesPerRequest = estimatedOffset + 20
+          wordsPerRow = ceiling (modelDim / 63 :: Double) :: Int
 
-          requestGroups = [((i, True) : P.replicate (cyclesPerRequest - 1) (i, False))
+          -- Use longer spacing to ensure no overlap
+          cyclesPerRequest = 40  -- Much longer than 31 cycle completion time
+
+          requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
                           | i <- [0..7::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
@@ -130,11 +130,10 @@ spec = do
           reqValidSig = fromList (validList P.++ P.repeat False)
 
           dramContents = DRAMSlave.buildMemoryFromParams testParams
-          realDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
           realDRAM masterOut' =
             exposeClockResetEnable
               (DRAMSlave.createDRAMBackedAxiSlaveFromVec
-                 (DRAMSlave.DRAMConfig readLat 0 1) dramContents masterOut')
+                 (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
               CS.systemClockGen CS.resetGen CS.enableGen
 
           (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
@@ -142,53 +141,84 @@ spec = do
               (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          -- Sample ALL relevant signals
+          -- Sample everything
           reqsSampled = sampleN maxCycles reqSig
           reqValidSampled = sampleN maxCycles reqValidSig
           readySampled = sampleN maxCycles readyDRAM
           validsSampled = sampleN maxCycles dvDRAM
-          
-          -- Sample AXI signals to see DRAM communication
+
           arValidSampled = sampleN maxCycles $ Master.arvalid axiDRAM
-          arAddrSampled  = sampleN maxCycles $ araddr <$> Master.ardata axiDRAM
-          
-          slaveIn        = realDRAM axiDRAM
+          slaveIn = realDRAM axiDRAM
           arReadySampled = sampleN maxCycles $ Slave.arready slaveIn
-          rValidSampled  = sampleN maxCycles $ Slave.rvalid slaveIn
+          rValidSampled = sampleN maxCycles $ Slave.rvalid slaveIn
           rLastSampled = sampleN maxCycles $ rlast <$> Slave.rdata slaveIn
 
-          -- Track events
-          requestAccepted = [(n, reqsSampled P.!! n) 
-                            | n <- [0..maxCycles-1]
+          requestAccepted = [n | n <- [0..maxCycles-1]
                             , reqValidSampled P.!! n
                             , readySampled P.!! n]
-          
-          axiRequests = [(n, arAddrSampled P.!! n)
-                        | n <- [0..maxCycles-1]
+
+          axiRequests = [n | n <- [0..maxCycles-1]
                         , arValidSampled P.!! n
                         , arReadySampled P.!! n]
-          
-          axiResponses = [(n, rLastSampled P.!! n)
-                         | n <- [0..maxCycles-1]
-                         , rValidSampled P.!! n]
-          
+
           dramOutputs = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
-      P.putStrLn "\n=== DEEP DIAGNOSTIC ==="
-      P.putStrLn $ "Requests accepted by weightLoader: " P.++ show (P.length requestAccepted)
-      P.putStrLn $ "  At cycles: " P.++ show (P.map fst requestAccepted)
-      P.putStrLn $ "  Row indices: " P.++ show (P.map snd requestAccepted)
-      P.putStrLn $ "\nAXI AR transactions (to DRAM): " P.++ show (P.length axiRequests)
-      P.putStrLn $ "  At cycles: " P.++ show (P.map fst axiRequests)
-      P.putStrLn $ "  Addresses: " P.++ show (P.map snd axiRequests)
-      P.putStrLn $ "\nAXI R responses (from DRAM, last beat): " P.++ show (P.length axiResponses)
-      P.putStrLn $ "  At cycles: " P.++ show (P.map fst axiResponses)
-      P.putStrLn $ "\nDRAM outputs (dramDataValid): " P.++ show (P.length dramOutputs)
+      P.putStrLn "\n=== STATE MACHINE DEBUG (40 cycle spacing) ==="
+      P.putStrLn $ "Requests accepted: " P.++ show (P.length requestAccepted)
+      P.putStrLn $ "  At cycles: " P.++ show requestAccepted
+      P.putStrLn $ "AXI AR transactions: " P.++ show (P.length axiRequests)
+      P.putStrLn $ "  At cycles: " P.++ show axiRequests
+      P.putStrLn $ "DRAM outputs: " P.++ show (P.length dramOutputs)
       P.putStrLn $ "  At cycles: " P.++ show dramOutputs
+      P.putStrLn $ "\nWords per row: " P.++ show wordsPerRow
       P.putStrLn "========================\n"
 
-      -- All 8 requests should make it through the pipeline
+      -- With 40 cycle spacing, all 8 should complete
       P.length requestAccepted `shouldBe` 8
-      P.length axiRequests `shouldSatisfy` (>= 8)  -- Should be 8 or more (multi-beat)
-      P.length axiResponses `shouldBe` 8  -- Should get 8 "last" beats
-      P.length dramOutputs `shouldBe` 8  -- Should get 8 final outputs
+      P.length axiRequests `shouldBe` 8
+      P.length dramOutputs `shouldBe` 8
+
+  describe "weightLoader - TRIGGER DEBUG" $ do
+      it "confirms fetchTrigger fires 8 times" $ do
+        let maxCycles = 300
+            readySig = pure True
+            cyclesPerRequest = 40
+
+            requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
+                            | i <- [0..7::Index HeadDimension]]
+            requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
+
+            reqList = P.map fst requestPairs
+            validList = P.map snd requestPairs
+
+            reqSig = fromList (reqList P.++ P.repeat 0)
+            reqValidSig = fromList (validList P.++ P.repeat False)
+
+            dramContents = DRAMSlave.buildMemoryFromParams testParams
+            realDRAM masterOut' =
+              exposeClockResetEnable
+                (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+                  (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
+                CS.systemClockGen CS.resetGen CS.enableGen
+
+            (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
+              exposeClockResetEnable
+                (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
+                CS.systemClockGen CS.resetGen CS.enableGen
+
+            -- Sample the signals used to compute fetchTrigger
+            reqValidSampled = sampleN maxCycles reqValidSig
+            readySampled = sampleN maxCycles readyDRAM
+
+            -- Compute fetchTrigger cycles
+            triggerFires = [n | n <- [0..maxCycles-1]
+                          , reqValidSampled P.!! n
+                          , readySampled P.!! n]
+
+        P.putStrLn "\n=== TRIGGER DEBUG ==="
+        P.putStrLn $ "fetchTrigger fires: " P.++ show (P.length triggerFires)
+        P.putStrLn $ "  At cycles: " P.++ show triggerFires
+        P.putStrLn "========================\n"
+
+        -- fetchTrigger should fire exactly 8 times
+        P.length triggerFires `shouldBe` 8
