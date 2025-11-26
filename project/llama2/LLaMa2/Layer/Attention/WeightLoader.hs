@@ -43,10 +43,10 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
   rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowReq
 
   fetchTrigger :: Signal dom Bool
-  fetchTrigger = rowReqValid .&&. dramReady
+  fetchTrigger = rowReqValid .&&. dramReady .&&. requestReady
   
   fetchedWord :: Signal dom (BitVector 512)
-  (axiMaster, fetchedWord, fetchValid) = 
+  (axiMaster, fetchedWord, fetchValid, requestReady) = 
     STREAM.axiRowFetcher dramSlaveIn fetchTrigger rowAddr
   
   zeroRow :: RowI8E ModelDimension
