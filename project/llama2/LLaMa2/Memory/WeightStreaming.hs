@@ -46,16 +46,16 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     -- All sections must be padded to 64 bytes
     -- Note: DRAMBackedAxiSlave packs rows into 64 bytes exactly (take 63 mantissas)
     -- So we treat row size as 64, not modelDim + 1.
-    
+
     bytesPerRow = 64 :: Int -- Fixed to 64 bytes per row (512-bit word)
 
     -- Embedding: vocabSize rows. Each row is 64 bytes.
     embeddingBytes = vocabSize * bytesPerRow
-    
+
     -- RMS Final: modelDim + 1 values. Must align to next 64 bytes.
     rmsFinalRaw = modelDim + 1
     rmsFinalBytes = align64 rmsFinalRaw
-    
+
     -- Rotary: 
     rotaryRaw = 2 * seqLen * rotaryDim * 4
     rotaryBytes = align64 rotaryRaw
@@ -72,21 +72,21 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     -- All internal matrix components are collections of rows.
     -- Since each row is 64 bytes, and we have N rows, the total size is N * 64.
     -- This is naturally aligned to 64.
-    
+
     rmsAttBytes = align64 (modelDim + 1)
-    
+
     qHeadBytes = headDim * bytesPerRow
     qTotalBytes = numQHeads * qHeadBytes
-    
+
     kHeadBytes = headDim * bytesPerRow
     kTotalBytes = numKVHeads * kHeadBytes
-    
+
     vTotalBytes = kTotalBytes
-    
+
     woTotalBytes = numQHeads * modelDim * bytesPerRow
 
     rmsFfnBytes = align64 (modelDim + 1)
-    
+
     w1Bytes = hiddenDim * bytesPerRow -- W1 is Hidden x Model
     w2Bytes = modelDim * bytesPerRow  -- W2 is Model x Hidden
     w3Bytes = hiddenDim * bytesPerRow -- W3 is Hidden x Model
@@ -131,41 +131,97 @@ data RowFetcherState = Idle | WaitAR | WaitR
 data CaptureState = CaptIdle | CaptRequesting | CaptProcessing
   deriving (Show, Eq, Generic, NFDataX)
 
--- | Request capture stage: holds address until consumed
+-- | Request capture stage: 2-entry skid with combinational bypass.
+-- Policies:
+--   - requestAvail = frontValid || newRequest  (combinational)
+--   - Do NOT enqueue when the consumer is ready and the queue is empty
+--     (immediate accept: pulse is consumed, nothing stored).
+--   - Pop/shift on the FALLING EDGE of consumerReady, so 'valid' remains
+--     asserted across the cycle(s) where ready is high.
+--   - If both entries are full and another pulse arrives, overwrite 'back'
+--     with the newest request (depth-2 saturating behavior).
 requestCapture :: forall dom .
      HiddenClockResetEnable dom
-  => Signal dom Bool                -- ^ New request pulse
-  -> Signal dom (Unsigned 32)       -- ^ New request address
-  -> Signal dom Bool                -- ^ Consumer ready
-  -> ( Signal dom Bool              -- ^ Request available
-     , Signal dom (Unsigned 32))    -- ^ Captured address
-requestCapture newRequest newAddr consumerReady = (requestAvail, heldAddr)
-  where
-    hasPending :: Signal dom Bool
-    hasPending = register False hasPendingNext
+  => Signal dom Bool                -- ^ newRequest (1-cycle pulse)
+  -> Signal dom (Unsigned 32)       -- ^ newAddr
+  -> Signal dom Bool                -- ^ consumerReady
+  -> ( Signal dom Bool              -- ^ requestAvail (level)
+     , Signal dom (Unsigned 32))    -- ^ capturedAddr (with combinational bypass)
+requestCapture newRequest newAddr consumerReady =
+  (requestAvail, capturedAddr)
+ where
+  -- Queue state
+  frontValid :: Signal dom Bool
+  frontValid = register False frontValidN
 
-    addressReg :: Signal dom (Unsigned 32)
-    addressReg = regEn 0 (newRequest .&&. not <$> consumerReady) newAddr
+  frontAddr  :: Signal dom (Unsigned 32)
+  frontAddr  = register 0 frontAddrN
 
-    heldAddr :: Signal dom (Unsigned 32)
-    heldAddr = mux newRequest newAddr addressReg
-    
-    requestAvail :: Signal dom Bool
-    requestAvail = newRequest .||. hasPending
-    
-    wasReady :: Signal dom Bool
-    wasReady = register False consumerReady
-    
-    fsmAcceptedRequest :: Signal dom Bool
-    fsmAcceptedRequest = wasReady .&&. not <$> consumerReady
-    
-    hasPendingNext :: Signal dom Bool
-    hasPendingNext = 
-      mux newRequest
-          (not <$> consumerReady)  -- Set if consumer not ready
-          (mux fsmAcceptedRequest
-              (pure False)         -- Clear when accepted
-              hasPending)          -- Otherwise hold
+  backValid  :: Signal dom Bool
+  backValid  = register False backValidN
+
+  backAddr   :: Signal dom (Unsigned 32)
+  backAddr   = register 0 backAddrN
+
+  -- Combinational valid and bypassed address
+  requestAvail :: Signal dom Bool
+  requestAvail = frontValid .||. newRequest
+
+  capturedAddr :: Signal dom (Unsigned 32)
+  capturedAddr = mux newRequest newAddr frontAddr
+
+  -- Ready falling-edge detection (pop policy)
+  wasReady    :: Signal dom Bool
+  wasReady     = register False consumerReady
+  fallingEdge :: Signal dom Bool
+  fallingEdge  = wasReady .&&. (not <$> consumerReady)
+
+  -- Pop only on falling edge and only if a front item exists
+  popFront :: Signal dom Bool
+  popFront = fallingEdge .&&. frontValid
+
+  -- State after potential pop
+  frontValidAfterPop = mux popFront backValid frontValid
+  frontAddrAfterPop  = mux popFront backAddr  frontAddr
+  backValidAfterPop  = mux popFront (pure False) backValid
+  backAddrAfterPop   = mux popFront (pure 0)     backAddr
+
+  -- Immediate-accept detection: queue empty and consumer ready now
+  queueEmptyAfterPop :: Signal dom Bool
+  queueEmptyAfterPop = not <$> frontValidAfterPop
+
+  immAccept :: Signal dom Bool
+  immAccept = consumerReady .&&. queueEmptyAfterPop .&&. newRequest
+
+  -- Only push when there is a pulse that is NOT immediately accepted
+  willPush :: Signal dom Bool
+  willPush = newRequest .&&. (not <$> immAccept)
+
+  -- Push preference: front (if empty), else back (if empty), else overwrite back
+  pushToFront :: Signal dom Bool
+  pushToFront = willPush .&&. (not <$> frontValidAfterPop)
+
+  pushToBack :: Signal dom Bool
+  pushToBack  = willPush .&&.
+                frontValidAfterPop .&&.
+                (not <$> backValidAfterPop)
+
+  overwriteBack :: Signal dom Bool
+  overwriteBack = willPush .&&.
+                  frontValidAfterPop .&&.
+                  backValidAfterPop
+
+  -- Next-state updates
+  frontValidN = mux pushToFront (pure True)  frontValidAfterPop
+  frontAddrN  = mux pushToFront newAddr      frontAddrAfterPop
+
+  backValidN  = mux pushToBack  (pure True)
+              $ mux overwriteBack (pure True)
+              backValidAfterPop
+
+  backAddrN   = mux pushToBack  newAddr
+              $ mux overwriteBack newAddr
+              backAddrAfterPop
 
 -- | Pure AXI read state machine
 axiRowFetcher :: forall dom .
@@ -182,15 +238,15 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
     -- *** STEP 1: Convert pulse to held request ***
     -- requestCapture holds the pulse until FSM can accept it
     (reqAvail, capturedAddr) = requestCapture requestPulse address ready
-    
+
     -- *** STEP 2: FSM state machine ***
     state :: Signal dom RowFetcherState
     state = register Idle nextState
-    
+
     -- Track if we're out of reset (prevents accepting during reset)
     notInReset :: Signal dom Bool
     notInReset = register False (pure True)
-    
+
     -- Capture address when starting a new transaction
     addressReg :: Signal dom (Unsigned 32)
     addressReg = regEn 0 startTransaction capturedAddr  -- Use capturedAddr from requestCapture
@@ -198,15 +254,15 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
     -- Ready when idle AND out of reset
     ready :: Signal dom Bool
     ready = notInReset .&&. (state .==. pure Idle)
-    
+
     -- Start new transaction when ready and request available
     startTransaction :: Signal dom Bool
     startTransaction = ready .&&. reqAvail  -- Use reqAvail from requestCapture
-    
+
     -- AR channel (address read)
     arvalidOut :: Signal dom Bool
     arvalidOut = state .==. pure WaitAR
-    
+
     ardataOut :: Signal dom AxiAR
     ardataOut = AxiAR
       <$> addressReg
@@ -214,18 +270,18 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
       <*> pure 6  -- arsize = 6 (2^6 = 64 bytes)
       <*> pure 1  -- arburst = 1 (INCR)
       <*> pure 0  -- arid = 0
-    
+
     -- R channel (read data)
     rreadyOut :: Signal dom Bool
     rreadyOut = pure True  -- Always ready to receive
-    
+
     -- Handshakes
     arAccepted :: Signal dom Bool
     arAccepted = arvalidOut .&&. Slave.arready slaveIn
-    
+
     rReceived :: Signal dom Bool
     rReceived = Slave.rvalid slaveIn .&&. rreadyOut
-    
+
     -- State transitions
     nextState :: Signal dom RowFetcherState
     nextState =
@@ -236,17 +292,17 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
       $ mux (state .==. pure WaitR .&&. rReceived)
           (pure Idle)                                      -- Data received, back to idle
           state                                            -- Stay in current state
-    
+
     -- Output data
     rdataField :: Signal dom AxiR
     rdataField = Slave.rdata slaveIn
-    
+
     dataOut :: Signal dom (BitVector 512)
     dataOut = rdata <$> rdataField
-    
+
     dataValid :: Signal dom Bool
     dataValid = (state .==. pure WaitR) .&&. Slave.rvalid slaveIn
-    
+
     -- Master output signals to DRAM
     masterOut :: Master.AxiMasterOut dom
     masterOut = Master.AxiMasterOut
