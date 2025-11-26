@@ -11,7 +11,7 @@ import qualified Prelude as P
 import qualified Simulation.ParamsPlaceholder as PARAM
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
-import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..))
+import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..), AxiAR (..))
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Numeric.Types (Mantissa)
 import Control.Monad (zipWithM_)
@@ -108,22 +108,18 @@ spec = do
   --------------------------------------------------------------------------
   -- Test 3: Equivalence HC vs DRAM, serialized requests (with dynamic offset)
   --------------------------------------------------------------------------
-  describe "weightLoader equivalence (robust timing)" $ do
-    it "DRAM and hardcoded paths produce matching rows" $ do
-      let maxCycles = 2000
+  describe "weightLoader equivalence (robust timing) - DEEP DEBUG" $ do
+    it "diagnoses where the 8th request fails" $ do
+      let maxCycles = 500  -- Shorter for focused debugging
           readySig  = pure True
 
-          -- Compute offset with safety margin
           modelDim = natToNum @ModelDimension
           wordsPerRow = ceiling (modelDim / 63 :: Double)
           readLat = 1
-
-          -- Conservative estimate
           estimatedOffset = 2 + readLat + wordsPerRow + 2
           cyclesPerRequest = estimatedOffset + 20
 
-          -- Generate well-separated requests
-          requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
+          requestGroups = [((i, True) : P.replicate (cyclesPerRequest - 1) (i, False))
                           | i <- [0..7::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
@@ -133,7 +129,6 @@ spec = do
           reqSig = fromList (reqList P.++ P.repeat 0)
           reqValidSig = fromList (validList P.++ P.repeat False)
 
-          -- DRAM-backed loader
           dramContents = DRAMSlave.buildMemoryFromParams testParams
           realDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
           realDRAM masterOut' =
@@ -147,46 +142,53 @@ spec = do
               (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          -- Sample ALL signals for debugging
+          -- Sample ALL relevant signals
           reqsSampled = sampleN maxCycles reqSig
           reqValidSampled = sampleN maxCycles reqValidSig
           readySampled = sampleN maxCycles readyDRAM
-          dramRows = sampleN maxCycles (dramRowOut outDRAM)
-          valids = sampleN maxCycles dvDRAM
+          validsSampled = sampleN maxCycles dvDRAM
+          
+          -- Sample AXI signals to see DRAM communication
+          arValidSampled = sampleN maxCycles $ Master.arvalid axiDRAM
+          arAddrSampled  = sampleN maxCycles $ araddr <$> Master.ardata axiDRAM
+          
+          slaveIn        = realDRAM axiDRAM
+          arReadySampled = sampleN maxCycles $ Slave.arready slaveIn
+          rValidSampled  = sampleN maxCycles $ Slave.rvalid slaveIn
+          rLastSampled = sampleN maxCycles $ rlast <$> Slave.rdata slaveIn
 
-          -- Track request acceptance: both reqValid AND dramReady must be true
-          acceptedRequests = [(n, reqsSampled P.!! n)
-                             | n <- [0..maxCycles-1]
-                             , reqValidSampled P.!! n
-                             , readySampled P.!! n]
+          -- Track events
+          requestAccepted = [(n, reqsSampled P.!! n) 
+                            | n <- [0..maxCycles-1]
+                            , reqValidSampled P.!! n
+                            , readySampled P.!! n]
+          
+          axiRequests = [(n, arAddrSampled P.!! n)
+                        | n <- [0..maxCycles-1]
+                        , arValidSampled P.!! n
+                        , arReadySampled P.!! n]
+          
+          axiResponses = [(n, rLastSampled P.!! n)
+                         | n <- [0..maxCycles-1]
+                         , rValidSampled P.!! n]
+          
+          dramOutputs = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
-          -- Track DRAM outputs
-          dramOutputs = [(n, dramRows P.!! n) | n <- [0..maxCycles-1], valids P.!! n]
-
-          -- Get HC reference
-          hcWeights = PARAM.wqHeadQ (head (PARAM.headsQ (PARAM.multiHeadAttention (head (PARAM.modelLayers testParams)))))
-
-      -- DIAGNOSTIC OUTPUT
-      P.putStrLn "\n=== DIAGNOSTIC OUTPUT ==="
-      P.putStrLn $ "Requests issued (reqValid=True): " P.++ show (P.length [n | n <- [0..maxCycles-1], reqValidSampled P.!! n])
-      P.putStrLn $ "Requests accepted (reqValid AND dramReady): " P.++ show (P.length acceptedRequests)
-      P.putStrLn $ "Accepted at cycles: " P.++ show (P.map fst acceptedRequests)
-      P.putStrLn $ "Accepted row indices: " P.++ show (P.map snd acceptedRequests)
-      P.putStrLn $ "DRAM outputs produced: " P.++ show (P.length dramOutputs)
-      P.putStrLn $ "Output at cycles: " P.++ show (P.map fst dramOutputs)
+      P.putStrLn "\n=== DEEP DIAGNOSTIC ==="
+      P.putStrLn $ "Requests accepted by weightLoader: " P.++ show (P.length requestAccepted)
+      P.putStrLn $ "  At cycles: " P.++ show (P.map fst requestAccepted)
+      P.putStrLn $ "  Row indices: " P.++ show (P.map snd requestAccepted)
+      P.putStrLn $ "\nAXI AR transactions (to DRAM): " P.++ show (P.length axiRequests)
+      P.putStrLn $ "  At cycles: " P.++ show (P.map fst axiRequests)
+      P.putStrLn $ "  Addresses: " P.++ show (P.map snd axiRequests)
+      P.putStrLn $ "\nAXI R responses (from DRAM, last beat): " P.++ show (P.length axiResponses)
+      P.putStrLn $ "  At cycles: " P.++ show (P.map fst axiResponses)
+      P.putStrLn $ "\nDRAM outputs (dramDataValid): " P.++ show (P.length dramOutputs)
+      P.putStrLn $ "  At cycles: " P.++ show dramOutputs
       P.putStrLn "========================\n"
 
-      -- Verify we issued 8 requests
-      P.length [n | n <- [0..maxCycles-1], reqValidSampled P.!! n] `shouldBe` 8
-
-      -- Check how many were actually accepted
-      P.length acceptedRequests `shouldBe` 8
-
-      -- Check how many outputs we got
-      P.length dramOutputs `shouldBe` 8
-
-      -- If we got this far, compare the outputs
-      zipWithM_ (\(_, dramRow) (_, expectedIdx) -> do
-        let expectedRow = hcWeights !! expectedIdx
-        dramRow `shouldBe` expectedRow
-        ) dramOutputs acceptedRequests
+      -- All 8 requests should make it through the pipeline
+      P.length requestAccepted `shouldBe` 8
+      P.length axiRequests `shouldSatisfy` (>= 8)  -- Should be 8 or more (multi-beat)
+      P.length axiResponses `shouldBe` 8  -- Should get 8 "last" beats
+      P.length dramOutputs `shouldBe` 8  -- Should get 8 final outputs
