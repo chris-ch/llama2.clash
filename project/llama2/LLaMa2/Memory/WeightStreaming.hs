@@ -3,6 +3,7 @@ module LLaMa2.Memory.WeightStreaming
   , calculateRowAddress
   , axiRowFetcher
   , parseRow
+  , requestCapture
   ) where
 
 import Clash.Prelude
@@ -127,6 +128,9 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
 data State = Idle | WaitAR | WaitR
     deriving (Show, Eq, Generic, NFDataX)
 
+data CaptureState = CaptIdle | CaptRequesting | CaptProcessing
+  deriving (Show, Eq, Generic, NFDataX)
+
 -- | Request capture stage: holds address until consumed
 requestCapture ::
      HiddenClockResetEnable dom
@@ -137,35 +141,31 @@ requestCapture ::
      , Signal dom (Unsigned 32))    -- ^ Captured address
 requestCapture newRequest newAddr consumerReady = (requestAvail, heldAddr)
   where
-    -- State: do we have a pending request?
+    -- Latch the request when it arrives
     hasPending = register False hasPendingNext
     
-    -- Held address register (always update when pending or new request)
-    addressReg = register 0 addressRegNext
+    -- Capture address when request arrives
+    addressReg = regEn 0 newRequest newAddr
+    heldAddr = addressReg
     
-    -- Address logic: 
-    -- - If new request arrives, use new address (combinational)
-    -- - Otherwise use held address
-    heldAddr = mux newRequest newAddr addressReg
+    -- Request is available when new request arrives OR we have pending
+    requestAvail = newRequest .||. hasPending
     
-    -- Update address register when we latch a new request
-    addressRegNext = mux (newRequest .&&. not <$> consumerReady)
-                         newAddr  -- Latch new address
-                         addressReg  -- Otherwise hold
+    -- Track previous cycle's ready state
+    wasReady = register True consumerReady
     
-    -- Request available when we have pending OR new request arrives
-    requestAvail = hasPending .||. newRequest
+    -- FSM just became busy (transitioned from ready to not-ready)
+    -- This means it accepted the request
+    fsmAcceptedRequest = wasReady .&&. not <$> consumerReady
     
     -- Update pending state:
-    -- - Set True if new request arrives and not consumed this cycle
-    -- - Clear False if consumed (no new request and consumer ready)
-    -- - Otherwise maintain
-    consumed = consumerReady .&&. not <$> newRequest
+    -- - Set when new request arrives and consumer is busy
+    -- - Clear when FSM accepts the pending request (transitions to busy)
     hasPendingNext = 
       mux (newRequest .&&. not <$> consumerReady)
-          (pure True)  -- New request but not consumed -> latch it
-      $ mux (consumed .&&. hasPending)
-          (pure False)  -- Consumed -> clear
+          (pure True)  -- Latch if consumer is busy when request arrives
+      $ mux (hasPending .&&. fsmAcceptedRequest)
+          (pure False)  -- Clear when FSM accepts it
           hasPending   -- Otherwise maintain
 
 -- | Pure AXI read state machine (unchanged)
