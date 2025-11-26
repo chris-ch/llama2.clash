@@ -80,7 +80,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
 
   -- Processing with gated enable
   (rowResult, rowDone, colIdx, accValue) = 
-    OPS.parallel64RowProcessor rowReset rowEnable currentRow xHat
+    OPS.parallel64RowProcessor rowReset rowEnable currentRow' xHat
   
   (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
     OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
