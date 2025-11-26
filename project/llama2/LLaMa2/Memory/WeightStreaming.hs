@@ -42,7 +42,7 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     seqLen = natToNum @SequenceLength :: Int
     rotaryDim = natToNum @RotaryPositionalEmbeddingDimension :: Int
 
-    -- FIX: All sections must be padded to 64 bytes
+    -- All sections must be padded to 64 bytes
     -- Note: DRAMBackedAxiSlave packs rows into 64 bytes exactly (take 63 mantissas)
     -- So we treat row size as 64, not modelDim + 1.
     
@@ -127,25 +127,71 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
 data State = Idle | WaitAR | WaitR
     deriving (Show, Eq, Generic, NFDataX)
 
--- | Fetch one row (64 bytes) from DDR using AXI read protocol
--- Latency: ~2-3 cycles from request to valid data
-axiRowFetcher ::
+-- | Request capture stage: holds address until consumed
+requestCapture ::
+     HiddenClockResetEnable dom
+  => Signal dom Bool                -- ^ New request pulse
+  -> Signal dom (Unsigned 32)       -- ^ New request address
+  -> Signal dom Bool                -- ^ Consumer ready
+  -> ( Signal dom Bool              -- ^ Request available
+     , Signal dom (Unsigned 32))    -- ^ Captured address
+requestCapture newRequest newAddr consumerReady = (requestAvail, heldAddr)
+  where
+    -- State: do we have a pending request?
+    hasPending = register False hasPendingNext
+    
+    -- Held address register (always update when pending or new request)
+    addressReg = register 0 addressRegNext
+    
+    -- Address logic: 
+    -- - If new request arrives, use new address (combinational)
+    -- - Otherwise use held address
+    heldAddr = mux newRequest newAddr addressReg
+    
+    -- Update address register when we latch a new request
+    addressRegNext = mux (newRequest .&&. not <$> consumerReady)
+                         newAddr  -- Latch new address
+                         addressReg  -- Otherwise hold
+    
+    -- Request available when we have pending OR new request arrives
+    requestAvail = hasPending .||. newRequest
+    
+    -- Update pending state:
+    -- - Set True if new request arrives and not consumed this cycle
+    -- - Clear False if consumed (no new request and consumer ready)
+    -- - Otherwise maintain
+    consumed = consumerReady .&&. not <$> newRequest
+    hasPendingNext = 
+      mux (newRequest .&&. not <$> consumerReady)
+          (pure True)  -- New request but not consumed -> latch it
+      $ mux (consumed .&&. hasPending)
+          (pure False)  -- Consumed -> clear
+          hasPending   -- Otherwise maintain
+
+-- | Pure AXI read state machine (unchanged)
+axiReadFSM ::
      HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom              -- ^ From DRAM
   -> Signal dom Bool             -- ^ Request pulse (fetch when True)
   -> Signal dom (Unsigned 32)    -- ^ Address to read
   -> ( Master.AxiMasterOut dom          -- ^ To DRAM
      , Signal dom (BitVector 512) -- ^ Data (512 bits = 64 bytes)
-     , Signal dom Bool)           -- ^ Valid (data ready)
-axiRowFetcher slaveIn request address = (masterOut, dataOut, validOut)
+     , Signal dom Bool
+     , Signal dom Bool)
+axiReadFSM slaveIn reqAvail reqAddr = (masterOut, dataOut, dataValid, ready)
   where
-
     state = register Idle nextState
-
-    -- Capture address when request arrives
-    addressReg = regEn 0 request address
-
-    -- AR channel (read address)
+    
+    -- Capture address when starting a new transaction
+    addressReg = regEn 0 startTransaction reqAddr
+    
+    -- Ready when idle
+    ready = state .==. pure Idle
+    
+    -- Start new transaction when idle and request available
+    startTransaction = ready .&&. reqAvail
+    
+    -- AR channel
     arvalidOut = state .==. pure WaitAR
     ardataOut = AxiAR
       <$> addressReg
@@ -153,30 +199,29 @@ axiRowFetcher slaveIn request address = (masterOut, dataOut, validOut)
       <*> pure 6  -- arsize = 6 (2^6 = 64 bytes)
       <*> pure 1  -- arburst = 1 (INCR)
       <*> pure 0  -- arid = 0
-
+    
     -- R channel (read data)
     rreadyOut = pure True  -- Always ready to receive
-
+    
     -- Handshakes
     arAccepted = arvalidOut .&&. Slave.arready slaveIn
     rReceived = Slave.rvalid slaveIn .&&. rreadyOut
-
+    
     -- State transitions
     nextState =
-      mux (state .==. pure Idle .&&. request)
+      mux startTransaction
           (pure WaitAR)
       $ mux (state .==. pure WaitAR .&&. arAccepted)
           (pure WaitR)
       $ mux (state .==. pure WaitR .&&. rReceived)
           (pure Idle)
           state
-
-    -- Extract data from AxiR
+    
+    -- Output data
     rdataField = Slave.rdata slaveIn
     dataOut = rdata <$> rdataField
-    validOut = (state .==. pure WaitR) .&&. Slave.rvalid slaveIn
-
-    -- Construct master output (only read channels active)
+    dataValid = (state .==. pure WaitR) .&&. Slave.rvalid slaveIn
+    
     masterOut = Master.AxiMasterOut
       { arvalid = arvalidOut
       , ardata = ardataOut
@@ -187,6 +232,21 @@ axiRowFetcher slaveIn request address = (masterOut, dataOut, validOut)
       , wdata = pure (AxiW 0 0 False)
       , bready = pure False
       }
+
+-- | Top-level (unchanged)
+axiRowFetcher ::
+     HiddenClockResetEnable dom
+  => Slave.AxiSlaveIn dom
+  -> Signal dom Bool
+  -> Signal dom (Unsigned 32)
+  -> ( Master.AxiMasterOut dom
+     , Signal dom (BitVector 512)
+     , Signal dom Bool)
+axiRowFetcher slaveIn request address = (masterOut, dataOut, validOut)
+  where
+    (reqAvail, capturedAddr) = requestCapture request address fsmReady
+    (masterOut, dataOut, validOut, fsmReady) = 
+      axiReadFSM slaveIn reqAvail capturedAddr
 
 -- | Parse a 512-bit word into RowI8E format
 -- Extracts first n bytes as mantissas, byte n as exponent

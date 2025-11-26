@@ -72,7 +72,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   -- Use nextRowIndex to drive the loader so address aligns with the valid pulse
   (axiMaster, weightLoaderOut, weightValid, weightReady) = 
     LOADER.weightLoader dramSlaveIn layerIdx headIdx 
-                 nextRowIndex rowReqValidGated downStreamReady params
+                 rowIndex rowReqValidGated downStreamReady params
   
   -- MANUALLY select the weights type here
   currentRow = LOADER.dramRowOut weightLoaderOut

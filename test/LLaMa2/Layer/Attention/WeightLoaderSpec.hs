@@ -179,46 +179,99 @@ spec = do
       P.length dramOutputs `shouldBe` 8
 
   describe "weightLoader - TRIGGER DEBUG" $ do
-      it "confirms fetchTrigger fires 8 times" $ do
-        let maxCycles = 300
-            readySig = pure True
-            cyclesPerRequest = 40
+    it "confirms fetchTrigger fires 8 times" $ do
+      let maxCycles = 300
+          readySig = pure True
+          cyclesPerRequest = 40
 
-            requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
-                            | i <- [0..7::Index HeadDimension]]
-            requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
+          requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
+                          | i <- [0..7::Index HeadDimension]]
+          requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
-            reqList = P.map fst requestPairs
-            validList = P.map snd requestPairs
+          reqList = P.map fst requestPairs
+          validList = P.map snd requestPairs
 
-            reqSig = fromList (reqList P.++ P.repeat 0)
-            reqValidSig = fromList (validList P.++ P.repeat False)
+          reqSig = fromList (reqList P.++ P.repeat 0)
+          reqValidSig = fromList (validList P.++ P.repeat False)
 
-            dramContents = DRAMSlave.buildMemoryFromParams testParams
-            realDRAM masterOut' =
-              exposeClockResetEnable
-                (DRAMSlave.createDRAMBackedAxiSlaveFromVec
-                  (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
-                CS.systemClockGen CS.resetGen CS.enableGen
+          dramContents = DRAMSlave.buildMemoryFromParams testParams
+          realDRAM masterOut' =
+            exposeClockResetEnable
+              (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+                (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
+              CS.systemClockGen CS.resetGen CS.enableGen
 
-            (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
-              exposeClockResetEnable
-                (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
-                CS.systemClockGen CS.resetGen CS.enableGen
+          (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
+            exposeClockResetEnable
+              (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
+              CS.systemClockGen CS.resetGen CS.enableGen
 
-            -- Sample the signals used to compute fetchTrigger
-            reqValidSampled = sampleN maxCycles reqValidSig
-            readySampled = sampleN maxCycles readyDRAM
+          -- Sample the signals used to compute fetchTrigger
+          reqValidSampled = sampleN maxCycles reqValidSig
+          readySampled = sampleN maxCycles readyDRAM
 
-            -- Compute fetchTrigger cycles
-            triggerFires = [n | n <- [0..maxCycles-1]
-                          , reqValidSampled P.!! n
-                          , readySampled P.!! n]
+          -- Compute fetchTrigger cycles
+          triggerFires = [n | n <- [0..maxCycles-1]
+                        , reqValidSampled P.!! n
+                        , readySampled P.!! n]
 
-        P.putStrLn "\n=== TRIGGER DEBUG ==="
-        P.putStrLn $ "fetchTrigger fires: " P.++ show (P.length triggerFires)
-        P.putStrLn $ "  At cycles: " P.++ show triggerFires
-        P.putStrLn "========================\n"
+      P.putStrLn "\n=== TRIGGER DEBUG ==="
+      P.putStrLn $ "fetchTrigger fires: " P.++ show (P.length triggerFires)
+      P.putStrLn $ "  At cycles: " P.++ show triggerFires
+      P.putStrLn "========================\n"
 
-        -- fetchTrigger should fire exactly 8 times
-        P.length triggerFires `shouldBe` 8
+      -- fetchTrigger should fire exactly 8 times
+      P.length triggerFires `shouldBe` 8
+
+  describe "weightLoader - ADDRESS DEBUG" $ do
+    it "traces addresses to find the pattern" $ do
+      let maxCycles = 350
+          readySig = pure True
+          cyclesPerRequest = 50  -- Even more spacing
+
+          requestGroups = [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
+                          | i <- [0..7::Index HeadDimension]]
+          requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
+
+          reqList = P.map fst requestPairs
+          validList = P.map snd requestPairs
+
+          reqSig = fromList (reqList P.++ P.repeat 0)
+          reqValidSig = fromList (validList P.++ P.repeat False)
+
+          dramContents = DRAMSlave.buildMemoryFromParams testParams
+          realDRAM masterOut' =
+            exposeClockResetEnable
+              (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+                 (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
+            exposeClockResetEnable
+              (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          arValidSampled = sampleN maxCycles $ Master.arvalid axiDRAM
+          arAddrSampled = sampleN maxCycles $ araddr <$> Master.ardata axiDRAM
+
+          slaveIn = realDRAM axiDRAM
+          arReadySampled = sampleN maxCycles $ Slave.arready slaveIn
+
+          validsSampled = sampleN maxCycles dvDRAM
+
+          axiRequests = [(n, arAddrSampled P.!! n)
+                        | n <- [0..maxCycles-1]
+                        , arValidSampled P.!! n
+                        , arReadySampled P.!! n]
+
+          dramOutputs = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
+
+      P.putStrLn "\n=== ADDRESS PATTERN DEBUG ==="
+      P.putStrLn $ "AXI AR transactions: " P.++ show (P.length axiRequests)
+      P.putStrLn "Cycle -> Address:"
+      mapM_ (\(cyc, addr) -> P.putStrLn $ "  " P.++ show cyc P.++ " -> " P.++ show addr) (P.take 20 axiRequests)
+      P.putStrLn $ "DRAM outputs: " P.++ show (P.length dramOutputs)
+      P.putStrLn $ "  At cycles: " P.++ show dramOutputs
+      P.putStrLn "========================\n"
+
+      P.length dramOutputs `shouldBe` 8
