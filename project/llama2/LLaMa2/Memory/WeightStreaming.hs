@@ -2,8 +2,8 @@ module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
   , calculateRowAddress
   , axiRowFetcher
-  , parseRow
-  , requestCapture
+  , rowParser
+  , requestCaptureStage
   ) where
 
 import Clash.Prelude
@@ -140,14 +140,14 @@ data CaptureState = CaptIdle | CaptRequesting | CaptProcessing
 --     asserted across the cycle(s) where ready is high.
 --   - If both entries are full and another pulse arrives, overwrite 'back'
 --     with the newest request (depth-2 saturating behavior).
-requestCapture :: forall dom .
+requestCaptureStage :: forall dom .
      HiddenClockResetEnable dom
   => Signal dom Bool                -- ^ newRequest (1-cycle pulse)
   -> Signal dom (Unsigned 32)       -- ^ newAddr
   -> Signal dom Bool                -- ^ consumerReady
   -> ( Signal dom Bool              -- ^ requestAvail (level)
      , Signal dom (Unsigned 32))    -- ^ capturedAddr (with combinational bypass)
-requestCapture newRequest newAddr consumerReady =
+requestCaptureStage newRequest newAddr consumerReady =
   (requestAvail, capturedAddr)
  where
   -- Queue state
@@ -237,7 +237,7 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
   where
     -- *** STEP 1: Convert pulse to held request ***
     -- requestCapture holds the pulse until FSM can accept it
-    (reqAvail, capturedAddr) = requestCapture requestPulse address ready
+    (reqAvail, capturedAddr) = requestCaptureStage requestPulse address ready
 
     -- *** STEP 2: FSM state machine ***
     state :: Signal dom RowFetcherState
@@ -320,8 +320,8 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
 -- Extracts first n bytes as mantissas, byte n as exponent
 -- For ModelDimension=64: bytes 0-62 are mantissas, byte 63 is exponent
 -- (limited to 63 mantissas due to 64-byte word size)
-parseRow :: forall n. KnownNat n => BitVector 512 -> RowI8E n
-parseRow word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
+rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n
+rowParser word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
   where
     byteVec = unpack word :: Vec 64 (BitVector 8)
     bytes = toList byteVec :: [BitVector 8]

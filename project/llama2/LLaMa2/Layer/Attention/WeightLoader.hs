@@ -53,7 +53,7 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
   zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
 
   parsedRow :: Signal dom (RowI8E ModelDimension)
-  parsedRow = STREAM.parseRow <$> fetchedWord
+  parsedRow = STREAM.rowParser <$> fetchedWord
 
   dramRow :: Signal dom (RowI8E ModelDimension)  
   dramRow = regEn zeroRow fetchValid parsedRow

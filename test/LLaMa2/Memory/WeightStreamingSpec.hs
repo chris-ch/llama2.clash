@@ -6,7 +6,7 @@ import qualified Data.List as DL
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Memory.AXI.Types
-import LLaMa2.Memory.WeightStreaming (axiRowFetcher, parseRow, requestCapture)
+import LLaMa2.Memory.WeightStreaming (axiRowFetcher, rowParser, requestCaptureStage)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Numeric.Quantization (RowI8E(..))
@@ -38,7 +38,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
                 consumerReady = pure True
 
                 (reqAvail, capturedAddr) = exposeClockResetEnable
-                    (requestCapture newReq newAddr consumerReady)
+                    (requestCaptureStage newReq newAddr consumerReady)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
                 availSamples = sampleN maxCycles reqAvail
@@ -59,7 +59,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
                 consumerReady = pure True
 
                 (_reqAvail, capturedAddr) = exposeClockResetEnable
-                    (requestCapture newReq newAddr consumerReady)
+                    (requestCaptureStage newReq newAddr consumerReady)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
                 addrSamples = sampleN maxCycles capturedAddr
@@ -80,7 +80,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
                 consumerReady = fromList readyStream
 
                 (reqAvail, capturedAddr) = exposeClockResetEnable
-                    (requestCapture newReq newAddr consumerReady)
+                    (requestCaptureStage newReq newAddr consumerReady)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
                 availSamples = sampleN maxCycles reqAvail
@@ -107,7 +107,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
                 consumerReady = fromList readyStream
 
                 (reqAvail, _) = exposeClockResetEnable
-                    (requestCapture newReq newAddr consumerReady)
+                    (requestCaptureStage newReq newAddr consumerReady)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
                 availSamples = sampleN maxCycles reqAvail
@@ -136,7 +136,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
                 consumerReady = fromList readyStream
 
                 (reqAvail, capturedAddr) = exposeClockResetEnable
-                    (requestCapture newReq newAddr consumerReady)
+                    (requestCaptureStage newReq newAddr consumerReady)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
                 availSamples = sampleN maxCycles reqAvail
@@ -294,7 +294,6 @@ axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Inte
             secondData `shouldBe` firstData
 
         it "validOut pulses correctly after requests" $ do
-            -- With reset period and pulse interface, timing will vary
             P.length validIndices `shouldSatisfy` (>= 2)
 
     context "eight requests with generous spacing" $ do
@@ -303,17 +302,27 @@ axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Inte
             cyclesPerRequest = 40
             numRequests = 8
 
-            requestStream = P.concat
-                [ [n == 0 | n <- [0..cyclesPerRequest-1]]
-                | _ <- [0..numRequests-1]
-                ] P.++ P.repeat False
+            -- IMPORTANT: do not issue a pulse during reset (cycle 0).
+            -- Shift the first pulse to cycle 1 by prepending a False.
+            requestStream =
+                False
+                : P.concat
+                    [ [n == 0 | n <- [0..cyclesPerRequest-1]]
+                    | _ <- [0..numRequests-1]
+                    ]
+                P.++ P.repeat False
             request = fromList requestStream :: Signal System Bool
 
             baseAddr = 49472
-            addressStream = P.concat
-                [ P.replicate cyclesPerRequest (baseAddr + fromIntegral (i * 64))
-                | i <- [0..numRequests-1 :: Int]
-                ] P.++ P.repeat 0
+            -- Keep address aligned: prepend baseAddr once so that at cycle 1
+            -- (first pulse) the address is baseAddr.
+            addressStream =
+                baseAddr
+                : P.concat
+                    [ P.replicate cyclesPerRequest (baseAddr + fromIntegral (i * 64))
+                    | i <- [0..numRequests-1 :: Int]
+                    ]
+                P.++ P.repeat 0
             address = fromList addressStream :: Signal System (Unsigned 32)
 
             delayedValid :: Signal System Bool -> Signal System Bool
@@ -322,38 +331,38 @@ axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Inte
                 CS.systemClockGen CS.resetGen CS.enableGen
 
             latchedAddr :: Signal System Bool -> Signal System (Unsigned 32) -> Signal System (Unsigned 32)
-            latchedAddr arvalid addr = exposeClockResetEnable
-                (regEn 0 arvalid addr)
+            latchedAddr arvalid addrSig = exposeClockResetEnable
+                (regEn 0 arvalid addrSig)
                 CS.systemClockGen CS.resetGen CS.enableGen
 
             mockDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
             mockDRAM masterOut' =
                 let arvalidSig = Master.arvalid masterOut'
-                    addrSig = araddr <$> Master.ardata masterOut'
-                    latched = latchedAddr arvalidSig addrSig
-                    dataOut' = (\a -> AxiR (resize (pack a :: BitVector 32)) 0 True 0) <$> latched
+                    addrSig    = araddr <$> Master.ardata masterOut'
+                    latched    = latchedAddr arvalidSig addrSig
+                    dataOut'   = (\a -> AxiR (resize (pack a :: BitVector 32)) 0 True 0) <$> latched
                 in Slave.AxiSlaveIn
                     { arready = pure True
-                    , rvalid = delayedValid arvalidSig
-                    , rdata = dataOut'
+                    , rvalid  = delayedValid arvalidSig
+                    , rdata   = dataOut'
                     , awready = pure False
-                    , wready = pure False
-                    , bvalid = pure False
-                    , bdata = pure (AxiB 0 0)
+                    , wready  = pure False
+                    , bvalid  = pure False
+                    , bdata   = pure (AxiB 0 0)
                     }
 
             (masterOut, dataOut, validOut, _) = exposeClockResetEnable
                 (axiRowFetcher (mockDRAM masterOut) request address)
                 CS.systemClockGen CS.resetGen CS.enableGen
 
-            valids = P.take maxCycles $ sample validOut
-            outputs = P.take maxCycles $ sample dataOut
-            requests = P.take maxCycles $ sample request
-            arvalids = P.take maxCycles $ sample $ Master.arvalid masterOut
+            valids        = P.take maxCycles $ sample validOut
+            outputs       = P.take maxCycles $ sample dataOut
+            requests      = P.take maxCycles $ sample request
+            arvalids      = P.take maxCycles $ sample $ Master.arvalid masterOut
 
-            requestCycles = [n | n <- [0..maxCycles-1], requests P.!! n]
-            validCycles = [n | n <- [0..maxCycles-1], valids P.!! n]
-            arvalidCycles = [n | n <- [0..maxCycles-1], arvalids P.!! n]
+            requestCycles   = [n | n <- [0..maxCycles-1], requests P.!! n]
+            validCycles     = [n | n <- [0..maxCycles-1], valids   P.!! n]
+            arvalidCycles   = [n | n <- [0..maxCycles-1], arvalids P.!! n]
 
             validAddresses = [unpack (resize (outputs P.!! n) :: BitVector 32) :: Unsigned 32
                              | n <- [0..maxCycles-1], valids P.!! n]
@@ -377,60 +386,61 @@ axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Inte
             P.putStrLn $ "Expected addresses: " P.++ show expectedAddrs
             validAddresses `shouldBe` expectedAddrs
 
-    describe "DEBUG: Cycle-0 full trace" $ do
-        it "shows all signals through cycle 0-10" $ do
+    -- Reset-safe debug trace: first pulse after reset
+    describe "DEBUG: Reset-safe trace" $ do
+        it "shows all signals through cycle 0-10 (first request at cycle 1)" $ do
             let maxCycles = 15
 
-                request = fromList (True : P.replicate (maxCycles-1) False)
+                -- Do not pulse during reset; start at cycle 1.
+                request = fromList (False : True : P.replicate (maxCycles-2) False)
                 address = pure (49472 :: Unsigned 32)
 
                 mockDRAM masterOut' = Slave.AxiSlaveIn
                     { arready = pure True
-                    , rvalid = register False (Master.arvalid masterOut')
-                    , rdata = pure (AxiR 0 0 True 0)
+                    , rvalid  = register False (Master.arvalid masterOut')
+                    , rdata   = pure (AxiR 0 0 True 0)
                     , awready = pure False
-                    , wready = pure False
-                    , bvalid = pure False
-                    , bdata = pure (AxiB 0 0)
+                    , wready  = pure False
+                    , bvalid  = pure False
+                    , bdata   = pure (AxiB 0 0)
                     }
 
                 (masterOut, _, _, ready) = exposeClockResetEnable
                     (axiRowFetcher (mockDRAM masterOut) request address)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
-                -- Also test requestCapture directly
                 (reqAvail, capturedAddr) = exposeClockResetEnable
-                    (requestCapture request address ready)
+                    (requestCaptureStage request address ready)
                     CS.systemClockGen CS.resetGen CS.enableGen
 
-                reqs = sampleN @System maxCycles request
-                readys = sampleN maxCycles ready
-                avails = sampleN maxCycles reqAvail
-                addrs = sampleN maxCycles capturedAddr
+                reqs     = sampleN @System maxCycles request
+                readys   = sampleN maxCycles ready
+                avails   = sampleN maxCycles reqAvail
+                addrs    = sampleN maxCycles capturedAddr
                 arvalids = sampleN maxCycles (Master.arvalid masterOut)
 
-            P.putStrLn "\n=== CYCLE 0 TRACE ==="
+            P.putStrLn "\n=== RESET-SAFE TRACE (first pulse at cycle 1) ==="
             P.putStrLn "Cyc | Req | Ready | ReqAvail | Addr  | ARval"
             mapM_ (\(c, r, rd, ra, ad, arv) ->
-                P.putStrLn $ printf "%3d | %3s | %5s | %8s | %5d | %5s"
+                P.putStrLn $ printf "%3d | %5s | %5s | %8s | %5d | %5s"
                     c (show r) (show rd) (show ra) ad (show arv))
                 (DL.zip6 [(0::Int)..] reqs readys avails addrs arvalids)
 
-            -- Should see ARvalid by cycle 3-4
-            DL.or (P.take 5 arvalids) `shouldBe` True
+            -- With the first pulse at cycle 1, ARvalid should appear within a few cycles.
+            DL.or (P.take 6 arvalids) `shouldBe` True
 
 -- ============================================================================
 -- Unit Tests: parseRow
 -- ============================================================================
 
 parseRowTests :: Spec
-parseRowTests = describe "WeightStreaming - parseRow - Unit Tests" $ do
+parseRowTests = describe "WeightStreaming - rowParser - Unit Tests" $ do
     context "extracts mantissas correctly" $ do
         let testWord = pack $ (11 :: BitVector 8)
                 :> (20 :: BitVector 8)
                 :> (-2 :: BitVector 8)
                 :> iterateI (+ 1) (5 :: BitVector 8)
-            RowI8E { rowMantissas = mantissas, rowExponent = _exponent} = parseRow @64 testWord
+            RowI8E { rowMantissas = mantissas, rowExponent = _exponent} = rowParser @64 testWord
 
         it "extracts first mantissa correctly" $ do
             head mantissas `shouldBe` 11
