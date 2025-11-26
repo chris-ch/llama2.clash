@@ -110,7 +110,7 @@ spec = do
   --------------------------------------------------------------------------
   describe "weightLoader equivalence (robust timing) - STATE MACHINE DEBUG" $ do
     it "traces the state machine to find the bug" $ do
-      let maxCycles = 300
+      let maxCycles = 1400
           readySig  = pure True
 
           modelDim = natToNum @ModelDimension
@@ -225,7 +225,7 @@ spec = do
 
   describe "weightLoader - ADDRESS DEBUG" $ do
     it "traces addresses to find the pattern" $ do
-      let maxCycles = 350
+      let maxCycles = 1400
           readySig = pure True
           cyclesPerRequest = 50  -- Even more spacing
 
