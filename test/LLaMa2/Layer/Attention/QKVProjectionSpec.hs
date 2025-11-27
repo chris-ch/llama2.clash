@@ -107,7 +107,7 @@ spec :: Spec
 spec = do
   describe "queryHeadProjector - DRAM vs Hardcoded Comparison" $ do
     context "when DRAM matches hardcoded params" $ do
-      let maxCycles = 100
+      let maxCycles = 1000
           layerIdx = 4 :: Index NumLayers
           headIdx = 0 :: Index NumQueryHeads
 
@@ -180,7 +180,7 @@ spec = do
 
   describe "queryHeadProjector - Multi-Token / Boundary Regression" $ do
     it "processes Token 2 with correct Row 0 weights (Fixes 'Stale Row' bug)" $ do
-      let maxCycles = 150
+      let maxCycles = 1000
           layerIdx = 0 :: Index NumLayers
           headIdx = 0 :: Index NumQueryHeads
 

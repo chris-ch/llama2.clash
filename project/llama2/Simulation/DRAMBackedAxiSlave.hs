@@ -1,8 +1,3 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-
 module Simulation.DRAMBackedAxiSlave
   ( DRAMConfig(..)
   , WordData
@@ -25,373 +20,393 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
 
--- | Configuration for DRAM simulation timing
+-- | Timing configuration
+-- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
 data DRAMConfig = DRAMConfig
-  { arReadyDelay :: Int  -- Cycles before accepting AR
-  , rValidDelay  :: Int  -- Cycles from AR accept to R valid
-  , rBeatDelay   :: Int  -- Cycles between R beats in a burst
+  { rValidDelay  :: Int  -- extra cycles from AR accept to first RVALID
+  , arReadyDelay :: Int  -- cycles before accepting next AR
+  , rBeatDelay   :: Int  -- extra cycles between R beats
   } deriving (Show, Eq)
 
-type WordData = BitVector 512  -- 64 bytes per word
+type WordData = BitVector 512  -- 64 bytes per beat
 
 -- ============================================================================
--- Compile-time dimension calculations
+-- Compile-time helpers
 -- ============================================================================
 
--- | Calculate words per row at value level
+-- | Ceiling division of mantissas-per-row: 63 mantissas per 64-byte word.
 wordsPerRowVal :: forall dim. KnownNat dim => Int
 wordsPerRowVal =
   let dim = natToNum @dim :: Int
-  in (dim + 62) `div` 63  -- Ceiling division: (dim + 1 exponent + 61 round) / 63
--- ===============================================================
--- Top-level
--- ===============================================================
+  in (dim + 62) `div` 63
 
+-- ============================================================================
+-- Top-level constructors
+-- ============================================================================
+
+-- | Convenience constructor keeping the historical default 64Ki-word depth.
+-- Use 'createDRAMBackedAxiSlaveFromVec' for any other depth.
 createDRAMBackedAxiSlave ::
   forall dom.
   HiddenClockResetEnable dom =>
   PARAM.DecoderParameters ->
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlave params = createDRAMBackedAxiSlaveFromVec defaultCfg initMem
-  where
-    defaultCfg = DRAMConfig { arReadyDelay = 1, rValidDelay = 1, rBeatDelay = 1 }
-
-    -- Convert to address-indexed memory
-    initMem = buildMemoryFromParams params
+createDRAMBackedAxiSlave params =
+  createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) (buildMemoryFromParams @65536 params)
 
 -- ============================================================================
--- Row Packing (Parameters -> DRAM)
+-- Row packing
 -- ============================================================================
 
--- | Pack a single row into multiple 64-byte words
--- Layout per word:
---   Words 0..N-2: mantissas[i*63..(i+1)*63-1], byte 63 = 0 (padding)
---   Word N-1: mantissas[remaining], exponent, padding
+-- | Pack a single row into multiple 64-byte words.
 packRowMultiWord :: forall dim. KnownNat dim => RowI8E dim -> [BitVector 512]
-packRowMultiWord row = packWords 0
+packRowMultiWord row = go 0
   where
-    dim = natToNum @dim :: Int
-    numWords = wordsPerRowVal @dim
-    allMants = toList $ rowMantissas row
-    exp' = rowExponent row
+    dimI      = natToNum @dim :: Int
+    numWords  = wordsPerRowVal @dim
+    allMants  = toList $ rowMantissas row
+    exp'      = rowExponent row
 
-    packWords :: Int -> [BitVector 512]
-    packWords wordIdx
-      | wordIdx >= numWords = []
-      | wordIdx == numWords - 1 = [packLastWord wordIdx]  -- Last word
-      | otherwise = packMiddleWord wordIdx : packWords (wordIdx + 1)
+    go :: Int -> [BitVector 512]
+    go w | w >= numWords       = []
+         | w == numWords - 1   = [packLast w]
+         | otherwise           = packMid w : go (w+1)
 
-    -- Middle words: 63 mantissas + 1 byte padding
-    packMiddleWord :: Int -> BitVector 512
-    packMiddleWord wordIdx =
-      let startIdx = wordIdx * 63
-          endIdx = min (startIdx + 63) dim
-          mantsThisWord = P.take (endIdx - startIdx) $ P.drop startIdx allMants
-          -- Pad to 64 bytes
-          mantBytes = P.map pack mantsThisWord
-          paddingCount = 64 - P.length mantBytes
-          bytes = mantBytes P.++ P.replicate paddingCount (0 :: BitVector 8)
+    packMid :: Int -> BitVector 512
+    packMid w =
+      let s = w * 63
+          e = min (s + 63) dimI
+          mantsThis = P.take (e - s) $ P.drop s allMants
+          bytes = P.map pack mantsThis P.++ P.replicate (64 - P.length mantsThis) (0 :: BitVector 8)
       in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
 
-    -- Last word: remaining mantissas + exponent + padding
-    packLastWord :: Int -> BitVector 512
-    packLastWord wordIdx =
-      let startIdx = wordIdx * 63
-          numMantsInLast = dim - startIdx
-          mantsThisWord = P.take numMantsInLast $ P.drop startIdx allMants
+    packLast :: Int -> BitVector 512
+    packLast w =
+      let s = w * 63
+          cnt = dimI - s
+          mantsThis = P.take cnt $ P.drop s allMants
           expByte = resize (pack exp') :: BitVector 8
-          mantBytes = P.map pack mantsThisWord
-          -- Structure: [mantissas] [exponent] [padding]
-          bytes = mantBytes
-                  P.++ [expByte]
-                  P.++ P.replicate (63 - numMantsInLast) (0 :: BitVector 8)
+          bytes = P.map pack mantsThis P.++ [expByte] P.++ P.replicate (63 - cnt) (0 :: BitVector 8)
       in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
 
--- | Pack a matrix (collection of rows) into sequential words
-packMatrixMultiWord :: forall rows cols. ( KnownNat cols)
+packMatrixMultiWord :: forall rows cols. KnownNat cols
   => MatI8E rows cols -> [BitVector 512]
-packMatrixMultiWord matrix = P.concatMap packRowMultiWord (toList matrix)
+packMatrixMultiWord m = P.concatMap packRowMultiWord (toList m)
 
--- | Pack FixedPoint vector into 64-byte aligned words (for RMS weights)
--- Each FixedPoint is 2 bytes (16 bits)
--- | Pack FixedPoint vector into 64-byte aligned words (for RMS weights)
--- Works for any BitSize FixedPoint that is a whole number of bytes.
+-- Pack FixedPoint vector into 64-byte words (little-endian per element).
 packFixedPointVec :: forall n. (KnownNat n, KnownNat (BitSize FixedPoint))
   => Vec n FixedPoint -> [BitVector 512]
-packFixedPointVec vec = packWords 0
+packFixedPointVec v = go 0
   where
-    n = natToNum @n :: Int
-    bitSizeFP = natToNum @(BitSize FixedPoint) :: Int
-    bytesPerElem =
-      if bitSizeFP `mod` 8 /= 0
-      then error "FixedPoint BitSize must be a whole multiple of 8"
-      else bitSizeFP `div` 8
-    elemsPerWord = 64 `div` bytesPerElem  -- number of FixedPoint elems per 64-byte word
-    numWords = (n + elemsPerWord - 1) `div` elemsPerWord
+    nI         = natToNum @n :: Int
+    bitSizeFP  = natToNum @(BitSize FixedPoint) :: Int
+    bytesPerEl | bitSizeFP `mod` 8 /= 0 = error "FixedPoint BitSize must be a multiple of 8"
+               | otherwise               = bitSizeFP `div` 8
+    perWord    = 64 `div` bytesPerEl
+    numWords   = (nI + perWord - 1) `div` perWord
 
-    packWords :: Int -> [BitVector 512]
-    packWords wordIdx
-      | wordIdx >= numWords = []
-      | otherwise = packWord wordIdx : packWords (wordIdx + 1)
+    go w | w >= numWords = []
+         | otherwise     = packWord w : go (w+1)
 
-    packWord :: Int -> BitVector 512
-    packWord wordIdx =
-      let startIdx = wordIdx * elemsPerWord
-          endIdx = min (startIdx + elemsPerWord) n
-          elemsThisWord = P.take (endIdx - startIdx) $ P.drop startIdx $ toList vec
-
-          -- For each FixedPoint, pack it to its BitVector and then split into bytes (little-endian)
-          bytes :: [BitVector 8]
+    packWord w =
+      let s = w * perWord
+          e = min (s + perWord) nI
+          els = P.take (e - s) $ P.drop s $ toList v
           bytes = P.concatMap (\fp ->
                     let bits = pack fp :: BitVector (BitSize FixedPoint)
-                        ind = [0 .. (bytesPerElem - 1)]
-                    in P.map (\i -> resize (bits `shiftR` (8 * i)) :: BitVector 8) ind
-                  ) elemsThisWord
-
-          paddingCount = 64 - P.length bytes
-          allBytes = bytes P.++ P.replicate paddingCount (0 :: BitVector 8)
-      in pack (unsafeFromList (P.take 64 allBytes) :: Vec 64 (BitVector 8))
+                    in [ resize (bits `shiftR` (8*i)) :: BitVector 8 | i <- [0 .. bytesPerEl-1] ]
+                   ) els
+          allB = bytes P.++ P.replicate (64 - P.length bytes) (0 :: BitVector 8)
+      in pack (unsafeFromList (P.take 64 allB) :: Vec 64 (BitVector 8))
 
 -- ============================================================================
--- Memory Building (Full Model -> DRAM)
+-- Build a DRAM image (generic depth)
 -- ============================================================================
 
--- | Helper to align sizes to 64-byte boundaries
 align64 :: Int -> Int
 align64 n = ((n + 63) `div` 64) * 64
 
--- | Pad word list to 64-byte boundary
-padTo64Bytes :: [BitVector 512] -> [BitVector 512]
-padTo64Bytes wrds = wrds  -- Already 64-byte aligned since each word is 64 bytes
-
--- | Build complete DRAM memory from decoder parameters
-buildMemoryFromParams :: PARAM.DecoderParameters -> Vec 65536 WordData
+-- | Build a DRAM image from model parameters, trimmed/padded to n words.
+buildMemoryFromParams :: forall n. KnownNat n => PARAM.DecoderParameters -> Vec n WordData
 buildMemoryFromParams params =
-  unsafeFromList $ P.take 65536 $ allWords P.++ P.repeat 0
+  let nI = natToNum @n :: Int
+  in unsafeFromList $ P.take nI $ allWords P.++ P.repeat 0
   where
-    -- Collect all sections in order
     allWords = embeddingWords
             P.++ rmsFinalWords
             P.++ rotaryWords
             P.++ P.concatMap layerWords [0..numLayers-1]
 
-    numLayers = natToNum @NumLayers :: Int
-    numQHeads = natToNum @NumQueryHeads :: Int
+    numLayers  = natToNum @NumLayers :: Int
+    numQHeads  = natToNum @NumQueryHeads :: Int
     numKVHeads = natToNum @NumKeyValueHeads :: Int
 
-    embedding = PARAM.modelEmbedding params
+    embedding       = PARAM.modelEmbedding params
+    embeddingWords  = packMatrixMultiWord (PARAM.vocabularyQ embedding)
+    rmsFinalWords   = packFixedPointVec (PARAM.rmsFinalWeightF embedding)
 
-    -- Embedding: vocabularyQ is MatI8E VocabularySize ModelDimension
-    embeddingWords = packMatrixMultiWord (PARAM.vocabularyQ embedding)
-
-    -- RMS Final: Vec ModelDimension FixedPoint
-    rmsFinalWords = padTo64Bytes $ packFixedPointVec (PARAM.rmsFinalWeightF embedding)
-
-    -- Rotary encoding tables: Vec SequenceLength (Vec RotaryDim FixedPoint)
-    -- Need to pack both cos and sin tables
     rotaryWords =
-      let
-          -- Get rotary from first head of first layer
-          layer0 = head (PARAM.modelLayers params)
-          mha0 = PARAM.multiHeadAttention layer0
-          head0 = head (PARAM.headsQ mha0)
-          rotary = PARAM.rotaryF head0
+      let layer0   = head (PARAM.modelLayers params)
+          mha0     = PARAM.multiHeadAttention layer0
+          head0    = head (PARAM.headsQ mha0)
+          rotary   = PARAM.rotaryF head0
+          cosWords = P.concatMap packFixedPointVec (toList (PARAM.freqCosF rotary))
+          sinWords = P.concatMap packFixedPointVec (toList (PARAM.freqSinF rotary))
+          totalB   = (P.length cosWords + P.length sinWords) * 64
+          padW     = (align64 totalB - totalB) `div` 64
+      in cosWords P.++ sinWords P.++ P.replicate padW 0
 
-          -- Pack cos table (SequenceLength × RotaryDim)
-          cosTable = PARAM.freqCosF rotary
-          cosWords = P.concatMap packFixedPointVec (toList cosTable)
-
-          -- Pack sin table (SequenceLength × RotaryDim)
-          sinTable = PARAM.freqSinF rotary
-          sinWords = P.concatMap packFixedPointVec (toList sinTable)
-
-          totalBytes = P.length cosWords * 64 + P.length sinWords * 64
-          alignedBytes = align64 totalBytes
-          paddingWords = (alignedBytes - totalBytes) `div` 64
-      in cosWords P.++ sinWords P.++ P.replicate paddingWords 0
-
-    -- Single layer's worth of weights
-    layerWords :: Int -> [BitVector 512]
-    layerWords layerIdx =
-      let layer = PARAM.modelLayers params !! layerIdx
-          mha = PARAM.multiHeadAttention layer
-          ffn = PARAM.feedforwardNetwork layer
-      in rmsAttWords mha
-      P.++ qWords mha
-      P.++ kWords mha
-      P.++ vWords mha
-      P.++ woWords mha
-      P.++ rmsFfnWords ffn
-      P.++ w1Words ffn
-      P.++ w2Words ffn
-      P.++ w3Words ffn
-
-    -- RMS attention: Vec ModelDimension FixedPoint
-    rmsAttWords mha = padTo64Bytes $ packFixedPointVec (PARAM.rmsAttF mha)
-
-    -- Q matrices: all query heads
-    -- headsQ :: Vec NumQueryHeads SingleHeadComponentQ
-    -- wqHeadQ :: MatI8E HeadDimension ModelDimension
-    qWords mha = P.concatMap qHeadWords [0..numQHeads-1]
-      where
-        qHeadWords headIdx =
-          packMatrixMultiWord (PARAM.wqHeadQ (PARAM.headsQ mha !! headIdx))
-
-    -- K matrices: need to map from KV heads
-    -- For grouped-query attention: each KV head corresponds to multiple Q heads
-    kWords mha = P.concatMap kHeadWords [0..numKVHeads-1]
-      where
-        queryHeadsPerKV = numQHeads `div` numKVHeads
-        kHeadWords kvHeadIdx =
-          let qHeadIdx = kvHeadIdx * queryHeadsPerKV
-          in packMatrixMultiWord (PARAM.wkHeadQ (PARAM.headsQ mha !! qHeadIdx))
-
-    -- V matrices: same mapping as K
-    vWords mha = P.concatMap vHeadWords [0..numKVHeads-1]
-      where
-        queryHeadsPerKV = numQHeads `div` numKVHeads
-        vHeadWords kvHeadIdx =
-          let qHeadIdx = kvHeadIdx * queryHeadsPerKV
-          in packMatrixMultiWord (PARAM.wvHeadQ (PARAM.headsQ mha !! qHeadIdx))
-
-    -- WO matrices: mWoQ :: Vec NumQueryHeads (MatI8E ModelDimension HeadDimension)
-    woWords mha = P.concatMap woHeadWords [0..numQHeads-1]
-      where
-        woHeadWords headIdx =
-          packMatrixMultiWord (PARAM.mWoQ mha !! headIdx)
-
-    -- RMS FFN: Vec ModelDimension FixedPoint
-    rmsFfnWords ffn = padTo64Bytes $ packFixedPointVec (PARAM.fRMSFfnF ffn)
-
-    -- W1: fW1Q :: MatI8E HiddenDimension ModelDimension
-    w1Words ffn = packMatrixMultiWord (PARAM.fW1Q ffn)
-
-    -- W2: fW2Q :: MatI8E ModelDimension HiddenDimension
-    w2Words ffn = packMatrixMultiWord (PARAM.fW2Q ffn)
-
-    -- W3: fW3Q :: MatI8E HiddenDimension ModelDimension
-    w3Words ffn = packMatrixMultiWord (PARAM.fW3Q ffn)
+    layerWords li =
+      let layer = PARAM.modelLayers params !! li
+          mha   = PARAM.multiHeadAttention layer
+          ffn   = PARAM.feedforwardNetwork layer
+          qWords = P.concatMap (\h -> packMatrixMultiWord (PARAM.wqHeadQ (PARAM.headsQ mha !! h)))
+                               [0..numQHeads-1]
+          kvMap kvh =
+            let qh = kvh * (numQHeads `div` numKVHeads)
+            in qh
+          kWords = P.concatMap (\kvh -> packMatrixMultiWord (PARAM.wkHeadQ (PARAM.headsQ mha !! kvMap kvh)))
+                               [0..numKVHeads-1]
+          vWords = P.concatMap (\kvh -> packMatrixMultiWord (PARAM.wvHeadQ (PARAM.headsQ mha !! kvMap kvh)))
+                               [0..numKVHeads-1]
+          woWords = P.concatMap (\h -> packMatrixMultiWord (PARAM.mWoQ mha !! h))
+                                [0..numQHeads-1]
+      in  packFixedPointVec (PARAM.rmsAttF mha)
+       P.++ qWords P.++ kWords P.++ vWords P.++ woWords
+       P.++ packFixedPointVec (PARAM.fRMSFfnF ffn)
+       P.++ packMatrixMultiWord (PARAM.fW1Q ffn)
+       P.++ packMatrixMultiWord (PARAM.fW2Q ffn)
+       P.++ packMatrixMultiWord (PARAM.fW3Q ffn)
 
 -- ============================================================================
--- AXI Slave Implementation
+-- AXI Slave (depth-generic)
 -- ============================================================================
 
--- | State for AXI read transactions
-data ReadState = RIdle | RProcessing (Index 256) (Index 256)
-  deriving (Generic, NFDataX, Show)
+data ReadState  = RIdle | RProcessing (Index 256) (Index 256)
+  deriving (Generic, NFDataX, Show, Eq)
 
-instance Eq ReadState where
-  RIdle == RIdle = True
-  (RProcessing b1 c1) == (RProcessing b2 c2) = b1 == b2 && c1 == c2
-  _ == _ = False
+data WriteState = WIdle | WProcessing (Index 256) (Index 256)
+  deriving (Generic, NFDataX, Show, Eq)
 
--- | Create an AXI slave backed by Vec memory with configurable timing
-createDRAMBackedAxiSlaveFromVec :: forall dom.
-  HiddenClockResetEnable dom
+-- | Generic-depth DRAM-backed AXI slave (read+write for tests; writes optional in HW).
+createDRAMBackedAxiSlaveFromVec :: forall dom n.
+  (HiddenClockResetEnable dom, KnownNat n)
   => DRAMConfig
-  -> Vec 65536 WordData
+  -> Vec n WordData
   -> Master.AxiMasterOut dom
   -> Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlaveFromVec config memory masterIn =
+createDRAMBackedAxiSlaveFromVec config initVec masterIn =
   Slave.AxiSlaveIn
     { arready = arreadySig
     , rvalid  = rvalidSig
     , rdata   = rdataSig
-    , awready = pure False  -- Write not supported
-    , wready  = pure False
-    , bvalid  = pure False
-    , bdata   = pure (AxiB 0 0)
+    , awready = awreadySig
+    , wready  = wreadySig
+    , bvalid  = bvalidSig
+    , bdata   = bdataSig
     }
   where
-    -- Read state machine
+    -- ==================== Shared RAM (generic depth) ====================
+    ramReadAddr :: Signal dom (Index n)
+    ramReadAddr = readAddrIdx
+
+    writeData :: Signal dom WordData
+    writeData = wdata <$> Master.wdata masterIn
+
+    writeM :: Signal dom (Maybe (Index n, WordData))
+    writeM = mux wHandshake (Just <$> bundle (writeAddrIdx, writeData))
+                            (pure Nothing)
+
+    ramOut :: Signal dom WordData
+    ramOut = blockRam initVec ramReadAddr writeM
+
+    readAddrEn  :: Signal dom Bool
+    readAddrEn  = (\case RProcessing{} -> True; _ -> False) <$> readState
+    ramOutValid :: Signal dom Bool
+    ramOutValid = register False readAddrEn
+
+    nWordsU32 :: Unsigned 32
+    nWordsU32 = fromIntegral (natToNum @n :: Int)
+
     readState :: Signal dom ReadState
     readState = register RIdle nextReadState
 
-    -- Captured AR request
     capturedAR :: Signal dom AxiAR
     capturedAR = regEn (AxiAR 0 0 0 0 0) arAccepted (Master.ardata masterIn)
 
-    -- Delay counters for timing simulation
     arDelayCounter :: Signal dom (Index 16)
     arDelayCounter = register 0 nextARDelay
 
     rDelayCounter :: Signal dom (Index 16)
     rDelayCounter = register 0 nextRDelay
 
-    -- AR handshake signals
-    arAccepted :: Signal dom Bool
-    arAccepted = Master.arvalid masterIn .&&. arreadySig
-
     arreadySig :: Signal dom Bool
     arreadySig = (readState .==. pure RIdle) .&&. (arDelayCounter .==. pure 0)
 
-    -- State transition
-    nextReadState :: Signal dom ReadState
-    nextReadState =
-      mux arAccepted
-          ((\ar -> RProcessing 0 (fromInteger $ toInteger $ arlen ar :: Index 256)) <$> Master.ardata masterIn)
-          $ mux (isProcessing <$> readState .&&. rHandshake)
-              (advance <$> readState)
-              readState
-      where
-        isProcessing (RProcessing _ _) = True
-        isProcessing RIdle             = False
-        advance (RProcessing beat len)
-          | beat >= len = RIdle
-          | otherwise   = RProcessing (beat + 1) len
-        advance s = s
+    arAccepted :: Signal dom Bool
+    arAccepted = Master.arvalid masterIn .&&. arreadySig
 
-    -- R channel handshake
+    currentBeat :: Signal dom (Index 256)
+    currentBeat = (\case RProcessing b _ -> b; _ -> 0) <$> readState
+
     rHandshake :: Signal dom Bool
     rHandshake = rvalidSig .&&. Master.rready masterIn
 
-    rvalidSig :: Signal dom Bool
-    rvalidSig = (\s del -> case s of
-                    RProcessing _ _ -> del == 0
-                    _ -> False)
-                <$> readState <*> rDelayCounter
+    nextReadState :: Signal dom ReadState
+    nextReadState =
+      mux arAccepted
+          ((\ar -> RProcessing 0 (fromInteger $ toInteger $ arlen ar :: Index 256))
+            <$> Master.ardata masterIn)
+      $ mux (isProc <$> readState .&&. rHandshake)
+          (advance <$> readState)
+          readState
+      where
+        isProc (RProcessing _ _) = True
+        isProc _                 = False
+        advance (RProcessing b l) | b >= l    = RIdle
+                                  | otherwise = RProcessing (b+1) l
+        advance s = s
 
-    -- Extract current beat (0-based) from state
-    currentBeat :: Signal dom (Index 256)
-    currentBeat = (\case
-        RProcessing b _ -> b
-        RIdle -> 0) <$> readState
+    beatOffsetBytes :: Signal dom (Unsigned 32)
+    beatOffsetBytes = (`shiftL` 6) . fromIntegral <$> currentBeat
 
-    -- Convert to Unsigned for address calculation
-    beatOffset :: Signal dom (Unsigned 32)
-    beatOffset = (`shiftL` 6) P.. fromIntegral P.<$> currentBeat
-
-    -- Final read address
     currentAddress :: Signal dom (Unsigned 32)
-    currentAddress = (+) <$> (araddr <$> capturedAR) <*> beatOffset
+    currentAddress = (+) <$> (araddr <$> capturedAR) <*> beatOffsetBytes
 
-    -- Memory lookup
-    memoryRead :: Signal dom WordData
-    memoryRead = (\addr -> memory !! (addr `shiftR` 6)) <$> currentAddress
+    addrWordU :: Signal dom (Unsigned 32)
+    addrWordU = (`shiftR` 6) <$> currentAddress
 
-    -- R channel response
+    readAddrIdx :: Signal dom (Index n)
+    readAddrIdx =
+      (fromIntegral :: Unsigned 32 -> Index n) <$> ((`mod` nWordsU32) <$> addrWordU)
+
+    rvalidSig :: Signal dom Bool
+    rvalidSig = (\s del ok -> case s of
+                    RProcessing{} -> (del == 0) && ok
+                    _             -> False)
+                <$> readState <*> rDelayCounter <*> ramOutValid
+
     rdataSig :: Signal dom AxiR
     rdataSig = (\s ar dat ->
                   let isLast = case s of
-                                 RProcessing b len -> b >= len
-                                 RIdle             -> False
+                                 RProcessing b l -> b >= l
+                                 _               -> False
                   in AxiR dat 0 isLast (arid ar)
-               ) <$> readState <*> capturedAR <*> memoryRead
+               ) <$> readState <*> capturedAR <*> ramOut
 
-    -- Delay counter updates
-    nextARDelay = mux arAccepted
-                      (pure $ fromIntegral $ arReadyDelay config)
-                  $ mux (arDelayCounter .>. pure 0)
-                      (arDelayCounter - 1)
-                      arDelayCounter
+    nextARDelay :: Signal dom (Index 16)
+    nextARDelay =
+      mux arAccepted
+          (pure (fromIntegral (arReadyDelay config)))
+      $ mux (arDelayCounter .>. pure 0)
+          (arDelayCounter - 1)
+          arDelayCounter
 
-    nextRDelay = mux arAccepted
-                     (pure $ fromIntegral $ rValidDelay config)
-                 $ mux (rHandshake .&&. ((  \case
-                      RProcessing _ _ -> True
-                      _ -> False) <$> readState))
-                     (pure $ fromIntegral $ rBeatDelay config)
-                 $ mux (rDelayCounter .>. pure 0)
-                     (rDelayCounter - 1)
-                     rDelayCounter
+    -- Load exactly rValidDelay/rBeatDelay (BRAM already gives +1)
+    nextRDelay :: Signal dom (Index 16)
+    nextRDelay =
+      let loadAfterAR   = fromIntegral (rValidDelay config)
+          loadAfterBeat = fromIntegral (rBeatDelay  config)
+          processing    = (\case RProcessing{} -> True; _ -> False) <$> readState
+      in mux arAccepted
+            (pure loadAfterAR)
+       $ mux (rHandshake .&&. processing)
+            (pure loadAfterBeat)
+       $ mux (rDelayCounter .>. pure 0)
+            (rDelayCounter - 1)
+            rDelayCounter
+
+    writeState :: Signal dom WriteState
+    writeState = register WIdle nextWriteState
+
+    capturedAW :: Signal dom AxiAW
+    capturedAW = regEn (AxiAW 0 0 0 0 0) awAccepted (Master.awdata masterIn)
+
+    awreadySig :: Signal dom Bool
+    awreadySig = writeState .==. pure WIdle
+
+    awAccepted :: Signal dom Bool
+    awAccepted = Master.awvalid masterIn .&&. awreadySig
+
+    -- Accept W either when already processing or in SAME cycle as AW is accepted
+    wreadySig :: Signal dom Bool
+    wreadySig = ((\case WProcessing{} -> True; _ -> False) <$> writeState) .||. awAccepted
+
+    wBeat :: Signal dom (Index 256)
+    wBeat = (\case WProcessing b _ -> b; _ -> 0) <$> writeState
+
+    writeBaseAddr :: Signal dom (Unsigned 32)
+    writeBaseAddr = mux awAccepted (awaddr <$> Master.awdata masterIn)
+                                 (awaddr <$> capturedAW)
+
+    writeBeatIdx :: Signal dom (Index 256)
+    writeBeatIdx = mux awAccepted (pure 0) wBeat
+
+    writeAddress :: Signal dom (Unsigned 32)
+    writeAddress = (+) <$> writeBaseAddr <*> ((`shiftL` 6) . fromIntegral <$> writeBeatIdx)
+
+    writeAddrIdx :: Signal dom (Index n)
+    writeAddrIdx =
+      (fromIntegral :: Unsigned 32 -> Index n)
+      <$> ((`mod` nWordsU32) <$> ( (`shiftR` 6) <$> writeAddress ))
+
+    wHandshake :: Signal dom Bool
+    wHandshake = wreadySig .&&. Master.wvalid masterIn
+
+    firstBeatAccepted :: Signal dom Bool
+    firstBeatAccepted = awAccepted .&&. Master.wvalid masterIn
+
+    -- QUALIFY last-beat-by-length with WProcessing to avoid early BVALID
+    wProcessing :: Signal dom Bool
+    wProcessing = (\case WProcessing{} -> True; _ -> False) <$> writeState
+
+    isLastWBeat :: Signal dom Bool
+    isLastWBeat = (\case
+        WProcessing b l -> b >= l
+        _ -> False) <$> writeState
+
+    nextWriteState :: Signal dom WriteState
+    nextWriteState =
+      mux awAccepted
+          ((\aw fb ->
+              let l :: Index 256
+                  l = fromInteger $ toInteger $ awlen aw
+                  b0 = if fb then 1 else 0
+              in WProcessing b0 l) <$> Master.awdata masterIn <*> firstBeatAccepted)
+      $ mux (isProc <$> writeState .&&. wHandshake)
+          (advance <$> writeState)
+          writeState
+      where
+        isProc (WProcessing _ _) = True
+        isProc _                 = False
+        advance (WProcessing b l) | b >= l    = WIdle
+                                  | otherwise = WProcessing (b+1) l
+        advance s = s
+
+    bvalidReg :: Signal dom Bool
+    bvalidReg = register False nextBValid
+
+    bvalidSig :: Signal dom Bool
+    bvalidSig = bvalidReg
+
+    -- AW+W same-cycle last-beat only for single-beat writes (len==0)
+    singleBeatNow :: Signal dom Bool
+    singleBeatNow = firstBeatAccepted .&&. ((\aw -> awlen aw == 0) <$> Master.awdata masterIn)
+
+    lastBeatAccepted :: Signal dom Bool
+    lastBeatAccepted =
+      -- Only allow the length-based path while in WProcessing
+      (wHandshake .&&. wProcessing .&&. isLastWBeat) .||. singleBeatNow
+
+    nextBValid :: Signal dom Bool
+    nextBValid =
+      mux lastBeatAccepted
+          (pure True)
+      $ mux (bvalidReg .&&. Master.bready masterIn)
+          (pure False)
+          bvalidReg
+
+    bdataSig :: Signal dom AxiB
+    bdataSig = AxiB 0 . awid <$> capturedAW
+

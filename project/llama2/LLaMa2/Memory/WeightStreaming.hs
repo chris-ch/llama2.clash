@@ -1,5 +1,3 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE FlexibleInstances #-}
 module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
   , calculateRowAddress

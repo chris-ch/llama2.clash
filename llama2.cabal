@@ -34,6 +34,7 @@ flag model-15m
 common project-defaults
   default-language: Haskell2010
   default-extensions:
+    AllowAmbiguousTypes
     BangPatterns
     DataKinds
     DeriveAnyClass
@@ -41,6 +42,7 @@ common project-defaults
     DerivingVia
     DoAndIfThenElse
     FlexibleContexts
+    FlexibleInstances
     GeneralizedNewtypeDeriving
     ImplicitParams
     InstanceSigs

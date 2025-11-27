@@ -14,7 +14,8 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..), AxiAR (..))
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Numeric.Types (Mantissa)
-import Control.Monad (zipWithM_)
+
+type TestDRAMDepth = 65536
 
 testParams :: PARAM.DecoderParameters
 testParams = PARAM.decoderConst
@@ -131,6 +132,7 @@ spec = do
           reqSig = fromList (reqList P.++ P.repeat 0)
           reqValidSig = fromList (validList P.++ P.repeat False)
 
+          dramContents :: Vec TestDRAMDepth DRAMSlave.WordData
           dramContents = DRAMSlave.buildMemoryFromParams testParams
           realDRAM masterOut' =
             exposeClockResetEnable
@@ -206,7 +208,8 @@ spec = do
           reqSig = fromList (reqList P.++ P.repeat 0)
           reqValidSig = fromList (validList P.++ P.repeat False)
 
-          dramContents = DRAMSlave.buildMemoryFromParams testParams
+          dramContents :: Vec TestDRAMDepth DRAMSlave.WordData
+          dramContents = DRAMSlave.buildMemoryFromParams @TestDRAMDepth testParams
           realDRAM masterOut' =
             exposeClockResetEnable
               (DRAMSlave.createDRAMBackedAxiSlaveFromVec
@@ -253,6 +256,7 @@ spec = do
           reqSig = fromList (reqList P.++ P.repeat 0)
           reqValidSig = fromList (validList P.++ P.repeat False)
 
+          dramContents :: Vec TestDRAMDepth DRAMSlave.WordData
           dramContents = DRAMSlave.buildMemoryFromParams testParams
           realDRAM masterOut' =
             exposeClockResetEnable

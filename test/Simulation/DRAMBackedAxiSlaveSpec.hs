@@ -1,4 +1,3 @@
-{-# LANGUAGE NoStarIsType #-}
 module Simulation.DRAMBackedAxiSlaveSpec (spec) where
 
 import Clash.Prelude
