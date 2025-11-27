@@ -1,14 +1,16 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FlexibleInstances #-}
 module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
   , calculateRowAddress
   , axiRowFetcher
+  , axiMultiWordRowFetcher
+  , multiWordRowParser
   , rowParser
   , requestCaptureStage
   ) where
 
 import Clash.Prelude
-import qualified Prelude as P
-import Clash.Sized.Vector (unsafeFromList)
 
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E (..))
@@ -16,10 +18,43 @@ import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
+import qualified GHC.TypeNats as T
+
+-- | Calculate how many 64-byte words needed for a row
+-- Each word can hold 63 mantissas (byte 63 reserved for last word's exponent)
+-- Last word also holds the exponent
+type family WordsPerRow (dim :: Nat) :: Nat where
+  WordsPerRow dim = Div (dim + 62) 63  -- Ceiling division
+
+-- | Helper to get the value at runtime
+wordsPerRowVal :: forall dim. KnownNat dim => Int
+wordsPerRowVal =
+  let dim = natToNum @dim :: Int
+  in (dim + 62) `div` 63
+
+-- | Maximum burst length we might need (for largest model)
+-- LLaMa 70B has ModelDimension = 7168
+-- (7168 + 62) / 63 = 115 words
+-- type MaxBurstWords = 128  -- Round up to power of 2 for safety
+
+class KnownNat dim => RowHasEnoughBytes dim where
+instance KnownNat dim => RowHasEnoughBytes dim  -- safe due to WordsPerRow definition
 
 -- | Matrix type identifier for address calculation
 data MatrixType = QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix | W3Matrix
   deriving (Show, Eq, Generic, NFDataX)
+
+data MultiWordFetchState (n :: Nat) = MWIdle | MWWaitAR | MWWaitR (Index n) | MWDone
+  deriving (Show, Generic, NFDataX)
+
+-- Equality requires some type manipulation
+instance KnownNat n => Eq (MultiWordFetchState n) where
+  (==) :: MultiWordFetchState n -> MultiWordFetchState n -> Bool
+  MWIdle == MWIdle = True
+  MWWaitAR == MWWaitAR = True
+  (MWWaitR i) == (MWWaitR j) = i == j
+  MWDone == MWDone = True
+  _ == _ = False
 
 -- | Helper to align sizes to 64-byte boundaries
 align64 :: Int -> Int
@@ -28,35 +63,38 @@ align64 n = ((n + 63) `div` 64) * 64
 -- | Calculate DDR byte address for a specific matrix row
 -- Enforces 64-byte alignment for all sections to match AXI word boundaries
 calculateRowAddress ::
-  MatrixType           -- ^ which matrix
-  -> Index NumLayers      -- ^ which layer (0-based)
-  -> Index NumQueryHeads  -- ^ head index (for Q/K/V)
-  -> Index HeadDimension  -- ^ row index within matrix
-  -> Unsigned 32          -- ^ output: DDR byte address
+  MatrixType
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Index HeadDimension
+  -> Unsigned 32
 calculateRowAddress matType layerIdx headIdx rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
   where
-    -- Base address: after embedding, rmsFinal, and rotary sections
-    vocabSize = natToNum @VocabularySize :: Int
     modelDim = natToNum @ModelDimension :: Int
+    hiddenDim = natToNum @HiddenDimension :: Int
+    numQHeads = natToNum @NumQueryHeads :: Int
+    numKVHeads = natToNum @NumKeyValueHeads :: Int
+    headDim = natToNum @HeadDimension :: Int
+    vocabSize = natToNum @VocabularySize :: Int
     seqLen = natToNum @SequenceLength :: Int
     rotaryDim = natToNum @RotaryPositionalEmbeddingDimension :: Int
 
-    -- All sections must be padded to 64 bytes
-    -- Note: DRAMBackedAxiSlave packs rows into 64 bytes exactly (take 63 mantissas)
-    -- So we treat row size as 64, not modelDim + 1.
+    -- Calculate words per row for different matrix types
+    wordsPerModelDimRow = wordsPerRowVal @ModelDimension
+    wordsPerHiddenDimRow = wordsPerRowVal @HiddenDimension
 
-    bytesPerRow = 64 :: Int -- Fixed to 64 bytes per row (512-bit word)
+    bytesPerWord = 64 :: Int
 
-    -- Embedding: vocabSize rows. Each row is 64 bytes.
-    embeddingBytes = vocabSize * bytesPerRow
+    -- Embedding: vocabSize rows × ModelDimension each
+    embeddingBytes = vocabSize * wordsPerModelDimRow * bytesPerWord
 
-    -- RMS Final: modelDim + 1 values. Must align to next 64 bytes.
-    rmsFinalRaw = modelDim + 1
-    rmsFinalBytes = align64 rmsFinalRaw
+    -- RMS Final: modelDim + 1 values (single row)
+    rmsFinalWords = wordsPerRowVal @ModelDimension
+    rmsFinalBytes = align64 (rmsFinalWords * bytesPerWord)
 
-    -- Rotary: 
+    -- Rotary: 2 * seqLen * rotaryDim * 4 bytes (float32)
     rotaryRaw = 2 * seqLen * rotaryDim * 4
     rotaryBytes = align64 rotaryRaw
 
@@ -64,32 +102,28 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     baseAddr = embeddingBytes + rmsFinalBytes + rotaryBytes
 
     -- Layer geometry
-    numQHeads = natToNum @NumQueryHeads :: Int
-    numKVHeads = natToNum @NumKeyValueHeads :: Int
-    headDim = natToNum @HeadDimension :: Int
-    hiddenDim = natToNum @HiddenDimension :: Int
+    rmsAttBytes = align64 (rmsFinalWords * bytesPerWord)
 
-    -- All internal matrix components are collections of rows.
-    -- Since each row is 64 bytes, and we have N rows, the total size is N * 64.
-    -- This is naturally aligned to 64.
-
-    rmsAttBytes = align64 (modelDim + 1)
-
-    qHeadBytes = headDim * bytesPerRow
+    -- Q matrices: NumQueryHeads × (HeadDim rows × ModelDim cols)
+    qHeadBytes = headDim * wordsPerModelDimRow * bytesPerWord
     qTotalBytes = numQHeads * qHeadBytes
 
-    kHeadBytes = headDim * bytesPerRow
+    -- K/V matrices: NumKVHeads × (HeadDim rows × ModelDim cols)
+    kHeadBytes = headDim * wordsPerModelDimRow * bytesPerWord
     kTotalBytes = numKVHeads * kHeadBytes
-
     vTotalBytes = kTotalBytes
 
-    woTotalBytes = numQHeads * modelDim * bytesPerRow
+    -- WO matrix: NumQueryHeads × (ModelDim rows × ModelDim cols)
+    woTotalBytes = numQHeads * modelDim * wordsPerModelDimRow * bytesPerWord
 
-    rmsFfnBytes = align64 (modelDim + 1)
+    rmsFfnBytes = align64 (rmsFinalWords * bytesPerWord)
 
-    w1Bytes = hiddenDim * bytesPerRow -- W1 is Hidden x Model
-    w2Bytes = modelDim * bytesPerRow  -- W2 is Model x Hidden
-    w3Bytes = hiddenDim * bytesPerRow -- W3 is Hidden x Model
+    -- W1/W3: HiddenDim rows × ModelDim cols
+    w1Bytes = hiddenDim * wordsPerModelDimRow * bytesPerWord
+    w3Bytes = hiddenDim * wordsPerModelDimRow * bytesPerWord
+
+    -- W2: ModelDim rows × HiddenDim cols
+    w2Bytes = modelDim * wordsPerHiddenDimRow * bytesPerWord
 
     layerBytes = rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes +
                  rmsFfnBytes + w1Bytes + w2Bytes + w3Bytes
@@ -113,16 +147,19 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
       QMatrix -> qHeadBytes
       KMatrix -> kHeadBytes
       VMatrix -> kHeadBytes
-      WOMatrix -> modelDim * bytesPerRow -- Each WO head has ModelDim rows
+      WOMatrix -> modelDim * wordsPerModelDimRow * bytesPerWord
       _ -> 0
 
     headOffset :: Int
     headOffset = fromIntegral headIdx * headBytes
 
     -- Row offset within head/matrix
-    -- All rows are now treated as 64 bytes
+    rowBytesForMatrix = case matType of
+      W2Matrix -> wordsPerHiddenDimRow * bytesPerWord
+      _ -> wordsPerModelDimRow * bytesPerWord
+
     rowOffset :: Int
-    rowOffset = fromIntegral rowIdx * bytesPerRow
+    rowOffset = fromIntegral rowIdx * rowBytesForMatrix
 
 -- State machine for AXI read
 data RowFetcherState = Idle | WaitAR | WaitR
@@ -316,27 +353,171 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
       , bready = pure False
       }
 
--- | Parse a 512-bit word into RowI8E format
--- Extracts first n bytes as mantissas, byte n as exponent
--- For ModelDimension=64: bytes 0-62 are mantissas, byte 63 is exponent
--- (limited to 63 mantissas due to 64-byte word size)
-rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n
-rowParser word = RowI8E {rowMantissas = mantissas, rowExponent = exponent'}
+-- | Parse multiple 512-bit words into a RowI8E
+-- Words are packed as: [mant0..mant62] [mant63..mant125] ... [mantN-1, exponent, padding]
+multiWordRowParser :: forall dim numWords.
+  ( KnownNat dim
+  , KnownNat (numWords T.* 64)
+  ) =>
+  Vec numWords (BitVector 512) -> RowI8E dim
+multiWordRowParser words' = RowI8E mantissas exponent'
   where
-    byteVec = unpack word :: Vec 64 (BitVector 8)
-    bytes = toList byteVec :: [BitVector 8]
+    -- Flatten all bytes
+    allBytes :: Vec (numWords T.* 64) (BitVector 8)
+    allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
 
-    n = natToNum @n :: Int
+    dimI = natToNum @dim :: Int
 
-    -- Extract mantissas: up to min(n, 63) to leave room for exponent
-    numMantissas = min n 63
-    mantBytes = P.take numMantissas bytes P.++ P.repeat 0  -- Pad to n if needed
-    mantSigned = P.map (unpack :: BitVector 8 -> Mantissa) (P.take n mantBytes)
-    mantissas = unsafeFromList mantSigned :: Vec n Mantissa
+    -- Manually index by Int, using (!!) which returns Maybe-free indexing
+    mantBytes :: Vec dim (BitVector 8)
+    mantBytes =
+      imap (\i _ -> allBytes !! i) (repeat (0 :: Int))
 
-    -- Extract exponent (at byte min(n, 63))
-    -- Note: DRAMSlave puts exponent at end of mantissas.
-    -- If n >= 63, it's at 63.
-    expIdx = min n 63
-    expByte = bytes P.!! expIdx
-    exponent' = unpack (resize expByte :: BitVector 7) :: Exponent
+    mantissas :: Vec dim Mantissa
+    mantissas = map unpack mantBytes
+
+    -- Exponent byte at index dim
+    expByte :: BitVector 8
+    expByte = allBytes !! dimI
+
+    exponent' :: Exponent
+    exponent' = unpack (resize expByte :: BitVector 7)
+
+-- Keep old single-word parser for backward compatibility
+rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n
+rowParser word = multiWordRowParser (singleton word)
+
+-- | Generic multi-word AXI row fetcher
+-- Fetches 'WordsPerRow dim' consecutive 64-byte words
+axiMultiWordRowFetcher :: forall dom dim.
+     (HiddenClockResetEnable dom, KnownNat (WordsPerRow dim))
+  => Slave.AxiSlaveIn dom
+  -> Signal dom Bool                   -- ^ Request pulse
+  -> Signal dom (Unsigned 32)          -- ^ Base address
+  -> ( Master.AxiMasterOut dom
+     , Signal dom (Vec (WordsPerRow dim) (BitVector 512))  -- ^ All words
+     , Signal dom Bool                 -- ^ Data valid
+     , Signal dom Bool)                -- ^ Ready
+axiMultiWordRowFetcher slaveIn requestPulse address =
+  (masterOut, wordsOut, dataValid, ready)
+  where
+    numWords = natToNum @(WordsPerRow dim) :: Int
+    burstLen = numWords - 1  -- AXI arlen is length - 1
+
+    -- Request capture
+    (reqAvail, capturedAddr) = requestCaptureStage requestPulse address ready
+
+    -- State
+    state :: Signal dom (MultiWordFetchState (WordsPerRow dim))
+    state = register MWIdle nextState
+
+    -- Word storage
+    wordBuffer :: Signal dom (Vec (WordsPerRow dim) (BitVector 512))
+    wordBuffer = register (repeat 0) nextWordBuffer
+
+    -- Beat counter
+    beatCounter :: Signal dom (Index (WordsPerRow dim))
+    beatCounter = register 0 nextBeat
+
+    notInReset :: Signal dom Bool
+    notInReset = register False (pure True)
+
+    addressReg :: Signal dom (Unsigned 32)
+    addressReg = regEn 0 startTransaction capturedAddr
+
+    ready :: Signal dom Bool
+    ready = notInReset .&&. (state .==. pure MWIdle)
+
+    startTransaction :: Signal dom Bool
+    startTransaction = ready .&&. reqAvail
+
+    -- AR channel
+    arvalidOut :: Signal dom Bool
+    arvalidOut = (\case
+      MWWaitAR -> True
+      _ -> False) <$> state
+
+    ardataOut :: Signal dom AxiAR
+    ardataOut = AxiAR
+      <$> addressReg
+      <*> pure (fromIntegral burstLen)  -- arlen = numWords - 1
+      <*> pure 6                         -- arsize = 6 (64 bytes)
+      <*> pure 1                         -- arburst = INCR
+      <*> pure 0                         -- arid = 0
+
+    -- R channel
+    rreadyOut :: Signal dom Bool
+    rreadyOut = pure True
+
+    arAccepted :: Signal dom Bool
+    arAccepted = arvalidOut .&&. Slave.arready slaveIn
+
+    rReceived :: Signal dom Bool
+    rReceived = Slave.rvalid slaveIn .&&. rreadyOut
+
+    rdataField :: Signal dom AxiR
+    rdataField = Slave.rdata slaveIn
+
+    currentRData :: Signal dom (BitVector 512)
+    currentRData = rdata <$> rdataField
+
+    -- State transitions
+    nextState :: Signal dom (MultiWordFetchState (WordsPerRow dim))
+    nextState =
+      mux startTransaction
+          (pure MWWaitAR)
+      $ mux ((\case
+        MWWaitAR -> True
+        _ -> False) <$> state .&&. arAccepted)
+          (pure (MWWaitR 0))
+      $ mux ((  \case
+        MWWaitR _ -> True
+        _ -> False
+      ) <$> state .&&. rReceived)
+          ((\s _ ->
+            case s of
+              MWWaitR n -> if n == maxBound then MWDone else MWWaitR (n + 1)
+              _ -> s
+           ) <$> state <*> beatCounter)
+      $ mux ((  \case
+        MWDone -> True
+        _ -> False) <$> state)
+          (pure MWIdle)
+          state
+
+    -- Update word buffer
+    nextWordBuffer =
+      mux ((  \case
+        MWWaitR _ -> True
+        _ -> False) <$> state .&&. rReceived)
+          (replace <$> beatCounter <*> currentRData <*> wordBuffer)
+          wordBuffer
+
+    -- Update beat counter
+    nextBeat =
+      mux ((\case
+        MWWaitR _ -> True
+        _ -> False) <$> state .&&. rReceived)
+          ((\beat -> if beat == maxBound then 0 else beat + 1) <$> beatCounter)
+      $ mux ((\case
+        MWDone -> True
+        _ -> False) <$> state)
+          (pure 0)
+          beatCounter
+
+    -- Outputs
+    wordsOut = wordBuffer
+    dataValid = (\case
+      MWDone -> True
+      _ -> False) <$> state
+
+    masterOut = Master.AxiMasterOut
+      { arvalid = arvalidOut
+      , ardata = ardataOut
+      , rready = rreadyOut
+      , awvalid = pure False
+      , awdata = pure (AxiAW 0 0 0 0 0)
+      , wvalid = pure False
+      , wdata = pure (AxiW 0 0 False)
+      , bready = pure False
+      }
