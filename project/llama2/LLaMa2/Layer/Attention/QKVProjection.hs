@@ -106,7 +106,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   debugInfo = QHeadDebugInfo
     { qhRowIndex     = rowIndex
     , qhState        = state
-    , qhFirstMant    = register 0 (head . rowMantissas <$> currentRow)
+    , qhFirstMant    = register 0 (head . rowMantissas <$> currentRow')
     , qhRowResult    = register 0 rowResult
     , qhRowDone      = rowDone
     , qhFetchValid   = weightValid
