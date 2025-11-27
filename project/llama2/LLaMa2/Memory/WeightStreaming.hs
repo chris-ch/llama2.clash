@@ -1,5 +1,6 @@
 module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
+  , WordsPerRow
   , calculateRowAddress
   , axiRowFetcher
   , axiMultiWordRowFetcher
@@ -352,9 +353,12 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
       }
 
 -- | Parse multiple 512-bit words into a RowI8E
--- Words are packed as: [mant0..mant62] [mant63..mant125] ... [mantN-1, exponent, padding]
+-- Layout per word produced by packRowMultiWord:
+--   - Middle words (all but last): 63 mantissas at bytes [0..62], byte 63 is padding (0)
+--   - Last word: remaining mantissas at [0..k-1], then exponent at byte k, then padding
 multiWordRowParser :: forall dim numWords.
   ( KnownNat dim
+  , KnownNat numWords
   , KnownNat (numWords T.* 64)
   ) =>
   Vec numWords (BitVector 512) -> RowI8E dim
@@ -364,20 +368,31 @@ multiWordRowParser words' = RowI8E mantissas exponent'
     allBytes :: Vec (numWords T.* 64) (BitVector 8)
     allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
 
-    dimI = natToNum @dim :: Int
+    dimI       = natToNum @dim :: Int
+    numWordsI  = natToNum @numWords :: Int
+    middleWords = max 0 (numWordsI - 1)
 
-    -- Manually index by Int, using (!!) which returns Maybe-free indexing
+    -- Byte accessor
+    byteAt :: Int -> BitVector 8
+    byteAt i = allBytes !! i
+
+    -- For mantissa i (0-based), skip one padding byte after every 63 mantissas
+    -- Byte index = i + floor(i / 63)
     mantBytes :: Vec dim (BitVector 8)
-    mantBytes =
-      imap (\i _ -> allBytes !! i) (repeat (0 :: Int))
+    mantBytes = imap (\i _ ->
+                        let iI   = fromEnum i
+                            skip = iI `div` 63
+                            idx  = iI + skip
+                        in byteAt idx
+                     ) (repeat (0 :: Int))
 
     mantissas :: Vec dim Mantissa
     mantissas = map unpack mantBytes
 
-    -- Exponent byte at index dim
-    expByte :: BitVector 8
-    expByte = allBytes !! dimI
-
+    -- Exponent immediately after the last mantissa within the last word
+    -- Global byte index = dim + (# of middle words)
+    expIdx   = dimI + middleWords
+    expByte  = byteAt expIdx
     exponent' :: Exponent
     exponent' = unpack (resize expByte :: BitVector 7)
 

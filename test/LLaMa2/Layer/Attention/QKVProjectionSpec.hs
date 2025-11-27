@@ -1,6 +1,7 @@
 module LLaMa2.Layer.Attention.QKVProjectionSpec (spec) where
 
 import Clash.Prelude
+import qualified Prelude as P
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
 import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo (..), queryHeadProjector)
@@ -13,8 +14,78 @@ import LLaMa2.Numeric.Types (Exponent, FixedPoint, Mantissa)
 import LLaMa2.Types.ModelConfig
 import qualified Simulation.Parameters as PARAM
 import Test.Hspec
-import qualified Prelude as P
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
+import Data.Maybe (isNothing, isJust)
+
+-- Read-only AXI stub that returns all beats in 'payload' per AR.
+-- - ARREADY always True
+-- - First RVALID appears 2 cycles after ARVALID rises
+-- - RVALID stays high for each beat; RLAST high on final beat
+-- - Ignores RREADY (push model), which is fine for these unit tests
+createMockDRAMBurstL
+  :: [BitVector 512]          -- ^ payload beats to emit per AR
+  -> Signal System Bool       -- ^ ARVALID from the master
+  -> Slave.AxiSlaveIn System
+createMockDRAMBurstL payload arvalidSig =
+  Slave.AxiSlaveIn
+    { arready = pure True
+    , rvalid  = isActive
+    , rdata   = rData
+    , awready = pure False
+    , wready  = pure False
+    , bvalid  = pure False
+    , bdata   = pure (AxiB 0 0)
+    }
+ where
+  lastIx :: Int
+  lastIx = P.length payload P.- 1
+
+  -- Start a burst 2 cycles after ARVALID (simple fixed latency)
+  start :: Signal System Bool
+  start = exposeClockResetEnable
+            (register False (register False arvalidSig))
+            CS.systemClockGen CS.resetGen CS.enableGen
+
+  -- Current beat index: Nothing=idle; Just i = serving beat i
+  idxS :: Signal System (Maybe Int)
+  idxS = exposeClockResetEnable (register Nothing nextIdx)
+          CS.systemClockGen CS.resetGen CS.enableGen
+
+  nextIdx :: Signal System (Maybe Int)
+  nextIdx =
+    let idleToStart = mux start (pure (Just 0)) (pure Nothing)
+    in  mux (fmap isNothing idxS)
+            idleToStart
+        -- serving: advance until last beat, then go idle
+        ( (\case
+              Just i
+                | i >= lastIx -> Nothing
+                | otherwise -> Just (i + 1)
+              Nothing -> Nothing
+          ) <$> idxS )
+
+  isActive :: Signal System Bool
+  isActive = isJust <$> idxS
+
+  rData :: Signal System AxiR
+  rData =
+    (\case
+        Just i
+          -> let
+              dat = payload P.!! i
+              last' = i == lastIx
+            in AxiR dat 0 last' 0
+        Nothing -> AxiR 0 0 False 0
+    ) <$> idxS
+
+-- Convenience: build a correct payload for a given RowI8E using the same packer as production
+createMockDRAMForRow
+  :: RowI8E ModelDimension
+  -> Signal System Bool
+  -> Slave.AxiSlaveIn System
+createMockDRAMForRow row arvalidSig =
+  let wordsL = DRAMSlave.packRowMultiWord @ModelDimension row  -- [BitVector 512], length = WordsPerRow ModelDimension
+  in  createMockDRAMBurstL wordsL arvalidSig
 
 -- Diagnostic record for cycle-by-cycle comparison
 data CycleDiagnostic = CycleDiagnostic
@@ -33,26 +104,6 @@ data CycleDiagnostic = CycleDiagnostic
     mant0WL :: Mantissa
   }
   deriving (Show, Eq)
-
--- Helper to create mock DRAM with configurable pattern
-createMockDRAM :: BitVector 512 -> Signal System Bool -> Slave.AxiSlaveIn System
-createMockDRAM pattern arvalidSignal' =
-  Slave.AxiSlaveIn
-    { arready = pure True,
-      rvalid = delayedValid arvalidSignal',
-      rdata = pure (AxiR pattern 0 True 0),
-      awready = pure False,
-      wready = pure False,
-      bvalid = pure False,
-      bdata = pure (AxiB 0 0)
-    }
-  where
-    delayedValid arvalid =
-      exposeClockResetEnable
-        (register False $ register False arvalid)
-        CS.systemClockGen
-        CS.resetGen
-        CS.enableGen
 
 -- Create test parameters with specific weight pattern
 createTestParams :: MatI8E HeadDimension ModelDimension -> PARAM.DecoderParameters
@@ -116,20 +167,16 @@ spec = do
           testMatrix = repeat testRow
           paramsWL = createTestParams testMatrix
 
-          -- DRAM pattern: same as hardcoded (mantissa=1, exp=0)
-          dramPatternMatching :: BitVector 512
-          dramPatternMatching = pack $ replicate (SNat @63) (1 :: BitVector 8) ++ singleton (0 :: BitVector 8)
-
           inputVec = repeat 1.0 :: Vec ModelDimension FixedPoint
           validIn = fromList ([False, True] P.++ P.replicate (maxCycles - 2) False) :: Signal System Bool
           downStreamReady = pure True :: Signal System Bool
           stepCount = pure 0 :: Signal System (Index SequenceLength)
           input = pure inputVec :: Signal System (Vec ModelDimension FixedPoint)
 
-          (masterOut, qOut, validOut, readyOut, debugInfo) =
+          (masterOut, _qOut, _validOut, _readyOut, debugInfo) =
             exposeClockResetEnable
               ( queryHeadProjector
-                  (createMockDRAM dramPatternMatching arvalidSignal)
+                  (createMockDRAMForRow testRow arvalidSignal)
                   layerIdx
                   headIdx
                   validIn
@@ -215,7 +262,7 @@ spec = do
             (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
             CS.systemClockGen CS.resetGen CS.enableGen
 
-          (masterOut, qOut, validOut, readyOut, debugInfo) =
+          (masterOut, _qOut, _validOut, _readyOut, debugInfo) =
             exposeClockResetEnable
               (queryHeadProjector stubSlaveIn layerIdx headIdx validIn downStreamReady stepCount input params)
               CS.systemClockGen CS.resetGen CS.enableGen
@@ -224,7 +271,6 @@ spec = do
           rowDones = sampleN maxCycles (qhRowDone debugInfo)
           rowIndices = sampleN maxCycles (qhRowIndex debugInfo)
           accumVals = sampleN maxCycles (qhAccumValue debugInfo)
-          states = sampleN maxCycles (qhState debugInfo)
 
       -- 1. Verify Token 1 completed
       let token1Row0Done = P.head $ P.filter P.snd (P.zip [0..] rowDones)
