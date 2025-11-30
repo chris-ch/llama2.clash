@@ -44,47 +44,139 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightValid      :: Signal dom Bool      -- WeightLoader's valid signal
   } deriving (Generic)
 
-data MultiplierDebug dom = MultiplierDebug {
-  accValue ::  Signal dom FixedPoint
-  , rowReset :: Signal dom Bool
+data MultiplierDebug dom = MultiplierDebug 
+  { accValue  :: Signal dom FixedPoint
+  , rowReset  :: Signal dom Bool
   , rowEnable :: Signal dom Bool
-} deriving (Generic)
+  } deriving (Generic)
+
+data MultiplierOutput dom = MultiplierOutput
+  { moRowResult     :: Signal dom FixedPoint
+  , moRowDone       :: Signal dom Bool
+  , moState         :: Signal dom OPS.MultiplierState
+  , moRowReqValid   :: Signal dom Bool
+  , moOutputValid   :: Signal dom Bool
+  , moReadyForInput :: Signal dom Bool
+  , moDebug         :: MultiplierDebug dom
+  } deriving (Generic)
 
 multiplier :: forall dom. 
   HiddenClockResetEnable dom
-  => Signal dom (RowI8E ModelDimension)
-  -> Signal dom (Vec ModelDimension FixedPoint)
+  => Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom (RowI8E ModelDimension)
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index HeadDimension)
-  -> (
-    Signal dom FixedPoint,
-    Signal dom Bool,
-    Signal dom OPS.MultiplierState,
-    Signal dom Bool,
-    Signal dom Bool,
-    Signal dom Bool,
-    MultiplierDebug dom
-    )
-multiplier row column inputValid downStreamReady weightValid rowIndex = (
-    rowResult, rowDone, state, rowReqValid, outputValid, readyForInputRaw, dbgInfo
-    )
+  -> MultiplierOutput dom
+multiplier column row colValid rowValid downStreamReady rowIndex = 
+  MultiplierOutput
+    { moRowResult     = rowResult
+    , moRowDone       = rowDone
+    , moState         = state
+    , moRowReqValid   = rowReqValid
+    , moOutputValid   = outputValid
+    , moReadyForInput = readyForInputRaw
+    , moDebug         = dbgInfo
+    }
   where
     (rowResult, rowDone, accValue) = 
       OPS.parallel64RowProcessor rowReset rowEnable row column
   
     (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
-      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
+      OPS.matrixMultiplierStateMachine colValid rowValid downStreamReady rowDone rowIndex
 
-    dbgInfo = MultiplierDebug {
-      accValue = accValue,
-      rowReset = rowReset,
-      rowEnable = rowEnable
-    }
-  
+    dbgInfo = MultiplierDebug 
+      { accValue  = accValue
+      , rowReset  = rowReset
+      , rowEnable = rowEnable
+      }
+
 --------------------------------------------------------------------------------
--- Q head projector
+-- High-level query head matrix multiplier with DRAM weight loading
+--------------------------------------------------------------------------------
+data QueryHeadOutput dom = QueryHeadOutput
+  { qhoAxiMaster     :: Master.AxiMasterOut dom
+  , qhoResult        :: Signal dom (Vec HeadDimension FixedPoint)
+  , qhoOutputValid   :: Signal dom Bool
+  , qhoReadyForInput :: Signal dom Bool
+  , qhoDebugInfo     :: QHeadDebugInfo dom
+  } deriving (Generic)
+
+queryHeadMatrixMultiplier :: forall dom.
+  HiddenClockResetEnable dom
+  => Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> PARAM.DecoderParameters
+  -> QueryHeadOutput dom
+queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady xHat params =
+  QueryHeadOutput
+    { qhoAxiMaster     = axiMaster
+    , qhoResult        = qOut
+    , qhoOutputValid   = outputValid
+    , qhoReadyForInput = readyForInput
+    , qhoDebugInfo     = debugInfo
+    }
+ where
+  rowIndex :: Signal dom (Index HeadDimension)
+  rowIndex = register 0 nextRowIndex
+  
+  -- Weight loader
+  (axiMaster, weightLoaderOut, weightValid, weightReady) = 
+    LOADER.weightLoader dramSlaveIn layerIdx headIdx 
+                 rowIndex rowReqValidGated downStreamReady params
+  
+  -- Select weights (hardcoded or DRAM)
+  currentRow = LOADER.dramRowOut weightLoaderOut
+  currentRow' = LOADER.hcRowOut weightLoaderOut
+
+  -- Matrix multiplier with clean interface
+  multOut = multiplier xHat currentRow inputValid weightValid downStreamReady rowIndex
+
+  -- Gate signals with weightReady
+  rowReqValidGated = moRowReqValid multOut .&&. weightReady
+  readyForInput = moReadyForInput multOut .&&. weightReady
+  outputValid = moOutputValid multOut
+  
+  -- Row index management
+  nextRowIndex = mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
+                     (rowIndex + 1)
+                     (mux ((moState multOut .==. pure OPS.MDone) .&&. downStreamReady)
+                          (pure 0)
+                          rowIndex)
+  
+  -- Accumulate results
+  qOut = register (repeat 0) nextOutput
+  nextOutput = mux (moRowDone multOut)
+                   (replace <$> rowIndex <*> moRowResult multOut <*> qOut)
+                   qOut
+  
+  -- Debug info
+  debugInfo = QHeadDebugInfo
+    { qhRowIndex        = rowIndex
+    , qhState           = moState multOut
+    , qhFirstMant       = register 0 (head . rowMantissas <$> currentRow')
+    , qhRowResult       = register 0 (moRowResult multOut)
+    , qhRowDone         = moRowDone multOut
+    , qhFetchValid      = weightValid
+    , qhFetchedWord     = pure 0
+    , qhRowReset        = rowReset (moDebug multOut)
+    , qhRowEnable       = rowEnable (moDebug multOut)
+    , qhAccumValue      = accValue (moDebug multOut)
+    , qhQOut            = qOut
+    , qhCurrentRowExp   = register 0 (rowExponent <$> currentRow)
+    , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRow)
+    , qhRowReqValid     = moRowReqValid multOut
+    , qhWeightReady     = weightReady
+    , qhWeightValid     = weightValid
+    }
+
+--------------------------------------------------------------------------------
+-- Q head projector (now trivially simple!)
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -103,59 +195,12 @@ queryHeadProjector :: forall dom.
      , QHeadDebugInfo dom
      )
 queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCount xHat params =
-  (axiMaster, qRoOut, outputValid, readyForInput, debugInfo)
+  (qhoAxiMaster qhOut, qRoOut, qhoOutputValid qhOut, qhoReadyForInput qhOut, qhoDebugInfo qhOut)
  where
-  rowIndex :: Signal dom (Index HeadDimension)
-  rowIndex = register 0 nextRowIndex
+  qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx 
+                                    inputValid downStreamReady xHat params
   
-  -- Use nextRowIndex to drive the loader so address aligns with the valid pulse
-  (axiMaster, weightLoaderOut, weightValid, weightReady) = 
-    LOADER.weightLoader dramSlaveIn layerIdx headIdx 
-                 rowIndex rowReqValidGated downStreamReady params
-  
-  -- MANUALLY select the weights type here
-  currentRow = LOADER.dramRowOut weightLoaderOut
-  currentRow' = LOADER.hcRowOut weightLoaderOut
-
-  -- Processing with gated enable
-  (rowResult, rowDone, state, rowReqValid, outputValid, readyForInputRaw, dbgInfo) = multiplier currentRow' xHat inputValid downStreamReady weightValid rowIndex
-
-  -- Gate rowReqValid with weightReady**
-  rowReqValidGated = rowReqValid .&&. weightReady
-
-  readyForInput = readyForInputRaw .&&. weightReady
-  
-  nextRowIndex = mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-                     (rowIndex + 1)
-                     (mux ((state .==. pure OPS.MDone) .&&. downStreamReady)
-                          (pure 0)
-                          rowIndex)
-  
-  qOut = register (repeat 0) nextOutput
-  nextOutput = mux rowDone
-                   (replace <$> rowIndex <*> rowResult <*> qOut)
-                   qOut
-  
-  qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qOut
-  
-  debugInfo = QHeadDebugInfo
-    { qhRowIndex     = rowIndex
-    , qhState        = state
-    , qhFirstMant    = register 0 (head . rowMantissas <$> currentRow')
-    , qhRowResult    = register 0 rowResult
-    , qhRowDone      = rowDone
-    , qhFetchValid   = weightValid
-    , qhFetchedWord  = pure 0
-    , qhRowReset     = rowReset dbgInfo
-    , qhRowEnable    = rowEnable dbgInfo
-    , qhAccumValue   = accValue dbgInfo
-    , qhQOut         = qOut
-    , qhCurrentRowExp    = register 0 (rowExponent <$> currentRow)
-    , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRow)
-    , qhRowReqValid      = rowReqValid
-    , qhWeightReady      = weightReady
-    , qhWeightValid      = weightValid
-    }
+  qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qhoResult qhOut
 
 --------------------------------------------------------------------------------
 -- KV head projector (unchanged)

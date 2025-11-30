@@ -164,10 +164,10 @@ data MultiplierState = MIdle | MFetching | MReset | MProcessing | MDone
 -- for as long as the FSM requires them.
 matrixMultiplierStateMachine :: forall dom rows .
   (HiddenClockResetEnable dom, KnownNat rows)  =>
-  Signal dom Bool ->  -- inputValid
+  Signal dom Bool ->  -- colValid
+  Signal dom Bool ->  -- rowValid
   Signal dom Bool ->  -- downStreamReady  
   Signal dom Bool ->  -- rowDone
-  Signal dom Bool ->  -- rowValid
   Signal dom (Index rows) ->  -- rowIndex
   ( Signal dom MultiplierState
   , Signal dom Bool  -- fetchTrigger
@@ -176,17 +176,17 @@ matrixMultiplierStateMachine :: forall dom rows .
   , Signal dom Bool  -- outputValid
   , Signal dom Bool  -- readyForInput
   )
-matrixMultiplierStateMachine inputValid downStreamReady rowDone rowValid rowIndex =
+matrixMultiplierStateMachine colValid rowValid downStreamReady rowDone rowIndex =
   (state, fetchTrigger, rowReset, rowEnable, outputValid, readyForInput)
   where
     state = register MIdle nextState
     
     -- Pure function for state transitions
     stateTransition :: MultiplierState -> Bool -> Bool -> Bool -> Bool -> Index rows -> MultiplierState
-    stateTransition currentState inValid downReady done fetched idx =
+    stateTransition currentState colVld rowVld downReady done idx =
       case currentState of
-        MIdle -> if inValid then MFetching else MIdle
-        MFetching -> if fetched then MReset else MFetching  -- Wait for fetch!
+        MIdle -> if colVld then MFetching else MIdle
+        MFetching -> if rowVld then MReset else MFetching  -- Wait for fetch!
         MReset -> MProcessing
         MProcessing -> if done 
                        then (if idx == maxBound then MDone else MFetching)
@@ -194,8 +194,8 @@ matrixMultiplierStateMachine inputValid downStreamReady rowDone rowValid rowInde
         MDone -> if downReady then MIdle else MDone
     
     -- Apply the pure function to the signals
-    nextState = stateTransition <$> state <*> inputValid <*> downStreamReady 
-                                 <*> rowDone <*> rowValid <*> rowIndex
+    nextState = stateTransition <$> state <*> colValid <*> rowValid <*> downStreamReady 
+                                 <*> rowDone <*> rowIndex
     
     -- Clear output signals based on state
     fetchTrigger = (== MFetching) <$> state
@@ -386,8 +386,7 @@ parallel64RowMatrixMultiplier validIn readyIn rowVectors inputVector =
     -- State machine controls the protocol
     -- For non-DRAM: fetchDone is always True (data immediately available)
     (state, _fetchTrigger, rowReset, rowEnable, validOut, readyOut) =
-      matrixMultiplierStateMachine validIn readyIn rowDone (pure True) rowIndex
-      --                                                    ^^^^^^^^^^ Always ready
+      matrixMultiplierStateMachine validIn (pure True) readyIn rowDone rowIndex
       -- Note: we ignore fetchTrigger since we don't fetch anything
 
     -- Increment row index when row completes, reset after last row
@@ -443,8 +442,7 @@ parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
   -- Protocol FSM
   -- For non-DRAM: fetchDone is always True (data immediately available)
   (state, _fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
-    matrixMultiplierStateMachine inputValid downStreamReady rowDone (pure True) rowIndex
-    --                                                              ^^^^^^^^^^ Always ready
+    matrixMultiplierStateMachine inputValid (pure True) downStreamReady rowDone rowIndex
     -- Note: we ignore fetchTrigger since we don't fetch anything
 
   -- Row index sequencing

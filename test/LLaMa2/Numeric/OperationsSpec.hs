@@ -295,9 +295,9 @@ spec = do
               CS.resetGen
               CS.enableGen
               validIn
+              (pure True)
               readyIn
               rowDone
-              (pure True)
               currentRow
 
           states = P.take maxCycles $ sample state
@@ -403,9 +403,9 @@ spec = do
                   CS.resetGen
                   CS.enableGen
                   validIn
+                  (pure True)
                   readyIn
                   rowDone
-                  (pure True)
                   currentRow
 
               states = P.take maxCycles $ sample state
