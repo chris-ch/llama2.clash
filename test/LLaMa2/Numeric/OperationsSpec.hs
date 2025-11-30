@@ -135,7 +135,7 @@ spec = do
             fromList $ DL.replicate 5 columnVector
               P.++ DL.repeat (pure 0)
 
-          (outputComponent, rowDone, _ , _) =
+          (outputComponent, rowDone, _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -181,7 +181,7 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = fromList $ pure 0 : pure 0 : P.replicate maxCycles columnVector -- padding with zero before enable
-          (outputComponent, rowDone, _ , _) =
+          (outputComponent, rowDone , _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -221,7 +221,7 @@ spec = do
           enable = fromList enableStream :: Signal System Bool
           column = pure columnVector
 
-          (outputComponent, rowDone, _ ,_) =
+          (outputComponent, rowDone ,_) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen

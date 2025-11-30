@@ -44,6 +44,45 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightValid      :: Signal dom Bool      -- WeightLoader's valid signal
   } deriving (Generic)
 
+data MultiplierDebug dom = MultiplierDebug {
+  accValue ::  Signal dom FixedPoint
+  , rowReset :: Signal dom Bool
+  , rowEnable :: Signal dom Bool
+} deriving (Generic)
+
+multiplier :: forall dom. 
+  HiddenClockResetEnable dom
+  => Signal dom (RowI8E ModelDimension)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Index HeadDimension)
+  -> (
+    Signal dom FixedPoint,
+    Signal dom Bool,
+    Signal dom OPS.MultiplierState,
+    Signal dom Bool,
+    Signal dom Bool,
+    Signal dom Bool,
+    MultiplierDebug dom
+    )
+multiplier row column inputValid downStreamReady weightValid rowIndex = (
+    rowResult, rowDone, state, rowReqValid, outputValid, readyForInputRaw, dbgInfo
+    )
+  where
+    (rowResult, rowDone, accValue) = 
+      OPS.parallel64RowProcessor rowReset rowEnable row column
+  
+    (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
+      OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
+
+    dbgInfo = MultiplierDebug {
+      accValue = accValue,
+      rowReset = rowReset,
+      rowEnable = rowEnable
+    }
+  
 --------------------------------------------------------------------------------
 -- Q head projector
 --------------------------------------------------------------------------------
@@ -79,12 +118,8 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   currentRow' = LOADER.hcRowOut weightLoaderOut
 
   -- Processing with gated enable
-  (rowResult, rowDone, colIdx, accValue) = 
-    OPS.parallel64RowProcessor rowReset rowEnable currentRow' xHat
-  
-  (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
-    OPS.matrixMultiplierStateMachine inputValid downStreamReady rowDone weightValid rowIndex
-  
+  (rowResult, rowDone, state, rowReqValid, outputValid, readyForInputRaw, dbgInfo) = multiplier currentRow' xHat inputValid downStreamReady weightValid rowIndex
+
   -- Gate rowReqValid with weightReady**
   rowReqValidGated = rowReqValid .&&. weightReady
 
@@ -111,9 +146,9 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
     , qhRowDone      = rowDone
     , qhFetchValid   = weightValid
     , qhFetchedWord  = pure 0
-    , qhRowReset     = rowReset
-    , qhRowEnable    = rowEnable
-    , qhAccumValue   = accValue
+    , qhRowReset     = rowReset dbgInfo
+    , qhRowEnable    = rowEnable dbgInfo
+    , qhAccumValue   = accValue dbgInfo
     , qhQOut         = qOut
     , qhCurrentRowExp    = register 0 (rowExponent <$> currentRow)
     , qhCurrentRowMant0  = register 0 (head . rowMantissas <$> currentRow)
