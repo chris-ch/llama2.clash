@@ -84,17 +84,27 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
     parsedRow :: Signal dom (RowI8E ModelDimension)
     parsedRow = STREAM.multiWordRowParser <$> fetchedWords
 
-    -- DEBUG: Print what we're getting before the assertion
-    -- This version delays the check by 1 cycle to ensure data is stable
-    checkedParsedRow :: Signal dom (RowI8E ModelDimension)
-    checkedParsedRow = assertRowsMatchDebug fetchValid rowReq rowAddr parsedRow hcRow
-
     zeroRow :: RowI8E ModelDimension
     zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
 
-    -- Publish the row (sticky until next fetch)
+    -- Latch raw parsed data
+    dramRowRaw :: Signal dom (RowI8E ModelDimension)
+    dramRowRaw = regEn zeroRow fetchValid parsedRow
+    
+    -- Also latch the HC row at the same time (for comparison)
+    hcRowLatched :: Signal dom (RowI8E ModelDimension)
+    hcRowLatched = regEn zeroRow fetchValid hcRow
+    
+    -- Detect when new data was just latched (rising edge of LDone)
+    wasLDone :: Signal dom Bool
+    wasLDone = register False dramDataValid
+    
+    dataJustLatched :: Signal dom Bool
+    dataJustLatched = dramDataValid .&&. (not <$> wasLDone)
+    
+    -- Check equivalence on the LATCHED values (guaranteed defined)
     dramRow :: Signal dom (RowI8E ModelDimension)
-    dramRow = regEn zeroRow fetchValid checkedParsedRow
+    dramRow = assertRowsMatchLazy dataJustLatched rowReq rowAddr dramRowRaw hcRowLatched
 
     loaderOutput = WeightLoaderOutput 
       { hcRowOut = hcRow
@@ -105,31 +115,33 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
       , dbgMultiWordValid = fetchValid
       }
 
--- Enhanced assertion with more debug info
-assertRowsMatchDebug :: forall dom n . KnownNat n => Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (RowI8E n)     -- dramRow
-  -> Signal dom (RowI8E n)     -- hcRow  
+-- | Lazy assertion that only evaluates the comparison when guard is True.
+assertRowsMatchLazy :: forall dom n. KnownNat n 
+  => Signal dom Bool              -- ^ guard: only check when True
+  -> Signal dom (Index HeadDimension)  -- ^ row index (for error message)
+  -> Signal dom (Unsigned 32)     -- ^ address (for error message)
+  -> Signal dom (RowI8E n)        -- ^ DRAM row
+  -> Signal dom (RowI8E n)        -- ^ Hardcoded row
   -> Signal dom (RowI8E n)
-assertRowsMatchDebug guard rowIdx addr dramRow hcRow = result
+assertRowsMatchLazy guard rowIdx addr dramRow hcRow = result
   where
-    dramExp = rowExponent <$> dramRow
-    hcExp   = rowExponent <$> hcRow
-    dramMant0 = (!! (0 :: Int)) . rowMantissas <$> dramRow
-    hcMant0 = (!! (0 :: Int)) . rowMantissas <$> hcRow
-
-    expMatch = dramExp .==. hcExp
-
-    -- Create detailed error message
-    result = mux (guard .&&. (not <$> expMatch))
-                 (mkError <$> rowIdx <*> addr <*> dramExp <*> hcExp <*> dramMant0 <*> hcMant0)
+    result = mux guard
+                 (checkRow <$> rowIdx <*> addr <*> dramRow <*> hcRow)
                  dramRow
 
-    mkError ri ad de he dm hm = 
-      errorX $ "DRAM/HC mismatch! row=" P.++ show ri 
-            P.++ " addr=" P.++ show ad
-            P.++ " dramExp=" P.++ show de 
-            P.++ " hcExp=" P.++ show he
-            P.++ " dramMant[0]=" P.++ show dm
-            P.++ " hcMant[0]=" P.++ show hm
+    checkRow :: Index HeadDimension -> Unsigned 32 -> RowI8E n -> RowI8E n -> RowI8E n
+    checkRow ri ad dr hr =
+      let dramExp   = rowExponent dr
+          hcExp     = rowExponent hr
+          dramMants = rowMantissas dr
+          hcMants   = rowMantissas hr
+          expMatch  = dramExp == hcExp
+          mantMatch = dramMants == hcMants  -- Check ALL mantissas
+      in if expMatch && mantMatch
+           then dr
+           else errorX $ "DRAM/HC mismatch! row=" P.++ show ri 
+                      P.++ " addr=" P.++ show ad
+                      P.++ " expMatch=" P.++ show expMatch
+                      P.++ " mantMatch=" P.++ show mantMatch
+                      P.++ " dramExp=" P.++ show dramExp 
+                      P.++ " hcExp=" P.++ show hcExp

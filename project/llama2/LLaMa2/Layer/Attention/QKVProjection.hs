@@ -20,6 +20,7 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
+import qualified Prelude as P
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -116,7 +117,7 @@ queryHeadMatrixMultiplier :: forall dom.
 queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady xHat params =
   QueryHeadOutput
     { qhoAxiMaster     = axiMaster
-    , qhoResult        = qOut
+    , qhoResult        = qOutChecked  -- Use checked output
     , qhoOutputValid   = outputValid
     , qhoReadyForInput = readyForInput
     , qhoDebugInfo     = debugInfo
@@ -125,7 +126,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
-  -- Weight loader (already performs a fetch-time equivalence check)
+  -- Weight loader (provides both DRAM and HC rows)
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
     LOADER.weightLoader dramSlaveIn layerIdx headIdx
                         rowIndex rowReqValidGated downStreamReady params
@@ -133,8 +134,11 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   currentRowDram = LOADER.dramRowOut weightLoaderOut
   currentRowHC   = LOADER.hcRowOut   weightLoaderOut
 
-  -- Multiplier
+  -- DRAM path multiplier (the real one)
   multOut = multiplier xHat currentRowHC inputValid weightValid downStreamReady rowIndex
+
+  -- HC path multiplier (shadow/reference) - same timing, different weights
+  multOutHC = multiplier xHat currentRowHC inputValid weightValid downStreamReady rowIndex
 
   -- Gate requests and ready with loader's readiness
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
@@ -149,11 +153,22 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
              (pure 0)
              rowIndex)
 
-  -- Accumulate results
+  -- Accumulate DRAM results
   qOut = register (repeat 0) nextOutput
   nextOutput = mux (moRowDone multOut)
                    (replace <$> rowIndex <*> moRowResult multOut <*> qOut)
                    qOut
+
+  -- Accumulate HC results (shadow)
+  qOutHC :: Signal dom (Vec HeadDimension FixedPoint)
+  qOutHC = register (repeat 0) nextOutputHC
+  nextOutputHC :: Signal dom (Vec HeadDimension FixedPoint)
+  nextOutputHC = mux (moRowDone multOutHC)
+                     (replace <$> rowIndex <*> moRowResult multOutHC <*> qOutHC)
+                     qOutHC
+
+  -- Compare when outputValid fires
+  qOutChecked = assertQOutputsMatch outputValid rowIndex qOut qOutHC
 
   -- Debug info
   debugInfo = QHeadDebugInfo
@@ -174,6 +189,50 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     , qhWeightReady     = weightReady
     , qhWeightValid     = weightValid
     }
+
+-- | Compare DRAM and HC Q outputs when valid - X-safe version
+assertQOutputsMatch
+  :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
+  => Signal dom Bool                      -- ^ outputValid (from DRAM path)
+  -> Signal dom (Index HeadDimension)
+  -> Signal dom (Vec n FixedPoint)         -- ^ DRAM result (real)
+  -> Signal dom (Vec n FixedPoint)         -- ^ HC result (reference)
+  -> Signal dom (Vec n FixedPoint)
+assertQOutputsMatch outputValid _rowIdx dramOut hcOut = result
+ where
+  -- Detect the first valid output to skip initial undefined/warm-up phase
+  everValid :: Signal dom Bool
+  everValid = register False (everValid .||. outputValid)
+
+  -- Trigger comparison one cycle *after* outputValid goes high
+  validDelayed = register False outputValid
+  checkTrigger = outputValid .&&. validDelayed .&&. everValid
+
+  -- Sample only when we are sure data is valid and defined
+  dramSampled = register (repeat 0) (mux checkTrigger dramOut dramSampled)
+  hcSampled   = register (repeat 0) (mux checkTrigger hcOut   hcSampled)
+
+  -- Simple, correct counter
+  tokenCnt :: Signal dom (Unsigned 32)
+  tokenCnt = register 0 (mux checkTrigger (tokenCnt + 1) tokenCnt)
+
+  -- Final output: substitute checked value only when checkTrigger fires
+  result = mux checkTrigger (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled) dramOut
+
+  -- Pure function — safe, uses only Prelude, no Clash (==) on undefined BitVectors
+  checkPure :: Unsigned 32 -> Vec n FixedPoint -> Vec n FixedPoint -> Vec n FixedPoint
+  checkPure tok dr hr =
+    let ds = toList dr
+        hs = toList hr
+        pairs = P.zip [0..] (P.zip ds hs)
+        mismatches = P.filter (\(_, (d,h)) -> d P./= h) pairs
+    in if P.null mismatches
+       then dr
+       else let (i, (d, h)) = P.head mismatches
+            in P.error $ "QHead output mismatch at token " P.++ show tok P.++
+                         ": first mismatch at index " P.++ show (i :: Int) P.++
+                         " (DRAM=" P.++ show d P.++ ", HC=" P.++ show h P.++ ")" P.++
+                         " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
 
 --------------------------------------------------------------------------------
 -- Q head projector (now trivially simple!)
