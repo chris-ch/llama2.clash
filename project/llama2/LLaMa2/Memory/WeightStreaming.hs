@@ -87,7 +87,6 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     headDim = natToNum @HeadDimension :: Int
     vocabSize = natToNum @VocabularySize :: Int
     seqLen = natToNum @SequenceLength :: Int
-    rotaryDim = natToNum @RotaryPositionalEmbeddingDimension :: Int
 
     bytesPerWord = 64 :: Int
 
@@ -380,43 +379,49 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
 --   - Last word: remaining mantissas at [0..k-1], then exponent at byte k, then padding
 multiWordRowParser :: forall dim numWords.
   ( KnownNat dim
-  , KnownNat numWords
-  , KnownNat (numWords T.* 64)
+    , KnownNat numWords
+    , KnownNat (numWords T.* 64)
+    , BitPack Exponent
   ) =>
   Vec numWords (BitVector 512) -> RowI8E dim
 multiWordRowParser words' = RowI8E mantissas exponent'
   where
-    -- Flatten all bytes
-    allBytes :: Vec (numWords T.* 64) (BitVector 8)
-    allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
+  -- Flatten all bytes in beat order (word 0 .. word N-1), byte 0..63 within each word
+  allBytes :: Vec (numWords T.* 64) (BitVector 8)
+  allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
 
-    dimI       = natToNum @dim :: Int
-    numWordsI  = natToNum @numWords :: Int
-    middleWords = max 0 (numWordsI - 1)
+  dimI       = natToNum @dim :: Int
+  numWordsI  = natToNum @numWords :: Int
+  middleWords = max 0 (numWordsI - 1)
 
-    -- Byte accessor
-    byteAt :: Int -> BitVector 8
-    byteAt i = allBytes !! i
+  byteAt :: Int -> BitVector 8
+  byteAt i = allBytes !! i
 
-    -- For mantissa i (0-based), skip one padding byte after every 63 mantissas
-    -- Byte index = i + floor(i / 63)
-    mantBytes :: Vec dim (BitVector 8)
-    mantBytes = imap (\i _ ->
-                        let iI   = fromEnum i
-                            skip = iI `div` 63
-                            idx  = iI + skip
-                        in byteAt idx
-                     ) (repeat (0 :: Int))
+  -- For mantissa i (0-based), skip one padding byte after every 63 mantissas
+  -- Byte index = i + floor(i / 63)
+  mantBytes :: Vec dim (BitVector 8)
+  mantBytes = imap
+    (\i _ ->
+      let iI   = fromEnum i
+          skip = iI `div` 63
+          idx  = iI + skip
+      in byteAt idx
+    ) (repeat (0 :: Int))
 
-    mantissas :: Vec dim Mantissa
-    mantissas = map unpack mantBytes
+  mantissas :: Vec dim Mantissa
+  mantissas = map unpack mantBytes
 
-    -- Exponent immediately after the last mantissa within the last word
-    -- Global byte index = dim + (# of middle words)
-    expIdx   = dimI + middleWords
-    expByte  = byteAt expIdx
-    exponent' :: Exponent
-    exponent' = unpack (resize expByte :: BitVector 7)
+  -- Exponent immediately after the last mantissa within the last word
+  -- Global byte index = dim + (# of middle words)
+  expIdx   = dimI + middleWords
+  expByte  = byteAt expIdx
+
+  -- Read as full signed byte and sign-extend/shrink to your Exponent type.
+  exponent' :: Exponent
+  exponent' =
+    let e8 :: Signed 8
+        e8 = unpack expByte
+    in resize e8
 
 -- Keep old single-word parser for backward compatibility
 rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n

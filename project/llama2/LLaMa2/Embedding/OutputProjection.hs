@@ -27,5 +27,5 @@ logitsProjector inputValid readyFromDownstream decoder tokenVecSig =
     tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> pure (PARAM.rmsFinalWeightF emb)
 
     -- Sequential matrix multiply (tied embeddings as classifier)
-    (logitsOut, validOut, readyOut) =
+    (logitsOut, validOut, _readyOut) =
       parallelRowMatrixMultiplier inputValid readyFromDownstream (PARAM.vocabularyQ emb) tokenWithRms

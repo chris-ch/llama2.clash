@@ -53,7 +53,7 @@ createDRAMBackedAxiSlave ::
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
 createDRAMBackedAxiSlave params =
-  createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) (buildMemoryFromParams @65536 params)
+  createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
 
 -- ============================================================================
 -- Row packing
@@ -66,12 +66,14 @@ packRowMultiWord row = go 0
     dimI      = natToNum @dim :: Int
     numWords  = wordsPerRowVal @dim
     allMants  = toList $ rowMantissas row
-    exp'      = rowExponent row
+    -- Store exponent as a full signed byte (two's complement).
+    -- This sign-extends any narrower Exponent to 8 bits.
+    expByte   = pack (resize (rowExponent row) :: Signed 8) :: BitVector 8
 
     go :: Int -> [BitVector 512]
-    go w | w >= numWords       = []
-         | w == numWords - 1   = [packLast w]
-         | otherwise           = packMid w : go (w+1)
+    go w  | w >= numWords       = []
+          | w == numWords - 1   = [packLast w]
+          | otherwise           = packMid w : go (w+1)
 
     packMid :: Int -> BitVector 512
     packMid w =
@@ -86,7 +88,6 @@ packRowMultiWord row = go 0
       let s = w * 63
           cnt = dimI - s
           mantsThis = P.take cnt $ P.drop s allMants
-          expByte = resize (pack exp') :: BitVector 8
           bytes = P.map pack mantsThis P.++ [expByte] P.++ P.replicate (63 - cnt) (0 :: BitVector 8)
       in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
 

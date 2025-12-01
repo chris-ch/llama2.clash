@@ -167,6 +167,7 @@ test-suite llama2-test
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
       LLaMa2.Memory.WeightStreamingSpec
+      LLaMa2.Memory.WeightStreamingRoundtripSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.DRAMBackedAxiSlaveSpec

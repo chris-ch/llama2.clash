@@ -12,6 +12,7 @@ import qualified Simulation.DynamicMatMulSpec (spec)
 import qualified LLaMa2.Memory.WeightStreamingSpec (spec)
 import qualified LLaMa2.Layer.Attention.QKVProjectionSpec (spec)
 import qualified LLaMa2.Decoder.DecoderSpec (spec)
+import qualified LLaMa2.Memory.WeightStreamingRoundtripSpec (spec)
 import qualified LLaMa2.Layer.Attention.WeightLoaderSpec (spec)
 
 main :: IO ()
@@ -29,3 +30,4 @@ main = hspec $ do
   LLaMa2.Layer.Attention.QKVProjectionSpec.spec
   --LLaMa2.Decoder.DecoderSpec.spec
   LLaMa2.Layer.Attention.WeightLoaderSpec.spec
+  LLaMa2.Memory.WeightStreamingRoundtripSpec.spec

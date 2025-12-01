@@ -20,7 +20,6 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
-import qualified Prelude as P
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -45,7 +44,7 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightValid      :: Signal dom Bool      -- WeightLoader's valid signal
   } deriving (Generic)
 
-data MultiplierDebug dom = MultiplierDebug 
+data MultiplierDebug dom = MultiplierDebug
   { accValue  :: Signal dom FixedPoint
   , rowReset  :: Signal dom Bool
   , rowEnable :: Signal dom Bool
@@ -61,7 +60,7 @@ data MultiplierOutput dom = MultiplierOutput
   , moDebug         :: MultiplierDebug dom
   } deriving (Generic)
 
-multiplier :: forall dom. 
+multiplier :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (RowI8E ModelDimension)
@@ -70,7 +69,7 @@ multiplier :: forall dom.
   -> Signal dom Bool
   -> Signal dom (Index HeadDimension)
   -> MultiplierOutput dom
-multiplier column row colValid rowValid downStreamReady rowIndex = 
+multiplier column row colValid rowValid downStreamReady rowIndex =
   MultiplierOutput
     { moRowResult     = rowResult
     , moRowDone       = rowDone
@@ -81,50 +80,17 @@ multiplier column row colValid rowValid downStreamReady rowIndex =
     , moDebug         = dbgInfo
     }
   where
-    (rowResult, rowDone, accValue) = 
+    (rowResult, rowDone, accValue) =
       OPS.parallel64RowProcessor rowReset rowEnable row column
-  
+
     (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
       OPS.matrixMultiplierStateMachine colValid rowValid downStreamReady rowDone rowIndex
 
-    dbgInfo = MultiplierDebug 
+    dbgInfo = MultiplierDebug
       { accValue  = accValue
       , rowReset  = rowReset
       , rowEnable = rowEnable
       }
-
-assertRowsMatch :: forall dom n m.
-  (KnownNat n)
-  => Signal dom Bool
-  -> Signal dom (Index m)
-  -> Signal dom (RowI8E n)     -- dramRow
-  -> Signal dom (RowI8E n)     -- hcRow  
-  -> Signal dom (RowI8E n)
-assertRowsMatch guard _rowIdx dramRow hcRow = result
-  where
-    dramExp = rowExponent <$> dramRow
-    hcExp   = rowExponent <$> hcRow
-    
-    expMatch = dramExp .==. hcExp
-    
-    -- Check specific negative values that indicate common bugs
-    dramExpIs0    = dramExp .==. pure 0
-    dramExpIsNeg1 = dramExp .==. pure (-1)   -- 0xFF - often uninitialized or all-ones
-    dramExpIsNeg128 = dramExp .==. pure (-128) -- 0x80 - sign bit only
-    dramExpGtNeg10 = dramExp .>. pure (-10)  -- Small negative
-    dramExpGtNeg64 = dramExp .>. pure (-64)  -- Medium negative
-    
-    result = mux (guard .&&. (not <$> expMatch))
-                 (mux dramExpIsNeg1
-                      (errorX "DRAM exp = -1 (0xFF, all ones?)")
-                      (mux dramExpIsNeg128
-                           (errorX "DRAM exp = -128 (0x80, sign bit only)")
-                           (mux dramExpGtNeg10
-                                (errorX "DRAM exp in [-9, -1)")
-                                (mux dramExpGtNeg64
-                                     (errorX "DRAM exp in [-63, -10]")
-                                     (errorX "DRAM exp in [-128, -64]")))))
-                 dramRow
 
 --------------------------------------------------------------------------------
 -- High-level query head matrix multiplier with DRAM weight loading
@@ -158,48 +124,42 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
  where
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
-  
-  -- Weight loader
-  (axiMaster, weightLoaderOut, weightValid, weightReady) = 
-    LOADER.weightLoader dramSlaveIn layerIdx headIdx 
-                 rowIndex rowReqValidGated downStreamReady params
-  
-  -- Select weights (hardcoded or DRAM)
-  currentRow = LOADER.dramRowOut weightLoaderOut
-  currentRow' = LOADER.hcRowOut weightLoaderOut
 
-  -- THE ASSERTION: check when multiplier is actively processing
-  rowBeingUsed = rowEnable (moDebug multOut)
-  
-  -- Route through the assertion - now it's in the actual datapath
-  checkedRow = assertRowsMatch rowBeingUsed rowIndex currentRow currentRow'
+  -- Weight loader (already performs a fetch-time equivalence check)
+  (axiMaster, weightLoaderOut, weightValid, weightReady) =
+    LOADER.weightLoader dramSlaveIn layerIdx headIdx
+                        rowIndex rowReqValidGated downStreamReady params
 
-  -- Matrix multiplier with clean interface
-  multOut = multiplier xHat checkedRow inputValid weightValid downStreamReady rowIndex
+  currentRowDram = LOADER.dramRowOut weightLoaderOut
+  currentRowHC   = LOADER.hcRowOut   weightLoaderOut
 
-  -- Gate signals with weightReady
+  -- Multiplier
+  multOut = multiplier xHat currentRowHC inputValid weightValid downStreamReady rowIndex
+
+  -- Gate requests and ready with loader's readiness
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
-  readyForInput = moReadyForInput multOut .&&. weightReady
-  outputValid = moOutputValid multOut
-  
+  readyForInput    = moReadyForInput multOut .&&. weightReady
+  outputValid      = moOutputValid multOut
+
   -- Row index management
-  nextRowIndex = mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
-                     (rowIndex + 1)
-                     (mux ((moState multOut .==. pure OPS.MDone) .&&. downStreamReady)
-                          (pure 0)
-                          rowIndex)
-  
+  nextRowIndex =
+    mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
+        (rowIndex + 1)
+        (mux ((moState multOut .==. pure OPS.MDone) .&&. downStreamReady)
+             (pure 0)
+             rowIndex)
+
   -- Accumulate results
   qOut = register (repeat 0) nextOutput
   nextOutput = mux (moRowDone multOut)
                    (replace <$> rowIndex <*> moRowResult multOut <*> qOut)
                    qOut
-  
+
   -- Debug info
   debugInfo = QHeadDebugInfo
     { qhRowIndex        = rowIndex
     , qhState           = moState multOut
-    , qhFirstMant       = register 0 (head . rowMantissas <$> currentRow')
+    , qhFirstMant       = register 0 (head . rowMantissas <$> currentRowHC)
     , qhRowResult       = register 0 (moRowResult multOut)
     , qhRowDone         = moRowDone multOut
     , qhFetchValid      = weightValid
@@ -208,8 +168,8 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     , qhRowEnable       = rowEnable (moDebug multOut)
     , qhAccumValue      = accValue (moDebug multOut)
     , qhQOut            = qOut
-    , qhCurrentRowExp   = register 0 (rowExponent <$> currentRow)
-    , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRow)
+    , qhCurrentRowExp   = register 0 (rowExponent <$> currentRowDram)
+    , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRowDram)
     , qhRowReqValid     = moRowReqValid multOut
     , qhWeightReady     = weightReady
     , qhWeightValid     = weightValid
@@ -237,9 +197,9 @@ queryHeadProjector :: forall dom.
 queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCount xHat params =
   (qhoAxiMaster qhOut, qRoOut, qhoOutputValid qhOut, qhoReadyForInput qhOut, qhoDebugInfo qhOut)
  where
-  qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx 
+  qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx
                                     inputValid downStreamReady xHat params
-  
+
   qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qhoResult qhOut
 
 --------------------------------------------------------------------------------
@@ -301,11 +261,11 @@ axiArbiter masters = Master.AxiMasterOut
     lastGranted = register 0 nextGranted
     selectedIdx :: Signal dom (Index n)
     selectedIdx = findNextRequester <$> bundle arRequests <*> lastGranted
-    findNextRequester reqs lastR = 
+    findNextRequester reqs lastR =
       let start = if lastR == maxBound then 0 else lastR + 1
-          go i n 
-            | n == (0 :: Int) = lastR 
-            | reqs !! i = i  
+          go i n
+            | n == (0 :: Int) = lastR
+            | reqs !! i = i
             | i == maxBound = go 0 (n-1)
             | otherwise = go (i+1) (n-1)
       in go start (natToNum @n)
@@ -351,9 +311,9 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
   axiMasterOut = axiArbiter qAxiMasters
-  
+
   queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
-  
+
   kvHeadIndices :: Vec NumKeyValueHeads (Index NumQueryHeads)
   kvHeadIndices = map (\i -> toEnum (fromEnum i * queryHeadsPerKV)) indicesI
 
@@ -397,7 +357,7 @@ qkvProjectionController dramSlaveIn layerIdx inputValid downStreamReady input pa
     FSM.processingControllerFSM inputValid downStreamReady matVecValid
 
   -- Fixed: deadlock prevention
-  enableGated = enableRaw 
+  enableGated = enableRaw
 
   (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
     qkvProjector dramSlaveIn layerIdx enableGated downStreamReady
