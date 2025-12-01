@@ -14,6 +14,7 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..), AxiAR (..))
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Numeric.Types (Mantissa)
+import Control.Monad (forM_)
 
 type TestDRAMDepth = 65536
 
@@ -300,3 +301,71 @@ spec = do
                     lastIndex = (maxCycles - 1 - firstCyc) `div` spacing
                 in  min 8 (lastIndex + 1)
       P.length dramOutputs `shouldBe` expectedWithinWindow
+
+  describe "weightLoader - HC vs DRAM EQUIVALENCE" $ do
+    it "DRAM row matches HC row for each request" $ do
+      let maxCycles = 400
+          readySig = pure True
+          cyclesPerRequest = 50
+
+          requestGroups = [(0, False)] :
+                          [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
+                          | i <- [0..7::Index HeadDimension]]
+          requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
+
+          reqList = P.map fst requestPairs
+          validList = P.map snd requestPairs
+
+          reqSig = fromList (reqList P.++ P.repeat 0)
+          reqValidSig = fromList (validList P.++ P.repeat False)
+
+          dramContents :: Vec TestDRAMDepth DRAMSlave.WordData
+          dramContents = DRAMSlave.buildMemoryFromParams testParams
+          realDRAM masterOut' =
+            exposeClockResetEnable
+              (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+                 (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          (axiDRAM, outDRAM, dvDRAM, readyDRAM) =
+            exposeClockResetEnable
+              (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig testParams)
+              CS.systemClockGen CS.resetGen CS.enableGen
+
+          -- Sample both HC and DRAM outputs
+          validsSampled = sampleN maxCycles dvDRAM
+          hcExpSampled = sampleN maxCycles $ rowExponent <$> hcRowOut outDRAM
+          dramExpSampled = sampleN maxCycles $ rowExponent <$> dramRowOut outDRAM
+          hcMant0Sampled = sampleN maxCycles $ (!! (0::Int)) . rowMantissas <$> hcRowOut outDRAM
+          dramMant0Sampled = sampleN maxCycles $ (!! (0::Int)) . rowMantissas <$> dramRowOut outDRAM
+
+          -- Get values at cycles when DRAM output is valid
+          validCycles = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
+          
+          comparisons = [(n, 
+                          hcExpSampled P.!! n, 
+                          dramExpSampled P.!! n,
+                          hcMant0Sampled P.!! n,
+                          dramMant0Sampled P.!! n)
+                        | n <- validCycles]
+
+      P.putStrLn "\n=== HC vs DRAM EQUIVALENCE ==="
+      P.putStrLn "Cycle | HC Exp | DRAM Exp | HC Mant[0] | DRAM Mant[0] | Match?"
+      P.putStrLn "------+--------+----------+------------+--------------+-------"
+      forM_ comparisons $ \(cyc, hcE, dramE, hcM, dramM) -> do
+        let expMatch = hcE == dramE
+            mantMatch = hcM == dramM
+            allMatch = expMatch && mantMatch
+        P.putStrLn $ P.concat 
+          [ show cyc, " | "
+          , show hcE, " | "
+          , show dramE, " | "
+          , show hcM, " | "
+          , show dramM, " | "
+          , if allMatch then "✓" else "✗ MISMATCH"
+          ]
+      P.putStrLn "========================\n"
+
+      -- All valid outputs should match
+      let mismatches = [(hcE, dramE) | (_, hcE, dramE, _, _) <- comparisons, hcE /= dramE]
+      mismatches `shouldBe` []

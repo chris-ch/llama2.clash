@@ -7,37 +7,41 @@ module LLaMa2.Memory.WeightStreaming
   , multiWordRowParser
   , rowParser
   , requestCaptureStage
+  , wordsPerRowVal
+  , wordsPerFixedPointVec  -- Export for testing
   ) where
 
 import Clash.Prelude
 
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E (..))
+import LLaMa2.Numeric.Types ( Mantissa, Exponent )
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
-import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import qualified GHC.TypeNats as T
 
--- | Calculate how many 64-byte words needed for a row
+-- | Calculate how many 64-byte words needed for a RowI8E
 -- Each word can hold 63 mantissas (byte 63 reserved for last word's exponent)
--- Last word also holds the exponent
 type family WordsPerRow (dim :: Nat) :: Nat where
   WordsPerRow dim = Div (dim + 62) 63  -- Ceiling division
 
--- | Helper to get the value at runtime
+-- | Runtime value for RowI8E words per row
 wordsPerRowVal :: forall dim. KnownNat dim => Int
 wordsPerRowVal =
   let dim = natToNum @dim :: Int
   in (dim + 62) `div` 63
 
--- | Maximum burst length we might need (for largest model)
--- LLaMa 70B has ModelDimension = 7168
--- (7168 + 62) / 63 = 115 words
--- type MaxBurstWords = 128  -- Round up to power of 2 for safety
-
-class KnownNat dim => RowHasEnoughBytes dim where
-instance KnownNat dim => RowHasEnoughBytes dim  -- safe due to WordsPerRow definition
+-- | Calculate words needed for a Vec n FixedPoint
+-- Must match packFixedPointVec in DRAMBackedAxiSlave
+wordsPerFixedPointVec :: forall n. KnownNat n => Int
+wordsPerFixedPointVec =
+  let n = natToNum @n :: Int
+      -- FixedPoint is typically 32 bits = 4 bytes
+      -- If you have a different size, adjust or use: natToNum @(BitSize FixedPoint `Div` 8)
+      bytesPerEl = 4
+      perWord = 64 `div` bytesPerEl  -- 16 FixedPoints per 64-byte word
+  in (n + perWord - 1) `div` perWord
 
 -- | Matrix type identifier for address calculation
 data MatrixType = QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix | W3Matrix
@@ -61,6 +65,10 @@ align64 n = ((n + 63) `div` 64) * 64
 
 -- | Calculate DDR byte address for a specific matrix row
 -- Enforces 64-byte alignment for all sections to match AXI word boundaries
+--
+-- CRITICAL: This must match the layout in buildMemoryFromParams exactly!
+-- - RowI8E matrices use wordsPerRowVal (63 mantissas per word)
+-- - FixedPoint vectors use wordsPerFixedPointVec (16 FP32 per word)
 calculateRowAddress ::
   MatrixType
   -> Index NumLayers
@@ -71,6 +79,7 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
   where
+    -- Model dimensions (compile-time constants)
     modelDim = natToNum @ModelDimension :: Int
     hiddenDim = natToNum @HiddenDimension :: Int
     numQHeads = natToNum @NumQueryHeads :: Int
@@ -80,49 +89,61 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     seqLen = natToNum @SequenceLength :: Int
     rotaryDim = natToNum @RotaryPositionalEmbeddingDimension :: Int
 
-    -- Calculate words per row for different matrix types
-    wordsPerModelDimRow = wordsPerRowVal @ModelDimension
-    wordsPerHiddenDimRow = wordsPerRowVal @HiddenDimension
-
     bytesPerWord = 64 :: Int
 
-    -- Embedding: vocabSize rows × ModelDimension each
-    embeddingBytes = vocabSize * wordsPerModelDimRow * bytesPerWord
+    -- Words per row for different data types
+    wordsPerModelDimRowI8E = wordsPerRowVal @ModelDimension      -- RowI8E format
+    wordsPerHiddenDimRowI8E = wordsPerRowVal @HiddenDimension    -- RowI8E format
+    wordsPerModelDimFP = wordsPerFixedPointVec @ModelDimension   -- FixedPoint format
+    wordsPerRotaryDimFP = wordsPerFixedPointVec @RotaryPositionalEmbeddingDimension
 
-    -- RMS Final: modelDim + 1 values (single row)
-    rmsFinalWords = wordsPerRowVal @ModelDimension
-    rmsFinalBytes = align64 (rmsFinalWords * bytesPerWord)
+    -- ========== Global sections (before layers) ==========
 
-    -- Rotary: 2 * seqLen * rotaryDim * 4 bytes (float32)
-    rotaryRaw = 2 * seqLen * rotaryDim * 4
-    rotaryBytes = align64 rotaryRaw
+    -- Embedding: vocabSize rows × ModelDimension each (RowI8E format)
+    embeddingBytes = vocabSize * wordsPerModelDimRowI8E * bytesPerWord
+
+    -- RMS Final: Vec ModelDimension FixedPoint (NOT RowI8E!)
+    rmsFinalBytes = align64 (wordsPerModelDimFP * bytesPerWord)
+
+    -- Rotary: 2 * seqLen rows of Vec RotaryDim FixedPoint (cos then sin)
+    -- Each row is packFixedPointVec'd separately
+    rotaryCosBytes = seqLen * wordsPerRotaryDimFP * bytesPerWord
+    rotarySinBytes = seqLen * wordsPerRotaryDimFP * bytesPerWord
+    rotaryRawBytes = rotaryCosBytes + rotarySinBytes
+    rotaryBytes = align64 rotaryRawBytes
 
     baseAddr :: Int
     baseAddr = embeddingBytes + rmsFinalBytes + rotaryBytes
 
-    -- Layer geometry
-    rmsAttBytes = align64 (rmsFinalWords * bytesPerWord)
+    -- ========== Per-layer sections ==========
 
-    -- Q matrices: NumQueryHeads × (HeadDim rows × ModelDim cols)
-    qHeadBytes = headDim * wordsPerModelDimRow * bytesPerWord
+    -- RMS Attention: Vec ModelDimension FixedPoint
+    rmsAttBytes = align64 (wordsPerModelDimFP * bytesPerWord)
+
+    -- Q matrices: NumQueryHeads × (HeadDim rows × ModelDim cols) - RowI8E
+    qHeadBytes = headDim * wordsPerModelDimRowI8E * bytesPerWord
     qTotalBytes = numQHeads * qHeadBytes
 
-    -- K/V matrices: NumKVHeads × (HeadDim rows × ModelDim cols)
-    kHeadBytes = headDim * wordsPerModelDimRow * bytesPerWord
+    -- K/V matrices: NumKVHeads × (HeadDim rows × ModelDim cols) - RowI8E
+    kHeadBytes = headDim * wordsPerModelDimRowI8E * bytesPerWord
     kTotalBytes = numKVHeads * kHeadBytes
     vTotalBytes = kTotalBytes
 
-    -- WO matrix: NumQueryHeads × (ModelDim rows × ModelDim cols)
-    woTotalBytes = numQHeads * modelDim * wordsPerModelDimRow * bytesPerWord
+    -- WO matrix: NumQueryHeads × (ModelDim rows × HeadDim cols) - RowI8E
+    woHeadBytes = modelDim * wordsPerRowVal @HeadDimension * bytesPerWord
+    woTotalBytes = numQHeads * woHeadBytes
 
-    rmsFfnBytes = align64 (rmsFinalWords * bytesPerWord)
+    -- RMS FFN: Vec ModelDimension FixedPoint
+    rmsFfnBytes = align64 (wordsPerModelDimFP * bytesPerWord)
 
-    -- W1/W3: HiddenDim rows × ModelDim cols
-    w1Bytes = hiddenDim * wordsPerModelDimRow * bytesPerWord
-    w3Bytes = hiddenDim * wordsPerModelDimRow * bytesPerWord
+    -- W1: HiddenDim rows × ModelDim cols - RowI8E
+    w1Bytes = hiddenDim * wordsPerModelDimRowI8E * bytesPerWord
 
-    -- W2: ModelDim rows × HiddenDim cols
-    w2Bytes = modelDim * wordsPerHiddenDimRow * bytesPerWord
+    -- W2: ModelDim rows × HiddenDim cols - RowI8E
+    w2Bytes = modelDim * wordsPerHiddenDimRowI8E * bytesPerWord
+
+    -- W3: HiddenDim rows × ModelDim cols - RowI8E
+    w3Bytes = hiddenDim * wordsPerModelDimRowI8E * bytesPerWord
 
     layerBytes = rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes +
                  rmsFfnBytes + w1Bytes + w2Bytes + w3Bytes
@@ -130,12 +151,12 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     layerOffset :: Int
     layerOffset = fromEnum layerIdx * layerBytes
 
-    -- Matrix offset within layer
+    -- Matrix offset within layer (matches order in buildMemoryFromParams.layerWords)
     matrixOffset :: Int
     matrixOffset = case matType of
-      QMatrix -> rmsAttBytes
-      KMatrix -> rmsAttBytes + qTotalBytes
-      VMatrix -> rmsAttBytes + qTotalBytes + kTotalBytes
+      QMatrix  -> rmsAttBytes
+      KMatrix  -> rmsAttBytes + qTotalBytes
+      VMatrix  -> rmsAttBytes + qTotalBytes + kTotalBytes
       WOMatrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes
       W1Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes + rmsFfnBytes
       W2Matrix -> rmsAttBytes + qTotalBytes + kTotalBytes + vTotalBytes + woTotalBytes + rmsFfnBytes + w1Bytes
@@ -143,19 +164,20 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
 
     -- Head offset within matrix
     headBytes = case matType of
-      QMatrix -> qHeadBytes
-      KMatrix -> kHeadBytes
-      VMatrix -> kHeadBytes
-      WOMatrix -> modelDim * wordsPerModelDimRow * bytesPerWord
-      _ -> 0
+      QMatrix  -> qHeadBytes
+      KMatrix  -> kHeadBytes
+      VMatrix  -> kHeadBytes
+      WOMatrix -> woHeadBytes
+      _        -> 0  -- W1/W2/W3 don't have per-head indexing
 
     headOffset :: Int
     headOffset = fromIntegral headIdx * headBytes
 
     -- Row offset within head/matrix
     rowBytesForMatrix = case matType of
-      W2Matrix -> wordsPerHiddenDimRow * bytesPerWord
-      _ -> wordsPerModelDimRow * bytesPerWord
+      W2Matrix -> wordsPerHiddenDimRowI8E * bytesPerWord  -- W2 has HiddenDim columns
+      WOMatrix -> wordsPerRowVal @HeadDimension * bytesPerWord  -- WO has HeadDim columns
+      _        -> wordsPerModelDimRowI8E * bytesPerWord   -- Q/K/V/W1/W3 have ModelDim columns
 
     rowOffset :: Int
     rowOffset = fromIntegral rowIdx * rowBytesForMatrix

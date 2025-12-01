@@ -20,6 +20,7 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
+import qualified Prelude as P
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -92,6 +93,39 @@ multiplier column row colValid rowValid downStreamReady rowIndex =
       , rowEnable = rowEnable
       }
 
+assertRowsMatch :: forall dom n m.
+  (KnownNat n)
+  => Signal dom Bool
+  -> Signal dom (Index m)
+  -> Signal dom (RowI8E n)     -- dramRow
+  -> Signal dom (RowI8E n)     -- hcRow  
+  -> Signal dom (RowI8E n)
+assertRowsMatch guard _rowIdx dramRow hcRow = result
+  where
+    dramExp = rowExponent <$> dramRow
+    hcExp   = rowExponent <$> hcRow
+    
+    expMatch = dramExp .==. hcExp
+    
+    -- Check specific negative values that indicate common bugs
+    dramExpIs0    = dramExp .==. pure 0
+    dramExpIsNeg1 = dramExp .==. pure (-1)   -- 0xFF - often uninitialized or all-ones
+    dramExpIsNeg128 = dramExp .==. pure (-128) -- 0x80 - sign bit only
+    dramExpGtNeg10 = dramExp .>. pure (-10)  -- Small negative
+    dramExpGtNeg64 = dramExp .>. pure (-64)  -- Medium negative
+    
+    result = mux (guard .&&. (not <$> expMatch))
+                 (mux dramExpIsNeg1
+                      (errorX "DRAM exp = -1 (0xFF, all ones?)")
+                      (mux dramExpIsNeg128
+                           (errorX "DRAM exp = -128 (0x80, sign bit only)")
+                           (mux dramExpGtNeg10
+                                (errorX "DRAM exp in [-9, -1)")
+                                (mux dramExpGtNeg64
+                                     (errorX "DRAM exp in [-63, -10]")
+                                     (errorX "DRAM exp in [-128, -64]")))))
+                 dramRow
+
 --------------------------------------------------------------------------------
 -- High-level query head matrix multiplier with DRAM weight loading
 --------------------------------------------------------------------------------
@@ -134,8 +168,14 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   currentRow = LOADER.dramRowOut weightLoaderOut
   currentRow' = LOADER.hcRowOut weightLoaderOut
 
+  -- THE ASSERTION: check when multiplier is actively processing
+  rowBeingUsed = rowEnable (moDebug multOut)
+  
+  -- Route through the assertion - now it's in the actual datapath
+  checkedRow = assertRowsMatch rowBeingUsed rowIndex currentRow currentRow'
+
   -- Matrix multiplier with clean interface
-  multOut = multiplier xHat currentRow inputValid weightValid downStreamReady rowIndex
+  multOut = multiplier xHat checkedRow inputValid weightValid downStreamReady rowIndex
 
   -- Gate signals with weightReady
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
