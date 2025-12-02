@@ -32,12 +32,13 @@ weightLoader :: forall dom.
   -> Signal dom (Index HeadDimension)
   -> Signal dom Bool
   -> Signal dom Bool
+  -> Signal dom Bool                    -- NEW: dataConsumed (rowDone from processor)
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom
      , Signal dom Bool
      , Signal dom Bool)
-weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady params =
+weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
   (axiMaster, loaderOutput, dramDataValid, dramReady)
   where
     -- ==== Hardcoded path ====
@@ -46,20 +47,25 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
       PARAM.wqHeadQ
         (PARAM.headsQ (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
 
-    hcRow :: Signal dom (RowI8E ModelDimension)
-    hcRow = (!!) hcWeights <$> rowReq
+    -- Capture rowReq when fetch is triggered
+    capturedRowReq :: Signal dom (Index HeadDimension)
+    capturedRowReq = register 0 $ mux fetchTrigger rowReq capturedRowReq
 
-    -- ==== DRAM path (using multi-word fetcher) ====
+    hcRow :: Signal dom (RowI8E ModelDimension)
+    hcRow = (!!) hcWeights <$> capturedRowReq
+
+    -- ==== DRAM path ====
     rowAddr :: Signal dom (Unsigned 32)
     rowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowReq
 
     loadState :: Signal dom LoadState
     loadState = register LIdle nextState
       where
-        nextState = withLoad <$> loadState <*> rowReqValid <*> fetchValid <*> downstreamReady
-        withLoad LIdle     rv _  _  = if rv then LFetching else LIdle
-        withLoad LFetching _  fv _  = if fv then LDone     else LFetching
-        withLoad LDone     _  _  rd = if rd then LIdle     else LDone
+        nextState = withLoad <$> loadState <*> rowReqValid <*> fetchValid <*> downstreamReady <*> dataConsumed
+        withLoad LIdle     rv _  _  _  = if rv then LFetching else LIdle
+        withLoad LFetching _  fv _  _  = if fv then LDone     else LFetching
+        -- KEY FIX: Only transition to LIdle when BOTH downstream is ready AND processor consumed the data
+        withLoad LDone     _  _  rd dc = if rd && dc then LIdle else LDone
 
     dramReady :: Signal dom Bool
     dramReady = loadState .==. pure LIdle
@@ -76,38 +82,33 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady par
     fetchTrigger :: Signal dom Bool
     fetchTrigger = (rowReqValid .&&. dramReady .&&. outOfReset) .||. replayFirst
 
-    -- AXI burst fetch for the whole row
+    -- AXI burst fetch
     (axiMaster, fetchedWords, fetchValid, _requestReady) =
       STREAM.axiMultiWordRowFetcher @_ @ModelDimension dramSlaveIn fetchTrigger rowAddr
 
-    -- Parse multi-word response
     parsedRow :: Signal dom (RowI8E ModelDimension)
     parsedRow = STREAM.multiWordRowParser <$> fetchedWords
 
     zeroRow :: RowI8E ModelDimension
     zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
 
-    -- Latch raw parsed data
     dramRowRaw :: Signal dom (RowI8E ModelDimension)
     dramRowRaw = regEn zeroRow fetchValid parsedRow
     
-    -- Also latch the HC row at the same time (for comparison)
     hcRowLatched :: Signal dom (RowI8E ModelDimension)
     hcRowLatched = regEn zeroRow fetchValid hcRow
     
-    -- Detect when new data was just latched (rising edge of LDone)
     wasLDone :: Signal dom Bool
     wasLDone = register False dramDataValid
     
     dataJustLatched :: Signal dom Bool
     dataJustLatched = dramDataValid .&&. (not <$> wasLDone)
     
-    -- Check equivalence on the LATCHED values (guaranteed defined)
     dramRow :: Signal dom (RowI8E ModelDimension)
-    dramRow = assertRowsMatchLazy dataJustLatched rowReq rowAddr dramRowRaw hcRowLatched
+    dramRow = assertRowsMatchLazy dataJustLatched capturedRowReq rowAddr dramRowRaw hcRowLatched
 
     loaderOutput = WeightLoaderOutput 
-      { hcRowOut = hcRow
+      { hcRowOut = hcRowLatched
       , dramRowOut = dramRow
       , dbgRequestedAddr = rowAddr
       , dbgLoadState = loadState
@@ -145,3 +146,40 @@ assertRowsMatchLazy guard rowIdx addr dramRow hcRow = result
                       P.++ " mantMatch=" P.++ show mantMatch
                       P.++ " dramExp=" P.++ show dramExp 
                       P.++ " hcExp=" P.++ show hcExp
+
+
+-- | Enhanced assertion with more debug info
+assertRowsMatchLazyDebug :: forall dom n. KnownNat n 
+  => Signal dom Bool                   -- ^ guard
+  -> Signal dom (Index HeadDimension)  -- ^ captured row index
+  -> Signal dom (Unsigned 32)          -- ^ captured address
+  -> Signal dom (Index HeadDimension)  -- ^ current row index (for comparison)
+  -> Signal dom (RowI8E n)             -- ^ DRAM row
+  -> Signal dom (RowI8E n)             -- ^ HC row
+  -> Signal dom (RowI8E n)
+assertRowsMatchLazyDebug guard capturedIdx capturedAddr currentIdx dramRow hcRow = result
+  where
+    result = mux guard
+                 (checkRow <$> capturedIdx <*> capturedAddr <*> currentIdx <*> dramRow <*> hcRow)
+                 dramRow
+
+    checkRow :: Index HeadDimension -> Unsigned 32 -> Index HeadDimension 
+             -> RowI8E n -> RowI8E n -> RowI8E n
+    checkRow capIdx capAddr curIdx dr hr =
+      let dramExp   = rowExponent dr
+          hcExp     = rowExponent hr
+          dramMants = rowMantissas dr
+          hcMants   = rowMantissas hr
+          expMatch  = dramExp == hcExp
+          mantMatch = dramMants == hcMants
+      in if expMatch && mantMatch
+           then dr
+           else errorX $ "DRAM/HC mismatch! capturedRow=" P.++ show capIdx 
+                      P.++ " currentRow=" P.++ show curIdx
+                      P.++ " capturedAddr=" P.++ show capAddr
+                      P.++ " expMatch=" P.++ show expMatch
+                      P.++ " mantMatch=" P.++ show mantMatch
+                      P.++ " dramExp=" P.++ show dramExp 
+                      P.++ " hcExp=" P.++ show hcExp
+                      P.++ " dramMant0=" P.++ show (P.head (toList dramMants))
+                      P.++ " hcMant0=" P.++ show (P.head (toList hcMants))

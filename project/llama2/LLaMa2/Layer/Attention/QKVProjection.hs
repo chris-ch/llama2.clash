@@ -117,7 +117,7 @@ queryHeadMatrixMultiplier :: forall dom.
 queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady xHat params =
   QueryHeadOutput
     { qhoAxiMaster     = axiMaster
-    , qhoResult        = qOutChecked  -- Use checked output
+    , qhoResult        = qOutChecked
     , qhoOutputValid   = outputValid
     , qhoReadyForInput = readyForInput
     , qhoDebugInfo     = debugInfo
@@ -126,26 +126,39 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
-  -- Weight loader (provides both DRAM and HC rows)
+  -- Weight loader
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
     LOADER.weightLoader dramSlaveIn layerIdx headIdx
-                        rowIndex rowReqValidGated downStreamReady params
-
+                        rowIndex rowReqValidGated downStreamReady 
+                        (moRowDone multOut)  -- NEW: tell loader when processor is done
+                        params
   currentRowDram = LOADER.dramRowOut weightLoaderOut
   currentRowHC   = LOADER.hcRowOut   weightLoaderOut
 
-  -- DRAM path multiplier (the real one)
-  multOut = multiplier xHat currentRowHC inputValid weightValid downStreamReady rowIndex
+  -- DRAM path multiplier
+  multOut = multiplier xHat currentRowDram inputValid weightValid downStreamReady rowIndex
 
-  -- HC path multiplier (shadow/reference) - same timing, different weights
-  multOutHC = multiplier xHat currentRowHC inputValid weightValid downStreamReady rowIndex
+  -- HC path: use DRAM path's control signals directly
+  (hcRowResult, _hcRowDone, _hcAccValue) =
+    OPS.parallel64RowProcessor 
+      (rowReset (moDebug multOut))
+      (rowEnable (moDebug multOut))
+      currentRowHC 
+      xHat
 
-  -- Gate requests and ready with loader's readiness
+  -- Assert row results match immediately when rowDone fires
+  dramRowResultChecked = assertRowResultMatch 
+                           (moRowDone multOut) 
+                           rowIndex 
+                           (moRowResult multOut) 
+                           hcRowResult
+                           currentRowDram  -- Add weight signals for debug
+                           currentRowHC
+
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
   readyForInput    = moReadyForInput multOut .&&. weightReady
   outputValid      = moOutputValid multOut
 
-  -- Row index management
   nextRowIndex =
     mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
         (rowIndex + 1)
@@ -153,24 +166,21 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
              (pure 0)
              rowIndex)
 
-  -- Accumulate DRAM results
+  -- Accumulate using checked DRAM result
   qOut = register (repeat 0) nextOutput
   nextOutput = mux (moRowDone multOut)
-                   (replace <$> rowIndex <*> moRowResult multOut <*> qOut)
+                   (replace <$> rowIndex <*> dramRowResultChecked <*> qOut)
                    qOut
 
-  -- Accumulate HC results (shadow)
+  -- Accumulate HC results
   qOutHC :: Signal dom (Vec HeadDimension FixedPoint)
   qOutHC = register (repeat 0) nextOutputHC
-  nextOutputHC :: Signal dom (Vec HeadDimension FixedPoint)
-  nextOutputHC = mux (moRowDone multOutHC)
-                     (replace <$> rowIndex <*> moRowResult multOutHC <*> qOutHC)
+  nextOutputHC = mux (moRowDone multOut)
+                     (replace <$> rowIndex <*> hcRowResult <*> qOutHC)
                      qOutHC
 
-  -- Compare when outputValid fires
   qOutChecked = assertQOutputsMatch outputValid rowIndex qOut qOutHC
 
-  -- Debug info
   debugInfo = QHeadDebugInfo
     { qhRowIndex        = rowIndex
     , qhState           = moState multOut
@@ -190,6 +200,45 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     , qhWeightValid     = weightValid
     }
 
+-- | Assert that row results match when rowDone fires
+-- | Assert that row results match when rowDone fires, with detailed debug
+assertRowResultMatch :: forall dom . HiddenClockResetEnable dom
+  => Signal dom Bool                    -- ^ rowDone trigger
+  -> Signal dom (Index HeadDimension)   -- ^ row index
+  -> Signal dom FixedPoint              -- ^ DRAM result
+  -> Signal dom FixedPoint              -- ^ HC result
+  -> Signal dom (RowI8E ModelDimension) -- ^ DRAM weights (for debug)
+  -> Signal dom (RowI8E ModelDimension) -- ^ HC weights (for debug)
+  -> Signal dom FixedPoint
+assertRowResultMatch rowDone rowIdx dramResult hcResult dramWeights hcWeights = result
+  where
+    tokenCnt :: Signal dom (Unsigned 32)
+    tokenCnt = register 0 nextTokenCnt
+    nextTokenCnt = mux (rowDone .&&. (rowIdx .==. pure maxBound))
+                       (tokenCnt + 1)
+                       tokenCnt
+
+    result = mux rowDone
+                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult 
+                        <*> dramWeights <*> hcWeights)
+                 dramResult
+
+    check :: Unsigned 32 -> Index HeadDimension -> FixedPoint -> FixedPoint 
+          -> RowI8E ModelDimension -> RowI8E ModelDimension -> FixedPoint
+    check tok ri dr hr dramW hcW =
+      if dr P.== hr
+        then dr
+        else P.error $ "Row result mismatch at token " P.++ show tok 
+                    P.++ " row " P.++ show ri
+                    P.++ ": DRAM=" P.++ show dr 
+                    P.++ " HC=" P.++ show hr
+                    P.++ "\n  DRAM weight exp=" P.++ show (rowExponent dramW)
+                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas dramW)))
+                    P.++ "\n  HC weight exp=" P.++ show (rowExponent hcW)
+                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas hcW)))
+                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW 
+                                                         P.&& rowMantissas dramW P.== rowMantissas hcW)
+
 -- | Compare DRAM and HC Q outputs when valid - X-safe version
 assertQOutputsMatch
   :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
@@ -204,9 +253,14 @@ assertQOutputsMatch outputValid _rowIdx dramOut hcOut = result
   everValid :: Signal dom Bool
   everValid = register False (everValid .||. outputValid)
 
+  -- one-cycle delayed view of the outputValid
+  prevOutputValid :: Signal dom Bool
+  prevOutputValid = register False outputValid
+
   -- Trigger comparison one cycle *after* outputValid goes high
-  validDelayed = register False outputValid
-  checkTrigger = outputValid .&&. validDelayed .&&. everValid
+  -- (i.e. when prevOutputValid is True)
+  checkTrigger :: Signal dom Bool
+  checkTrigger = prevOutputValid .&&. everValid
 
   -- Sample only when we are sure data is valid and defined
   dramSampled = register (repeat 0) (mux checkTrigger dramOut dramSampled)
