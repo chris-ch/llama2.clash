@@ -3,15 +3,24 @@ module LLaMa2.Memory.WeightStreamingRoundtripSpec (spec) where
 import Clash.Prelude
 import Test.Hspec
 
-import LLaMa2.Numeric.Quantization (RowI8E(..))
+import LLaMa2.Numeric.Quantization (RowI8E(..), MatI8E)
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import qualified Prelude as P
+import Clash.Sized.Vector (unsafeFromList)
+import qualified Simulation.ParamsPlaceholder as PARAM
+import qualified Simulation.Parameters as PARAM
+import LLaMa2.Types.ModelConfig (HeadDimension, ModelDimension)
+import Control.Monad (forM_)
 
 -- Small dimension keeps the test fast
 type Dim = 128
 type NumWords = STREAM.WordsPerRow Dim
 -- NumWords = 3 for Dim=128 with the current implementation
+
+type TestDRAMDepth = 65536
+type WordData = BitVector 512
 
 mkRow :: Vec Dim Mantissa -> Exponent -> RowI8E Dim
 mkRow ms e = RowI8E { rowMantissas = ms, rowExponent = e }
@@ -37,3 +46,60 @@ spec = describe "RowI8E pack/parse round-trip" $ do
         row' = STREAM.multiWordRowParser packedWords
 
     row' `shouldBe` row
+
+  it "round-trips RowI8E 4096" $ do
+    let mans = iterateI (+1) (0 :: Mantissa) :: Vec 4096 Mantissa
+        expon = (-8) :: Exponent
+        row   = RowI8E mans expon
+        packed = DRAM.packRowMultiWord row
+        vec65 :: Vec (STREAM.WordsPerRow 4096) (BitVector 512)
+        vec65 = case packed of
+                  -- Expect 65 words for 4096 in the NEW layout
+                  _ | P.length packed == 65 -> unsafeFromList packed
+                    | otherwise -> error "expected 65 words"
+        row' = STREAM.multiWordRowParser vec65
+    row' `shouldBe` row
+
+  it "Q head 0 rows [0..3] round-trip exactly" $ do
+    let params = PARAM.decoderConst
+
+        -- Build DRAM image
+        dramVec :: Vec TestDRAMDepth WordData
+        dramVec = DRAM.buildMemoryFromParams @TestDRAMDepth params
+
+        -- Hardcoded Q matrix head 0 (reference)
+        layer0   = head (PARAM.modelLayers params)
+        mha0     = PARAM.multiHeadAttention layer0
+        qHead0   :: MatI8E HeadDimension ModelDimension
+        qHead0   = PARAM.wqHeadQ (head (PARAM.headsQ mha0))
+
+        wordsPerRow = STREAM.wordsPerRowVal @ModelDimension
+        strideBytes = wordsPerRow * 64
+
+        -- Helper to fetch/parse one row directly from the image
+        fetchRow :: Index HeadDimension -> RowI8E ModelDimension
+        fetchRow ri =
+          let addrBytes :: Unsigned 32
+              addrBytes = STREAM.calculateRowAddress STREAM.QMatrix 0 0 ri
+              baseWord  = fromIntegral (addrBytes `shiftR` 6) :: Int
+              slice'     = map (\k -> dramVec !! (snatToNum (SNat @0) + toInteger (baseWord + k)))
+                              (iterateI (+1) 0 :: Vec (STREAM.WordsPerRow ModelDimension) Int)
+          in STREAM.multiWordRowParser slice'
+
+        -- Compare rows 0..3
+        go i =
+          let ri       = fromInteger (toInteger i) :: Index HeadDimension
+              hcRow    = qHead0 !! ri
+              dramRow  = fetchRow ri
+          in (hcRow, dramRow)
+
+        results = P.map go [(0::Int)..3]
+
+    -- All rows must match exactly
+    forM_ results $ \(hcRow, dramRow) -> dramRow `shouldBe` hcRow
+
+    -- Basic stride sanity between row0 and row1 (bytes)
+    let addr0 = STREAM.calculateRowAddress STREAM.QMatrix 0 0 0
+        addr1 = STREAM.calculateRowAddress STREAM.QMatrix 0 0 1
+        delta = fromIntegral (addr1 - addr0) :: Int
+    delta `shouldBe` strideBytes

@@ -126,33 +126,39 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
-  -- Weight loader
+  -- Weight loader (note: pass moRowDone to allow the loader to hold LDone until consumed)
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
     LOADER.weightLoader dramSlaveIn layerIdx headIdx
-                        rowIndex rowReqValidGated downStreamReady 
-                        (moRowDone multOut)  -- NEW: tell loader when processor is done
+                        rowIndex rowReqValidGated downStreamReady
+                        (moRowDone multOut)
                         params
-  currentRowDram = LOADER.dramRowOut weightLoaderOut
-  currentRowHC   = LOADER.hcRowOut   weightLoaderOut
+
+  -- COMMITTED rows from loader
+  currentRowDramRaw = LOADER.dramRowOut weightLoaderOut
+  currentRowHCRaw   = LOADER.hcRowOut   weightLoaderOut
+
+  -- Ensure rows don't change while valid (live-path assertion)
+  currentRowDram = LOADER.assertRowStable weightValid currentRowDramRaw
+  currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
   -- DRAM path multiplier
   multOut = multiplier xHat currentRowDram inputValid weightValid downStreamReady rowIndex
 
-  -- HC path: use DRAM path's control signals directly
+  -- HC path: reuse the DRAM path's control signals
   (hcRowResult, _hcRowDone, _hcAccValue) =
-    OPS.parallel64RowProcessor 
+    OPS.parallel64RowProcessor
       (rowReset (moDebug multOut))
       (rowEnable (moDebug multOut))
-      currentRowHC 
+      currentRowHC
       xHat
 
-  -- Assert row results match immediately when rowDone fires
-  dramRowResultChecked = assertRowResultMatch 
-                           (moRowDone multOut) 
-                           rowIndex 
-                           (moRowResult multOut) 
+  -- Assert row results match exactly when rowDone fires; feed the checked DRAM result forward
+  dramRowResultChecked = assertRowResultMatch
+                           (moRowDone multOut)
+                           rowIndex
+                           (moRowResult multOut)
                            hcRowResult
-                           currentRowDram  -- Add weight signals for debug
+                           currentRowDram   -- use committed+stable rows for debug
                            currentRowHC
 
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
@@ -172,7 +178,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
                    (replace <$> rowIndex <*> dramRowResultChecked <*> qOut)
                    qOut
 
-  -- Accumulate HC results
+  -- Accumulate HC results (reference)
   qOutHC :: Signal dom (Vec HeadDimension FixedPoint)
   qOutHC = register (repeat 0) nextOutputHC
   nextOutputHC = mux (moRowDone multOut)

@@ -1,3 +1,4 @@
+{-# LANGUAGE PolyKinds #-}
 module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
   , WordsPerRow
@@ -15,22 +16,26 @@ import Clash.Prelude
 
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E (..))
-import LLaMa2.Numeric.Types ( Mantissa, Exponent )
+import LLaMa2.Numeric.Types ( Exponent )
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
 import qualified GHC.TypeNats as T
+import Data.Type.Bool (If)
 
--- | Calculate how many 64-byte words needed for a RowI8E
--- Each word can hold 63 mantissas (byte 63 reserved for last word's exponent)
+-- | Calculate how many 64-byte words are needed for a RowI8E.
+-- New layout:
+--   - Word 0: 63 mantissas at bytes [0..62], exponent at byte 63
+--   - Words 1..: 64 mantissas per word (no padding)
+-- Therefore: 1 word if dim <= 63; else 1 + floor(dim/64).
 type family WordsPerRow (dim :: Nat) :: Nat where
-  WordsPerRow dim = Div (dim + 62) 63  -- Ceiling division
+  WordsPerRow dim = If (dim <=? 63) 1 (1 + Div dim 64)
 
--- | Runtime value for RowI8E words per row
+-- | Runtime value (must match the type-level WordsPerRow above)
 wordsPerRowVal :: forall dim. KnownNat dim => Int
 wordsPerRowVal =
-  let dim = natToNum @dim :: Int
-  in (dim + 62) `div` 63
+  let d = natToNum @dim :: Int
+  in if d <= 63 then 1 else 1 + (d `div` 64)
 
 -- | Calculate words needed for a Vec n FixedPoint
 -- Must match packFixedPointVec in DRAMBackedAxiSlave
@@ -174,9 +179,9 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
 
     -- Row offset within head/matrix
     rowBytesForMatrix = case matType of
-      W2Matrix -> wordsPerHiddenDimRowI8E * bytesPerWord  -- W2 has HiddenDim columns
-      WOMatrix -> wordsPerRowVal @HeadDimension * bytesPerWord  -- WO has HeadDim columns
-      _        -> wordsPerModelDimRowI8E * bytesPerWord   -- Q/K/V/W1/W3 have ModelDim columns
+      W2Matrix -> wordsPerRowVal @HiddenDimension * bytesPerWord  -- W2 has HiddenDim columns
+      WOMatrix -> wordsPerRowVal @HeadDimension   * bytesPerWord  -- WO has HeadDim columns
+      _        -> wordsPerRowVal @ModelDimension * bytesPerWord   -- Q/K/V/W1/W3 have ModelDim columns
 
     rowOffset :: Int
     rowOffset = fromIntegral rowIdx * rowBytesForMatrix
@@ -373,55 +378,40 @@ axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, rea
       , bready = pure False
       }
 
--- | Parse multiple 512-bit words into a RowI8E
--- Layout per word produced by packRowMultiWord:
---   - Middle words (all but last): 63 mantissas at bytes [0..62], byte 63 is padding (0)
---   - Last word: remaining mantissas at [0..k-1], then exponent at byte k, then padding
+-- | Parse multiple 512-bit words into a RowI8E using the NEW layout:
+-- Word 0: mant[0..62] at [0..62], exponent at byte 63.
+-- Words 1..: 64 mantissas each (no per-word padding).
 multiWordRowParser :: forall dim numWords.
   ( KnownNat dim
-    , KnownNat numWords
-    , KnownNat (numWords T.* 64)
-    , BitPack Exponent
+  , KnownNat (numWords T.* 64)
+  , BitPack Exponent
   ) =>
   Vec numWords (BitVector 512) -> RowI8E dim
 multiWordRowParser words' = RowI8E mantissas exponent'
   where
-  -- Flatten all bytes in beat order (word 0 .. word N-1), byte 0..63 within each word
-  allBytes :: Vec (numWords T.* 64) (BitVector 8)
-  allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
+    -- Flatten bytes in beat order: w0 b0..b63, w1 b0..b63, ...
+    allBytes :: Vec (numWords T.* 64) (BitVector 8)
+    allBytes = concatMap (\w -> unpack w :: Vec 64 (BitVector 8)) words'
 
-  dimI       = natToNum @dim :: Int
-  numWordsI  = natToNum @numWords :: Int
-  middleWords = max 0 (numWordsI - 1)
+    -- Mantissa i -> byte i (i<63), else byte (i+1) (skip exponent slot at 63)
+    mantBytes :: Vec dim (BitVector 8)
+    mantBytes = imap
+      (\i _ ->
+         let iI = fromEnum i
+             idx = if iI < 63 then iI else iI + 1
+         in allBytes !! idx
+      ) (repeat (0 :: Int))
 
-  byteAt :: Int -> BitVector 8
-  byteAt i = allBytes !! i
+    mantissas = map unpack mantBytes
 
-  -- For mantissa i (0-based), skip one padding byte after every 63 mantissas
-  -- Byte index = i + floor(i / 63)
-  mantBytes :: Vec dim (BitVector 8)
-  mantBytes = imap
-    (\i _ ->
-      let iI   = fromEnum i
-          skip = iI `div` 63
-          idx  = iI + skip
-      in byteAt idx
-    ) (repeat (0 :: Int))
+    -- Exponent: byte 63 of the first word
+    expByte  = allBytes !! (63::Int)
 
-  mantissas :: Vec dim Mantissa
-  mantissas = map unpack mantBytes
-
-  -- Exponent immediately after the last mantissa within the last word
-  -- Global byte index = dim + (# of middle words)
-  expIdx   = dimI + middleWords
-  expByte  = byteAt expIdx
-
-  -- Read as full signed byte and sign-extend/shrink to your Exponent type.
-  exponent' :: Exponent
-  exponent' =
-    let e8 :: Signed 8
-        e8 = unpack expByte
-    in resize e8
+    exponent' :: Exponent
+    exponent' =
+      let e8 :: Signed 8
+          e8 = unpack expByte
+      in resize e8
 
 -- Keep old single-word parser for backward compatibility
 rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n

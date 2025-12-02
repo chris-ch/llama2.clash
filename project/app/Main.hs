@@ -24,7 +24,6 @@ import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import Numeric (showHex)
-import Clash.XException (isX)
 
 --------------------------------------------------------------------------------
 -- Main entry point

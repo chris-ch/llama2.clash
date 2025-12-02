@@ -34,11 +34,14 @@ type WordData = BitVector 512  -- 64 bytes per beat
 -- Compile-time helpers
 -- ============================================================================
 
--- | Ceiling division of mantissas-per-row: 63 mantissas per 64-byte word.
+-- | Words-per-row for RowI8E under the NEW layout:
+--   - Word 0: 63 mantissas at bytes [0..62], exponent at byte 63
+--   - Words 1..: 64 mantissas per word (no padding)
+-- Therefore: 1 word if dim <= 63; else 1 + floor(dim/64).
 wordsPerRowVal :: forall dim. KnownNat dim => Int
 wordsPerRowVal =
   let dim = natToNum @dim :: Int
-  in (dim + 62) `div` 63
+  in if dim <= 63 then 1 else 1 + (dim `div` 64)
 
 -- ============================================================================
 -- Top-level constructors
@@ -56,39 +59,45 @@ createDRAMBackedAxiSlave params =
   createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
 
 -- ============================================================================
--- Row packing
+-- Row packing (RowI8E -> 64B words)
 -- ============================================================================
 
--- | Pack a single row into multiple 64-byte words.
+-- | Pack a RowI8E into multiple 64-byte words using the NEW layout:
+--   Word 0: mant[0..62] at bytes 0..62, exponent at byte 63
+--   Words 1..: 64 mantissas each (no per-word padding)
 packRowMultiWord :: forall dim. KnownNat dim => RowI8E dim -> [BitVector 512]
 packRowMultiWord row = go 0
   where
     dimI      = natToNum @dim :: Int
     numWords  = wordsPerRowVal @dim
     allMants  = toList $ rowMantissas row
-    -- Store exponent as a full signed byte (two's complement).
-    -- This sign-extends any narrower Exponent to 8 bits.
+    -- Exponent stored as full signed byte (two's complement).
     expByte   = pack (resize (rowExponent row) :: Signed 8) :: BitVector 8
 
     go :: Int -> [BitVector 512]
-    go w  | w >= numWords       = []
-          | w == numWords - 1   = [packLast w]
-          | otherwise           = packMid w : go (w+1)
+    go w
+      | w >= numWords = []
+      | w == 0        = packFirst : go (w+1)
+      | otherwise     = packSubsequent w : go (w+1)
 
-    packMid :: Int -> BitVector 512
-    packMid w =
-      let s = w * 63
-          e = min (s + 63) dimI
-          mantsThis = P.take (e - s) $ P.drop s allMants
-          bytes = P.map pack mantsThis P.++ P.replicate (64 - P.length mantsThis) (0 :: BitVector 8)
+    -- Word 0: up to 63 mantissas, exponent at byte 63
+    packFirst :: BitVector 512
+    packFirst =
+      let cnt0   = min 63 dimI
+          m0     = P.take cnt0 allMants
+          -- bytes 0..(cnt0-1): mantissas
+          -- bytes cnt0..62   : zero padding
+          mantBs = P.map pack m0 P.++ P.replicate (63 - cnt0) (0 :: BitVector 8)
+          bytes  = mantBs P.++ [expByte]
       in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
 
-    packLast :: Int -> BitVector 512
-    packLast w =
-      let s = w * 63
-          cnt = dimI - s
-          mantsThis = P.take cnt $ P.drop s allMants
-          bytes = P.map pack mantsThis P.++ [expByte] P.++ P.replicate (63 - cnt) (0 :: BitVector 8)
+    -- Word w>=1: 64 mantissas starting at index s = 63 + (w-1)*64
+    packSubsequent :: Int -> BitVector 512
+    packSubsequent w =
+      let s      = 63 + (w - 1) * 64
+          cnt    = max 0 (min 64 (dimI - s))
+          mThis  = P.take cnt $ P.drop s allMants
+          bytes  = P.map pack mThis P.++ P.replicate (64 - cnt) (0 :: BitVector 8)
       in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
 
 packMatrixMultiWord :: forall rows cols. KnownNat cols
@@ -129,6 +138,7 @@ align64 :: Int -> Int
 align64 n = ((n + 63) `div` 64) * 64
 
 -- | Build a DRAM image from model parameters, trimmed/padded to n words.
+--   Section order MUST match calculateRowAddress in WeightStreaming.
 buildMemoryFromParams :: forall n. KnownNat n => PARAM.DecoderParameters -> Vec n WordData
 buildMemoryFromParams params =
   let nI = natToNum @n :: Int
@@ -410,4 +420,3 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
 
     bdataSig :: Signal dom AxiB
     bdataSig = AxiB 0 . awid <$> capturedAW
-
