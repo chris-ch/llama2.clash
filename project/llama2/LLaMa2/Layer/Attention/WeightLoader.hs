@@ -156,10 +156,6 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   fetchedWordsCommitted :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
 
-  -- Use committed words in assertion
-  dramRowAfterEqCheck = assertRowsMatchOnCommit dvRise capturedRowReq capturedAddr
-    dramRowCommitted hcRowCommitted fetchedWordsCommitted
-
   -- OPTIONAL: sanity-check the row stride between sequential commits (detects +64B bug)
   -- This is on the live path (no DCE) but cheap. Safe to keep in simulation; remove for synth.
   expectedStride :: Unsigned 32
@@ -167,6 +163,10 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
 
   prevCapIdx  = register maxBound $ mux dvRise capturedRowReq prevCapIdx  -- Use maxBound as sentinel
   prevCapAddr = register 0 $ mux dvRise capturedAddr  prevCapAddr
+
+  -- Use committed words in assertion
+  dramRowAfterEqCheck = assertRowsMatchOnCommit dvRise capturedRowReq capturedAddr
+    dramRowCommitted hcRowCommitted fetchedWordsCommitted
 
   dramRowOutLive = assertStrideOnCommit dvRise prevCapIdx capturedRowReq 
     prevCapAddr capturedAddr expectedStride dramRowAfterEqCheck

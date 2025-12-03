@@ -15,7 +15,7 @@ import System.IO (hFlush, stdout)
 import Text.Printf (printf)
 import LLaMa2.Types.LayerData ( Token, Temperature, Seed, LayerData (..) )
 
-import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension, NumQueryHeads, NumKeyValueHeads, NumLayers )
+import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension, NumQueryHeads, NumKeyValueHeads, NumLayers, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
@@ -152,6 +152,9 @@ generateTokensSimAutoregressive
 generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature seed = do
   putStrLn $ "Vocabulary size: " ++ show (C.natToNum @VocabularySize :: Int)
   putStrLn $ "Model dimension: " ++ show (C.natToNum @ModelDimension :: Int)
+  putStrLn $ "Hidden dimension: " ++ show (C.natToNum @HiddenDimension :: Int)
+  putStrLn $ "Rotary Positional Embedding dimension: " ++ show (C.natToNum @RotaryPositionalEmbeddingDimension :: Int)
+  putStrLn $ "Sequence length: " ++ show (C.natToNum @SequenceLength :: Int)
   putStrLn $ "# Query heads: " ++ show (C.natToNum @NumQueryHeads :: Int)
   putStrLn $ "# Key-Value heads: " ++ show (C.natToNum @NumKeyValueHeads :: Int)
   putStrLn $ "# Layers: " ++ show (C.natToNum @NumLayers :: Int)
