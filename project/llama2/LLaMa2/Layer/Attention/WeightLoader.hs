@@ -243,7 +243,7 @@ assertRowsMatchOnCommit commitEdge capIdx capAddr dramRow hcRow fetchedWords =
         showPrefix xs = P.take nShow (P.map show (toList xs))
 
         -- Parse the raw words to see what was actually fetched
-        parsedFromWords :: RowI8E ModelDimension
+        parsedFromWords :: RowI8E n
         parsedFromWords = STREAM.multiWordRowParser words'
         pw_exp = rowExponent parsedFromWords
         pw_mants = rowMantissas parsedFromWords
@@ -269,4 +269,4 @@ assertRowsMatchOnCommit commitEdge capIdx capAddr dramRow hcRow fetchedWords =
              P.++ "\n  Parsed from fetchedWords exp=" P.++ show pw_exp
              P.++ "\n  Parsed from fetchedWords mant[0..7]=" P.++ show pw0
              P.++ "\n  Raw word[0] (hex)=" P.++ word0_hex
-             P.++ "\n  (DRAM row committed should equal parsed fetchedWords)"
+             P.++ "\n  (Assertion: DRAM row should equal HC row; fetchedWords shown for debugging)"
