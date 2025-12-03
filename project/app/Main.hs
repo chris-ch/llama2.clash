@@ -15,7 +15,7 @@ import System.IO (hFlush, stdout)
 import Text.Printf (printf)
 import LLaMa2.Types.LayerData ( Token, Temperature, Seed, LayerData (..) )
 
-import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension )
+import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension, NumQueryHeads, NumKeyValueHeads, NumLayers )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
@@ -150,6 +150,11 @@ generateTokensSimAutoregressive
   -> Seed
   -> IO Int
 generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature seed = do
+  putStrLn $ "Vocabulary size: " ++ show (C.natToNum @VocabularySize :: Int)
+  putStrLn $ "Model dimension: " ++ show (C.natToNum @ModelDimension :: Int)
+  putStrLn $ "# Query heads: " ++ show (C.natToNum @NumQueryHeads :: Int)
+  putStrLn $ "# Key-Value heads: " ++ show (C.natToNum @NumKeyValueHeads :: Int)
+  putStrLn $ "# Layers: " ++ show (C.natToNum @NumLayers :: Int)
   putStrLn $ "✅ Prompt: " ++ show promptTokens
   hFlush stdout
 
