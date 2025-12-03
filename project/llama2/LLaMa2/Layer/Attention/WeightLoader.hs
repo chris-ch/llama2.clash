@@ -1,8 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeApplications #-}
-
 module LLaMa2.Layer.Attention.WeightLoader
   ( weightLoader
   , WeightLoaderOutput(..)
@@ -38,16 +33,8 @@ data WeightLoaderOutput dom = WeightLoaderOutput
   , dbgCapturedAddr   :: Signal dom (Unsigned 32)
   }
 
--- Correct words-per-row (I8E: 1 exponent in first 64B beat, 63 mant in first beat, 64 afterwards)
-wordsPerRowI8E :: forall n. KnownNat n => Int
-wordsPerRowI8E =
-  let d = natToNum @n :: Int
-  in if d <= 63 then 1 else 1 + divCeil (d - 63) 64
- where
-  divCeil x y = (x + y - 1) `div` y
-
 rowStrideBytesI8E :: forall n. KnownNat n => Int
-rowStrideBytesI8E = wordsPerRowI8E @n * 64
+rowStrideBytesI8E = STREAM.wordsPerRowVal @n * 64
 
 -- Simulation-only data-path checker: row does not change while 'validSig' is high
 assertRowStable

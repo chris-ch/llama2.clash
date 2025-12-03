@@ -1,4 +1,3 @@
-{-# LANGUAGE PolyKinds #-}
 module LLaMa2.Memory.WeightStreaming
   ( MatrixType(..)
   , WordsPerRow

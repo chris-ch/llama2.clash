@@ -4,7 +4,6 @@ module Simulation.DRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
   , createDRAMBackedAxiSlave
   , buildMemoryFromParams
-  , wordsPerRowVal
   , packRowMultiWord
   ) where
 
@@ -12,13 +11,20 @@ import Clash.Prelude
 import qualified Prelude as P
 
 import LLaMa2.Memory.AXI.Types
+    ( AxiW(wdata),
+      AxiAW(AxiAW, awid, awaddr, awlen),
+      AxiR(AxiR),
+      AxiAR(AxiAR, arid, arlen, araddr),
+      AxiB(AxiB) )
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Types.ModelConfig
+    ( NumKeyValueHeads, NumQueryHeads, NumLayers )
 import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
+import qualified LLaMa2.Memory.WeightStreaming as STREAM
 
 -- | Timing configuration
 -- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
@@ -29,19 +35,6 @@ data DRAMConfig = DRAMConfig
   } deriving (Show, Eq)
 
 type WordData = BitVector 512  -- 64 bytes per beat
-
--- ============================================================================
--- Compile-time helpers
--- ============================================================================
-
--- | Words-per-row for RowI8E under the NEW layout:
---   - Word 0: 63 mantissas at bytes [0..62], exponent at byte 63
---   - Words 1..: 64 mantissas per word (no padding)
--- Therefore: 1 word if dim <= 63; else 1 + floor(dim/64).
-wordsPerRowVal :: forall dim. KnownNat dim => Int
-wordsPerRowVal =
-  let dim = natToNum @dim :: Int
-  in if dim <= 63 then 1 else 1 + (dim `div` 64)
 
 -- ============================================================================
 -- Top-level constructors
@@ -69,7 +62,7 @@ packRowMultiWord :: forall dim. KnownNat dim => RowI8E dim -> [BitVector 512]
 packRowMultiWord row = go 0
   where
     dimI      = natToNum @dim :: Int
-    numWords  = wordsPerRowVal @dim
+    numWords  = STREAM.wordsPerRowVal @dim
     allMants  = toList $ rowMantissas row
     -- Exponent stored as full signed byte (two's complement).
     expByte   = pack (resize (rowExponent row) :: Signed 8) :: BitVector 8
