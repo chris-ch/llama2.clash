@@ -100,7 +100,7 @@ spec = do
       let params = PARAM.decoderConst
           layer0 = head (PARAM.modelLayers params)
           mha0 = PARAM.multiHeadAttention layer0
-          qHead0 = PARAM.wqHeadQ (head (PARAM.headsQ mha0))
+          qHead0 = PARAM.qMatrix (head (PARAM.qHeads mha0))
 
           dramContents :: Vec TestDRAMDepth DRAMSlave.WordData
           dramContents = DRAMSlave.buildMemoryFromParams params

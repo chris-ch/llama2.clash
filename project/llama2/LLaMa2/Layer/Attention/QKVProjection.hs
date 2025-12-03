@@ -206,7 +206,6 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     , qhWeightValid     = weightValid
     }
 
--- | Assert that row results match when rowDone fires
 -- | Assert that row results match when rowDone fires, with detailed debug
 assertRowResultMatch :: forall dom . HiddenClockResetEnable dom
   => Signal dom Bool                    -- ^ rowDone trigger
@@ -295,7 +294,7 @@ assertQOutputsMatch outputValid _rowIdx dramOut hcOut = result
                          " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
 
 --------------------------------------------------------------------------------
--- Q head projector (now trivially simple!)
+-- Q head projector
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -319,10 +318,10 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepC
   qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx
                                     inputValid downStreamReady xHat params
 
-  qRoOut = (rotaryEncoder (PARAM.rotaryF (PARAM.headsQ (PARAM.multiHeadAttention (modelLayers params !! layerIdx)) !! headIdx)) <$> stepCount) <*> qhoResult qhOut
+  qRoOut = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> qhoResult qhOut
 
 --------------------------------------------------------------------------------
--- KV head projector (unchanged)
+-- KV head projector
 --------------------------------------------------------------------------------
 keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -330,20 +329,21 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.SingleHeadComponentQ
+  -> PARAM.KeyValueHeadComponentQ
+  -> PARAM.RotaryEncodingComponentF
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool
      , Signal dom Bool
      )
-keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig headParams =
+keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadParams rotary =
   (kRoOut, vOut, outputValid, readyForInput)
  where
   selectedK :: Signal dom (MatI8E HeadDimension ModelDimension)
-  selectedK = pure (PARAM.wkHeadQ headParams)
+  selectedK = pure (PARAM.kMatrix kvHeadParams)
 
   selectedV :: Signal dom (MatI8E HeadDimension ModelDimension)
-  selectedV = pure (PARAM.wvHeadQ headParams)
+  selectedV = pure (PARAM.vMatrix kvHeadParams)
 
   (kOut, kValidOut, kReadyOut) =
     OPS.parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedK xHatSig
@@ -351,7 +351,7 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig headParams
   (vOut, vValidOut, vReadyOut) =
     OPS.parallelRowMatrixMultiplierDyn inputValid downStreamReady selectedV xHatSig
 
-  kRoOut = (rotaryEncoder (PARAM.rotaryF headParams) <$> stepCountSig) <*> kOut
+  kRoOut = (rotaryEncoder rotary <$> stepCountSig) <*> kOut
 
   outputValid = kValidOut .&&. vValidOut
   readyForInput = kReadyOut .&&. vReadyOut
@@ -419,6 +419,10 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   layerParams = modelLayers params !! layerIdx
   mhaParams = PARAM.multiHeadAttention layerParams
   xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
+
+  -- Get global rotary once
+  rotary = PARAM.rotaryEncoding params
+
   qResults = map (qHead params) indicesI
     where
       qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
@@ -431,16 +435,12 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
   axiMasterOut = axiArbiter qAxiMasters
 
-  queryHeadsPerKV = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
-
-  kvHeadIndices :: Vec NumKeyValueHeads (Index NumQueryHeads)
-  kvHeadIndices = map (\i -> toEnum (fromEnum i * queryHeadsPerKV)) indicesI
-
-  kvResults = map kvHead kvHeadIndices
+  kvResults = map kvHead indicesI
    where
-    kvHead qIx =
-      let headParams' = PARAM.headsQ mhaParams !! qIx
-      in keyValueHeadProjector inputValid downStreamReady seqPos xNorm headParams'
+    kvHead kvIdx =
+      let kvHeadParams = PARAM.kvHeads mhaParams !! kvIdx  -- Get actual KV head
+      in keyValueHeadProjector inputValid downStreamReady seqPos xNorm kvHeadParams rotary
+  
   kVecs    = map (\(k, _, _, _) -> k) kvResults
   vVecs    = map (\(_, v, _, _) -> v) kvResults
   kvValids = map (\(_, _, v, _) -> v) kvResults

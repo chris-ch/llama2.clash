@@ -73,10 +73,7 @@ buildMemoryFromParams params =
     rmsFinalWords   = Layout.fixedPointVecPacker (PARAM.rmsFinalWeightF embedding)
 
     rotaryWords =
-      let layer0   = head (PARAM.modelLayers params)
-          mha0     = PARAM.multiHeadAttention layer0
-          head0    = head (PARAM.headsQ mha0)
-          rotary   = PARAM.rotaryF head0
+      let rotary   = PARAM.rotaryEncoding params  -- Get from top level
           cosWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqCosF rotary))
           sinWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqSinF rotary))
           totalB   = (P.length cosWords + P.length sinWords) * 64
@@ -87,23 +84,33 @@ buildMemoryFromParams params =
       let layer = PARAM.modelLayers params !! li
           mha   = PARAM.multiHeadAttention layer
           ffn   = PARAM.feedforwardNetwork layer
-          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.wqHeadQ (PARAM.headsQ mha !! h)))
-                               [0..numQHeads-1]
-          kvMap kvh =
-            let qh = kvh * (numQHeads `div` numKVHeads)
-            in qh
-          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker (PARAM.wkHeadQ (PARAM.headsQ mha !! kvMap kvh)))
-                               [0..numKVHeads-1]
-          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker (PARAM.wvHeadQ (PARAM.headsQ mha !! kvMap kvh)))
-                               [0..numKVHeads-1]
+          
+          -- Q matrices: all 8 Q heads
+          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker 
+                    (PARAM.qMatrix (PARAM.qHeads mha !! h)))
+                  [0..numQHeads-1]
+          
+          -- K matrices: directly from 4 KV heads (NO MAPPING!)
+          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+                    (PARAM.kMatrix (PARAM.kvHeads mha !! kvh)))
+                  [0..numKVHeads-1]
+          
+          -- V matrices: directly from 4 KV heads (NO MAPPING!)
+          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+                    (PARAM.vMatrix (PARAM.kvHeads mha !! kvh)))
+                  [0..numKVHeads-1]
+          
+          -- WO still per Q head
           woWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.mWoQ mha !! h))
-                                [0..numQHeads-1]
-      in  Layout.fixedPointVecPacker (PARAM.rmsAttF mha)
-       P.++ qWords P.++ kWords P.++ vWords P.++ woWords
-       P.++ Layout.fixedPointVecPacker (PARAM.fRMSFfnF ffn)
-       P.++ Layout.matrixMultiWordPacker (PARAM.fW1Q ffn)
-       P.++ Layout.matrixMultiWordPacker (PARAM.fW2Q ffn)
-       P.++ Layout.matrixMultiWordPacker (PARAM.fW3Q ffn)
+                    [0..numQHeads-1]
+      in
+        Layout.fixedPointVecPacker
+          (PARAM.rmsAttF mha)
+          P.++ qWords P.++ kWords P.++ vWords P.++ woWords
+          P.++ Layout.fixedPointVecPacker (PARAM.fRMSFfnF ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW1Q ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW2Q ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW3Q ffn)
 
 -- ============================================================================
 -- AXI Slave (depth-generic)

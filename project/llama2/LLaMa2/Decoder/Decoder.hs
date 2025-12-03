@@ -5,7 +5,7 @@ module LLaMa2.Decoder.Decoder (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
-import qualified Simulation.Parameters as PARAM (DecoderParameters (..), SingleHeadComponentQ (..), MultiHeadAttentionComponentQ (..))
+import qualified Simulation.Parameters as PARAM (DecoderParameters (..), MultiHeadAttentionComponentQ (..), QueryHeadComponentQ (qMatrix))
 import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, HeadDimension, SequenceLength)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
@@ -221,7 +221,7 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
       , loadTriggerActive   = loadTrigger
       , paramQ0Row0         = let
             mhaParams = multiHeadAttention $ head (modelLayers params)
-            qMat = PARAM.wqHeadQ (head (PARAM.headsQ mhaParams))
+            qMat = PARAM.qMatrix (head (PARAM.qHeads mhaParams))
             RowI8E {rowMantissas = mants, rowExponent =_exp} = qMat !! (0 :: Int)
           in pure $ head mants
 

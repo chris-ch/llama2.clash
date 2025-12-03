@@ -4,7 +4,7 @@ import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
-import LLaMa2.Numeric.Types (FixedPoint, Exponent, Mantissa)
+import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize)
@@ -73,18 +73,26 @@ spec = do
           testQMatrix = repeat testRow :: MatI8E 8 64
           testWOMatrix = repeat testRow' :: MatI8E 64 8
 
-          testHead = PARAM.SingleHeadComponentQ
-            { PARAM.wqHeadQ = testQMatrix
-            , PARAM.wkHeadQ = testQMatrix
-            , PARAM.wvHeadQ = testQMatrix
-            , PARAM.rotaryF = PARAM.RotaryEncodingComponentF
-                { PARAM.freqCosF = repeat (repeat 1.0)
-                , PARAM.freqSinF = repeat (repeat 0.0)
-                }
+          -- Global rotary (stored once)
+          mockRotary = PARAM.RotaryEncodingComponentF
+            { PARAM.freqCosF = repeat (repeat 1.0)
+            , PARAM.freqSinF = repeat (repeat 0.0)
+            }
+
+          -- Q heads (8 heads)
+          testQHead = PARAM.QueryHeadComponentQ
+            { PARAM.qMatrix = testQMatrix
+            }
+
+          -- KV heads (4 heads)
+          testKVHead = PARAM.KeyValueHeadComponentQ
+            { PARAM.kMatrix = testQMatrix
+            , PARAM.vMatrix = testQMatrix
             }
 
           mhaParams = PARAM.MultiHeadAttentionComponentQ
-            { PARAM.headsQ = repeat testHead
+            { PARAM.qHeads = repeat testQHead    -- NumQueryHeads (8)
+            , PARAM.kvHeads = repeat testKVHead  -- NumKeyValueHeads (4)
             , PARAM.mWoQ = repeat testWOMatrix
             , PARAM.rmsAttF = repeat 1.0 :< 0
             }
@@ -112,6 +120,7 @@ spec = do
                 , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
                 }
             , PARAM.modelLayers = repeat layerParams
+            , PARAM.rotaryEncoding = mockRotary  -- Global rotary
             }
 
           -- Build DRAM with Q weights

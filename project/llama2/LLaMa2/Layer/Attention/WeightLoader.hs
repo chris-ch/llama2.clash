@@ -68,8 +68,8 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   -- Hardcoded weights for the selected head
   hcWeights :: MatI8E HeadDimension ModelDimension
   hcWeights =
-    PARAM.wqHeadQ
-      (PARAM.headsQ (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
+    PARAM.qMatrix
+      (PARAM.qHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
 
   -- FSM: Idle -> Fetching -> Done (exit Done only when downstreamReady && dataConsumed)
   loadState :: Signal dom LoadState

@@ -115,33 +115,47 @@ createTestParams testMatrix =
           { PARAM.vocabularyQ = repeat testRow0 :: MatI8E VocabularySize ModelDimension,
             PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
           },
-      PARAM.modelLayers = repeat layerParams
+      PARAM.modelLayers = repeat layerParams,
+      PARAM.rotaryEncoding = mockRotary  -- Global rotary
     }
   where
     testRow0 = head testMatrix
+    
+    -- Global rotary (stored once)
     mockRotary =
       PARAM.RotaryEncodingComponentF
         { PARAM.freqCosF = repeat (repeat 1.0),
           PARAM.freqSinF = repeat (repeat 0.0)
         }
-    mockHeadParams =
-      PARAM.SingleHeadComponentQ
-        { PARAM.wqHeadQ = testMatrix,
-          PARAM.wkHeadQ = testMatrix,
-          PARAM.wvHeadQ = testMatrix,
-          PARAM.rotaryF = mockRotary
+    
+    -- Q heads (8 heads, each with just Q matrix)
+    mockQHeadParams =
+      PARAM.QueryHeadComponentQ
+        { PARAM.qMatrix = testMatrix
         }
+    
+    -- KV heads (4 heads, each with K and V matrices)
+    mockKVHeadParams =
+      PARAM.KeyValueHeadComponentQ
+        { PARAM.kMatrix = testMatrix,
+          PARAM.vMatrix = testMatrix
+        }
+    
     testRow' = RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
     testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
+    
     mhaParams =
       PARAM.MultiHeadAttentionComponentQ
-        { PARAM.headsQ = repeat mockHeadParams,
+        { PARAM.qHeads = repeat mockQHeadParams,    -- 8 Q heads
+          PARAM.kvHeads = repeat mockKVHeadParams,  -- 4 KV heads
           PARAM.mWoQ = repeat testWOMatrix,
           PARAM.rmsAttF = repeat 1.0 :< 0
         }
+    
     ffnW1 = repeat testRow0 :: MatI8E HiddenDimension ModelDimension
     ffnW2 = repeat RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: MatI8E ModelDimension HiddenDimension
     ffnW3 = repeat testRow0 :: MatI8E HiddenDimension ModelDimension
+    
     ffnParams =
       PARAM.FeedForwardNetworkComponentQ
         { PARAM.fW1Q = ffnW1,
@@ -149,6 +163,7 @@ createTestParams testMatrix =
           PARAM.fW3Q = ffnW3,
           PARAM.fRMSFfnF = repeat 1.0 :< 0
         }
+    
     layerParams =
       PARAM.TransformerLayerComponent
         { PARAM.multiHeadAttention = mhaParams,

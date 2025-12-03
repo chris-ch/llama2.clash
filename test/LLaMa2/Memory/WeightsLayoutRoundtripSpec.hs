@@ -71,7 +71,7 @@ spec = describe "RowI8E pack/parse round-trip" $ do
         layer0   = head (PARAM.modelLayers params)
         mha0     = PARAM.multiHeadAttention layer0
         qHead0   :: MatI8E HeadDimension ModelDimension
-        qHead0   = PARAM.wqHeadQ (head (PARAM.headsQ mha0))
+        qHead0   = PARAM.qMatrix (head (PARAM.qHeads mha0))
 
         wordsPerRow = Layout.wordsPerRowVal @ModelDimension
         strideBytes = wordsPerRow * 64

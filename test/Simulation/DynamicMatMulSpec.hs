@@ -6,7 +6,7 @@ import qualified Prelude as P
 
 import LLaMa2.Numeric.Types (FixedPoint, scalePow2F)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplierDyn)
-import Simulation.Parameters (DecoderParameters(..), wqHeadQ, MultiHeadAttentionComponentQ(..), multiHeadAttention)
+import Simulation.Parameters (DecoderParameters(..), MultiHeadAttentionComponentQ(..), multiHeadAttention, QueryHeadComponentQ (..))
 import qualified Simulation.ParamsPlaceholder as PARAM
 import LLaMa2.Types.ModelConfig (HeadDimension, ModelDimension)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
@@ -31,8 +31,8 @@ spec =
 
           firstLayer = head (modelLayers params)
           mhaQ       = multiHeadAttention firstLayer
-          firstHeadQ = head (headsQ mhaQ)
-          qMatrix    = wqHeadQ firstHeadQ
+          firstHeadQ = head (qHeads mhaQ)
+          qMatrix'    = qMatrix firstHeadQ
 
       -- Constant input vector
       let inputVec :: Vec ModelDimension FixedPoint
@@ -44,7 +44,7 @@ spec =
                              (parallelRowMatrixMultiplierDyn
                                (pure True)
                                (pure True)
-                               (pure qMatrix)
+                               (pure qMatrix')
                                (pure inputVec))
                              systemClockGen resetGen enableGen
 
@@ -63,7 +63,7 @@ spec =
       -- Expected first row in FixedPoint
       let
         expectedRow :: [FixedPoint]
-        expectedRow = rowToFixedPoint (head qMatrix)
+        expectedRow = rowToFixedPoint (head qMatrix')
 
       -- Assertion: the computed row should be elementwise close
       listsClose sampledRow expectedRow `shouldBe` True

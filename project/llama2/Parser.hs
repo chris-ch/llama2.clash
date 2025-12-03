@@ -28,7 +28,7 @@ import LLaMa2.Types.ModelConfig
       ModelDimension,
       RotaryPositionalEmbeddingDimension
       )
-import Simulation.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding)
+import Simulation.Parameters (DecoderParameters (..), TransformerLayerComponent (..), MultiHeadAttentionComponentQ, FeedForwardNetworkComponentQ, quantizeMHA, quantizeFFN, quantizeEmbedding, RotaryEncodingComponentF (..), quantizeRotary)
 
 
 -- ============================================================================
@@ -126,22 +126,25 @@ parseLLaMa2ConfigFile = do
       }
     embeddingQ = quantizeEmbedding embeddingFloat
 
+    -- Global rotary (read once from file)
+    rotaryGlobal = quantizeRotary (CArray2D freqCisReal', CArray2D freqCisImag')
+      
     layer :: C.Index NumLayers -> TransformerLayerComponent
     layer lIdx =
       let
         sha :: C.Index NumQueryHeads -> SingleHeadComponent
         sha hIdx =
-          let nQ  = C.snatToNum (C.SNat @NumQueryHeads)     :: Int
-              nKV = C.snatToNum (C.SNat @NumKeyValueHeads)  :: Int
+          let nQ  = C.snatToNum (C.SNat @NumQueryHeads)
+              nKV = C.snatToNum (C.SNat @NumKeyValueHeads)
               kvMul = max 1 (nQ `div` nKV)
               kvIdxInt = fromIntegral hIdx `div` kvMul
               kvIdx :: C.Index NumKeyValueHeads
-              kvIdx = fromInteger (toInteger kvIdxInt)
+              kvIdx = fromInteger kvIdxInt
           in SingleHeadComponent
                { wqHead = CArray2D $ (wq' C.!! lIdx) C.!! hIdx
                , wkHead = CArray2D $ (wk' C.!! lIdx) C.!! kvIdx
                , wvHead = CArray2D $ (wv' C.!! lIdx) C.!! kvIdx
-               , rotary  = RotaryEncodingComponent
+               , rotary = RotaryEncodingComponent  -- Keep for compatibility with float structure
                    { freqCos = CArray2D freqCisReal'
                    , freqSin = CArray2D freqCisImag'
                    }
@@ -190,6 +193,7 @@ parseLLaMa2ConfigFile = do
     decoder = DecoderParameters
       { modelEmbedding = embeddingQ
       , modelLayers    = C.map layer (C.indicesI :: C.Vec NumLayers (C.Index NumLayers))
+      , rotaryEncoding = rotaryGlobal  -- Store once at top level
       }
 
   return decoder

@@ -1,22 +1,24 @@
 module Simulation.Parameters (
     DecoderParameters(..), TransformerLayerComponent(..)
-  , SingleHeadComponentQ(..)
   , MultiHeadAttentionComponentQ(..)
   , FeedForwardNetworkComponentQ(..)
   , EmbeddingComponentQ(..)
   , RotaryEncodingComponentF(..)
-  , quantizeMHA, quantizeFFN, quantizeEmbedding
+  , KeyValueHeadComponentQ(..)
+  , QueryHeadComponentQ(..)
+  , quantizeMHA, quantizeFFN, quantizeEmbedding, quantizeRotary
 ) where
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, ModelDimension, HeadDimension, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension, VocabularySize)
+import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, ModelDimension, HeadDimension, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension, VocabularySize, NumKeyValueHeads)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData (FeedForwardNetworkComponent (..), EmbeddingComponent (..), CArray2D (..), MultiHeadAttentionComponent (..), SingleHeadComponent (..), RotaryEncodingComponent (..))
+import LLaMa2.Types.LayerData (FeedForwardNetworkComponent (..), EmbeddingComponent (..), CArray2D (..), MultiHeadAttentionComponent (..), SingleHeadComponent (..))
 import Simulation.ParametersQuantization (quantizeMatI8E)
 
 data DecoderParameters = DecoderParameters
   { modelEmbedding :: EmbeddingComponentQ
   , modelLayers    :: Vec NumLayers TransformerLayerComponent
+  , rotaryEncoding :: RotaryEncodingComponentF
   } deriving (Show)
 
 data TransformerLayerComponent = TransformerLayerComponent
@@ -29,17 +31,22 @@ data RotaryEncodingComponentF = RotaryEncodingComponentF
   , freqSinF :: Vec SequenceLength (Vec RotaryPositionalEmbeddingDimension FixedPoint)
   } deriving (Generic, NFDataX, Show, Eq)
 
--- Float-free, quantized single head (per-row I8E weights).
-data SingleHeadComponentQ = SingleHeadComponentQ
-  { wqHeadQ :: MatI8E HeadDimension ModelDimension
-  , wkHeadQ :: MatI8E HeadDimension ModelDimension
-  , wvHeadQ :: MatI8E HeadDimension ModelDimension
-  , rotaryF :: RotaryEncodingComponentF
+-- MHA with quantized per-head WO and preconverted RMS weights.
+-- Query head only contains Q matrix and rotary
+newtype QueryHeadComponentQ
+  = QueryHeadComponentQ {qMatrix :: MatI8E HeadDimension ModelDimension}
+  deriving (Generic, Show, Eq)
+
+-- KV head contains shared K and V matrices
+data KeyValueHeadComponentQ = KeyValueHeadComponentQ
+  { kMatrix :: MatI8E HeadDimension ModelDimension
+  , vMatrix :: MatI8E HeadDimension ModelDimension
   } deriving (Generic, Show, Eq)
 
--- MHA with quantized per-head WO and preconverted RMS weights.
+-- MHA structure with explicit separation
 data MultiHeadAttentionComponentQ = MultiHeadAttentionComponentQ
-  { headsQ  :: Vec NumQueryHeads SingleHeadComponentQ
+  { qHeads  :: Vec NumQueryHeads QueryHeadComponentQ        -- 8 Q heads
+  , kvHeads :: Vec NumKeyValueHeads KeyValueHeadComponentQ  -- 4 KV heads
   , mWoQ    :: Vec NumQueryHeads (MatI8E ModelDimension HeadDimension)
   , rmsAttF :: Vec ModelDimension FixedPoint
   } deriving (Generic, Show, Eq)
@@ -59,19 +66,25 @@ data EmbeddingComponentQ = EmbeddingComponentQ
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- Elaborate-time converters (no Float in hardware).
-quantizeSingleHead :: SingleHeadComponent -> SingleHeadComponentQ
-quantizeSingleHead sh =
-  SingleHeadComponentQ
-    { wqHeadQ = quantizeMatI8E (wqHead sh)
-    , wkHeadQ = quantizeMatI8E (wkHead sh)
-    , wvHeadQ = quantizeMatI8E (wvHead sh)
-    , rotaryF = quantizeRotary (freqCos (rotary sh), freqSin (rotary sh))
-    }
-
 quantizeMHA :: MultiHeadAttentionComponent -> MultiHeadAttentionComponentQ
 quantizeMHA mha =
-  MultiHeadAttentionComponentQ
-    { headsQ  = map quantizeSingleHead (heads mha)
+  let allHeads = heads mha
+      -- Convert type-level nats to runtime Int
+      numQHeads = natToNum @NumQueryHeads :: Int
+      numKVHeads = natToNum @NumKeyValueHeads :: Int
+      groupSize = numQHeads `div` numKVHeads
+
+      -- Extract unique KV heads (every Nth head where N = groupSize)
+      kvHeadIndices :: Vec NumKeyValueHeads Int
+      kvHeadIndices = map (* groupSize) (iterateI (+1) 0)
+
+  in MultiHeadAttentionComponentQ
+    { qHeads  = map (QueryHeadComponentQ . quantizeMatI8E . wqHead)
+                    allHeads
+    , kvHeads = map (\i -> KeyValueHeadComponentQ
+                      (quantizeMatI8E (wkHead (allHeads !! i)))
+                      (quantizeMatI8E (wvHead (allHeads !! i))))
+                    kvHeadIndices
     , mWoQ    = map quantizeMatI8E (mWo mha)
     , rmsAttF = map realToFrac (rmsAtt mha)
     }
