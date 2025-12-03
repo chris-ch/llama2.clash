@@ -157,16 +157,13 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   capturedRowReq :: Signal dom (Index HeadDimension)
   capturedRowReq = register 0 $ mux fetchTrigger rowReqEffective capturedRowReq
 
-  hcRowCaptured :: Signal dom (RowI8E ModelDimension)
-  hcRowCaptured = register zeroRow $ mux fetchTrigger ((!!) hcWeights <$> rowReqEffective) hcRowCaptured
-
   -- Capture HC row at fetch time, hold through commit pipeline
   hcRowAtAssemble :: Signal dom (RowI8E ModelDimension)
   hcRowAtAssemble = regEn zeroRow fetchValid ((!!) hcWeights <$> capturedRowReq)
 
   hcRowCommitted :: Signal dom (RowI8E ModelDimension)
   hcRowCommitted = regEn zeroRow dvRise hcRowAtAssemble
-  
+
   -- Stage 1: Capture when fetch completes
   fetchedWordsAssembled :: Signal dom (Vec (STREAM.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsAssembled = regEn (repeat 0) fetchValid fetchedWords
@@ -176,9 +173,8 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
 
   -- Use committed words in assertion
-  -- dramRowAfterEqCheck = assertRowsMatchOnCommit dvRise capturedRowReq capturedAddr
-  --   dramRowCommitted hcRowCommitted fetchedWordsCommitted
-  dramRowAfterEqCheck = dramRowCommitted  -- Bypass assertion
+  dramRowAfterEqCheck = assertRowsMatchOnCommit dvRise capturedRowReq capturedAddr
+    dramRowCommitted hcRowCommitted fetchedWordsCommitted
 
   -- OPTIONAL: sanity-check the row stride between sequential commits (detects +64B bug)
   -- This is on the live path (no DCE) but cheap. Safe to keep in simulation; remove for synth.
@@ -188,9 +184,8 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   prevCapIdx  = register maxBound $ mux dvRise capturedRowReq prevCapIdx  -- Use maxBound as sentinel
   prevCapAddr = register 0 $ mux dvRise capturedAddr  prevCapAddr
 
-  -- dramRowOutLive = assertStrideOnCommit dvRise prevCapIdx capturedRowReq 
-  --   prevCapAddr capturedAddr expectedStride dramRowAfterEqCheck
-  dramRowOutLive = dramRowAfterEqCheck  -- Bypass assertion
+  dramRowOutLive = assertStrideOnCommit dvRise prevCapIdx capturedRowReq 
+    prevCapAddr capturedAddr expectedStride dramRowAfterEqCheck
     where
       -- Only check stride if previous row was actually committed (not initial sentinel)
       assertStrideOnCommit commitEdge prevIdx curIdx prevAddr curAddr strideB rowSig =
