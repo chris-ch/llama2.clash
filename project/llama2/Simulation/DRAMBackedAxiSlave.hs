@@ -4,7 +4,6 @@ module Simulation.DRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
   , createDRAMBackedAxiSlave
   , buildMemoryFromParams
-  , packRowMultiWord
   ) where
 
 import Clash.Prelude
@@ -20,11 +19,9 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Types.ModelConfig
     ( NumKeyValueHeads, NumQueryHeads, NumLayers )
-import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
-import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
-import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import qualified LLaMa2.Memory.WeightsLayout as Layout
 
 -- | Timing configuration
 -- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
@@ -52,86 +49,11 @@ createDRAMBackedAxiSlave params =
   createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
 
 -- ============================================================================
--- Row packing (RowI8E -> 64B words)
--- ============================================================================
-
--- | Pack a RowI8E into multiple 64-byte words using the NEW layout:
---   Word 0: mant[0..62] at bytes 0..62, exponent at byte 63
---   Words 1..: 64 mantissas each (no per-word padding)
-packRowMultiWord :: forall dim. KnownNat dim => RowI8E dim -> [BitVector 512]
-packRowMultiWord row = go 0
-  where
-    dimI      = natToNum @dim :: Int
-    numWords  = STREAM.wordsPerRowVal @dim
-    allMants  = toList $ rowMantissas row
-    -- Exponent stored as full signed byte (two's complement).
-    expByte   = pack (resize (rowExponent row) :: Signed 8) :: BitVector 8
-
-    go :: Int -> [BitVector 512]
-    go w
-      | w >= numWords = []
-      | w == 0        = packFirst : go (w+1)
-      | otherwise     = packSubsequent w : go (w+1)
-
-    -- Word 0: up to 63 mantissas, exponent at byte 63
-    packFirst :: BitVector 512
-    packFirst =
-      let cnt0   = min 63 dimI
-          m0     = P.take cnt0 allMants
-          -- bytes 0..(cnt0-1): mantissas
-          -- bytes cnt0..62   : zero padding
-          mantBs = P.map pack m0 P.++ P.replicate (63 - cnt0) (0 :: BitVector 8)
-          bytes  = mantBs P.++ [expByte]
-      in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
-
-    -- Word w>=1: 64 mantissas starting at index s = 63 + (w-1)*64
-    packSubsequent :: Int -> BitVector 512
-    packSubsequent w =
-      let s      = 63 + (w - 1) * 64
-          cnt    = max 0 (min 64 (dimI - s))
-          mThis  = P.take cnt $ P.drop s allMants
-          bytes  = P.map pack mThis P.++ P.replicate (64 - cnt) (0 :: BitVector 8)
-      in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
-
-packMatrixMultiWord :: forall rows cols. KnownNat cols
-  => MatI8E rows cols -> [BitVector 512]
-packMatrixMultiWord m = P.concatMap packRowMultiWord (toList m)
-
--- Pack FixedPoint vector into 64-byte words (little-endian per element).
-packFixedPointVec :: forall n. (KnownNat n, KnownNat (BitSize FixedPoint))
-  => Vec n FixedPoint -> [BitVector 512]
-packFixedPointVec v = go 0
-  where
-    nI         = natToNum @n :: Int
-    bitSizeFP  = natToNum @(BitSize FixedPoint) :: Int
-    bytesPerEl | bitSizeFP `mod` 8 /= 0 = error "FixedPoint BitSize must be a multiple of 8"
-               | otherwise               = bitSizeFP `div` 8
-    perWord    = 64 `div` bytesPerEl
-    numWords   = (nI + perWord - 1) `div` perWord
-
-    go w | w >= numWords = []
-         | otherwise     = packWord w : go (w+1)
-
-    packWord w =
-      let s = w * perWord
-          e = min (s + perWord) nI
-          els = P.take (e - s) $ P.drop s $ toList v
-          bytes = P.concatMap (\fp ->
-                    let bits = pack fp :: BitVector (BitSize FixedPoint)
-                    in [ resize (bits `shiftR` (8*i)) :: BitVector 8 | i <- [0 .. bytesPerEl-1] ]
-                   ) els
-          allB = bytes P.++ P.replicate (64 - P.length bytes) (0 :: BitVector 8)
-      in pack (unsafeFromList (P.take 64 allB) :: Vec 64 (BitVector 8))
-
--- ============================================================================
 -- Build a DRAM image (generic depth)
 -- ============================================================================
 
-align64 :: Int -> Int
-align64 n = ((n + 63) `div` 64) * 64
-
 -- | Build a DRAM image from model parameters, trimmed/padded to n words.
---   Section order MUST match calculateRowAddress in WeightStreaming.
+--   Section order MUST match rowAddressCalculator in WeightsLayout.
 buildMemoryFromParams :: forall n. KnownNat n => PARAM.DecoderParameters -> Vec n WordData
 buildMemoryFromParams params =
   let nI = natToNum @n :: Int
@@ -147,41 +69,41 @@ buildMemoryFromParams params =
     numKVHeads = natToNum @NumKeyValueHeads :: Int
 
     embedding       = PARAM.modelEmbedding params
-    embeddingWords  = packMatrixMultiWord (PARAM.vocabularyQ embedding)
-    rmsFinalWords   = packFixedPointVec (PARAM.rmsFinalWeightF embedding)
+    embeddingWords  = Layout.matrixMultiWordPacker (PARAM.vocabularyQ embedding)
+    rmsFinalWords   = Layout.fixedPointVecPacker (PARAM.rmsFinalWeightF embedding)
 
     rotaryWords =
       let layer0   = head (PARAM.modelLayers params)
           mha0     = PARAM.multiHeadAttention layer0
           head0    = head (PARAM.headsQ mha0)
           rotary   = PARAM.rotaryF head0
-          cosWords = P.concatMap packFixedPointVec (toList (PARAM.freqCosF rotary))
-          sinWords = P.concatMap packFixedPointVec (toList (PARAM.freqSinF rotary))
+          cosWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqCosF rotary))
+          sinWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqSinF rotary))
           totalB   = (P.length cosWords + P.length sinWords) * 64
-          padW     = (align64 totalB - totalB) `div` 64
+          padW     = (Layout.align64 totalB - totalB) `div` 64
       in cosWords P.++ sinWords P.++ P.replicate padW 0
 
     layerWords li =
       let layer = PARAM.modelLayers params !! li
           mha   = PARAM.multiHeadAttention layer
           ffn   = PARAM.feedforwardNetwork layer
-          qWords = P.concatMap (\h -> packMatrixMultiWord (PARAM.wqHeadQ (PARAM.headsQ mha !! h)))
+          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.wqHeadQ (PARAM.headsQ mha !! h)))
                                [0..numQHeads-1]
           kvMap kvh =
             let qh = kvh * (numQHeads `div` numKVHeads)
             in qh
-          kWords = P.concatMap (\kvh -> packMatrixMultiWord (PARAM.wkHeadQ (PARAM.headsQ mha !! kvMap kvh)))
+          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker (PARAM.wkHeadQ (PARAM.headsQ mha !! kvMap kvh)))
                                [0..numKVHeads-1]
-          vWords = P.concatMap (\kvh -> packMatrixMultiWord (PARAM.wvHeadQ (PARAM.headsQ mha !! kvMap kvh)))
+          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker (PARAM.wvHeadQ (PARAM.headsQ mha !! kvMap kvh)))
                                [0..numKVHeads-1]
-          woWords = P.concatMap (\h -> packMatrixMultiWord (PARAM.mWoQ mha !! h))
+          woWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.mWoQ mha !! h))
                                 [0..numQHeads-1]
-      in  packFixedPointVec (PARAM.rmsAttF mha)
+      in  Layout.fixedPointVecPacker (PARAM.rmsAttF mha)
        P.++ qWords P.++ kWords P.++ vWords P.++ woWords
-       P.++ packFixedPointVec (PARAM.fRMSFfnF ffn)
-       P.++ packMatrixMultiWord (PARAM.fW1Q ffn)
-       P.++ packMatrixMultiWord (PARAM.fW2Q ffn)
-       P.++ packMatrixMultiWord (PARAM.fW3Q ffn)
+       P.++ Layout.fixedPointVecPacker (PARAM.fRMSFfnF ffn)
+       P.++ Layout.matrixMultiWordPacker (PARAM.fW1Q ffn)
+       P.++ Layout.matrixMultiWordPacker (PARAM.fW2Q ffn)
+       P.++ Layout.matrixMultiWordPacker (PARAM.fW3Q ffn)
 
 -- ============================================================================
 -- AXI Slave (depth-generic)

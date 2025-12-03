@@ -1,4 +1,4 @@
-module LLaMa2.Memory.WeightStreamingSpec (spec) where
+module LLaMa2.Memory.WeightsLayoutSpec (spec) where
 
 import Clash.Prelude
 import qualified Clash.Signal as CS
@@ -6,7 +6,7 @@ import qualified Data.List as DL
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Memory.AXI.Types
-import LLaMa2.Memory.WeightStreaming (axiRowFetcher, rowParser, requestCaptureStage)
+import LLaMa2.Memory.WeightsLayout (axiRowFetcher, rowParser, requestCaptureStage)
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Numeric.Quantization (RowI8E(..))
@@ -24,7 +24,7 @@ spec = do
 -- ============================================================================
 
 requestCaptureUnitTests :: Spec
-requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Tests" $ do
+requestCaptureUnitTests = describe "WeightsLayout - requestCapture - Unit Tests" $ do
 
     context "immediate acceptance (consumer always ready)" $ do
         it "passes through single request" $ do
@@ -154,7 +154,7 @@ requestCaptureUnitTests = describe "WeightStreaming - requestCapture - Unit Test
 -- ============================================================================
 
 axiReadFSMUnitTests :: Spec
-axiReadFSMUnitTests = describe "WeightStreaming - axiReadFSM - Unit Tests" $ do
+axiReadFSMUnitTests = describe "WeightsLayout - axiReadFSM - Unit Tests" $ do
 
     context "basic FSM behavior" $ do
         it "asserts ready when idle (after reset period)" $ do
@@ -221,7 +221,7 @@ axiReadFSMUnitTests = describe "WeightStreaming - axiReadFSM - Unit Tests" $ do
 -- ============================================================================
 
 axiRowFetcherIntegrationTests :: Spec
-axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Integration Tests" $ do
+axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integration Tests" $ do
 
     context "sequential fetches to same address" $ do
         let
@@ -434,7 +434,7 @@ axiRowFetcherIntegrationTests = describe "WeightStreaming - axiRowFetcher - Inte
 -- ============================================================================
 
 parseRowTests :: Spec
-parseRowTests = describe "WeightStreaming - rowParser - Unit Tests" $ do
+parseRowTests = describe "WeightsLayout - rowParser - Unit Tests" $ do
     context "extracts mantissas correctly" $ do
         let testWord = pack $ (11 :: BitVector 8)
                 :> (20 :: BitVector 8)

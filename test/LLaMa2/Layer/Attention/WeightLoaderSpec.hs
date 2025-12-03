@@ -9,7 +9,7 @@ import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Prelude as P
 import LLaMa2.Numeric.Quantization (RowI8E (..))
-import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified Simulation.ParamsPlaceholder as PARAM
 
 type TestDRAMDepth = 65536
@@ -107,11 +107,11 @@ spec = do
 
           -- Verify rows 0 and 1
           checkRow idx =
-            let addr = STREAM.calculateRowAddress STREAM.QMatrix 0 0 idx
+            let addr = Layout.rowAddressCalculator Layout.QMatrix 0 0 idx
                 baseWord = fromIntegral (addr `shiftR` 6) :: Int
                 slice' = imap (\_ k -> dramContents !! (baseWord + k))
-                            (iterateI (+1) 0 :: Vec (STREAM.WordsPerRow ModelDimension) Int)
-                dramRow = STREAM.multiWordRowParser @ModelDimension slice'
+                            (iterateI (+1) 0 :: Vec (Layout.WordsPerRow ModelDimension) Int)
+                dramRow = Layout.multiWordRowParser @ModelDimension slice'
                 hcRow = qHead0 !! idx
             in dramRow == hcRow
 

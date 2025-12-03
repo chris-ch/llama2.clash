@@ -1,4 +1,4 @@
-module LLaMa2.Memory.WeightStreamingRoundtripSpec (spec) where
+module LLaMa2.Memory.WeightsLayoutRoundtripSpec (spec) where
 
 import Clash.Prelude
 import Test.Hspec
@@ -6,7 +6,7 @@ import Test.Hspec
 import LLaMa2.Numeric.Quantization (RowI8E(..), MatI8E)
 import LLaMa2.Numeric.Types (Mantissa, Exponent)
 import qualified Simulation.DRAMBackedAxiSlave as DRAM
-import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified Prelude as P
 import Clash.Sized.Vector (unsafeFromList)
 import qualified Simulation.ParamsPlaceholder as PARAM
@@ -16,7 +16,7 @@ import Control.Monad (forM_)
 
 -- Small dimension keeps the test fast
 type Dim = 128
-type NumWords = STREAM.WordsPerRow Dim
+type NumWords = Layout.WordsPerRow Dim
 -- NumWords = 3 for Dim=128 with the current implementation
 
 type TestDRAMDepth = 65536
@@ -34,16 +34,16 @@ spec = describe "RowI8E pack/parse round-trip" $ do
 
         -- Pack into DRAM words (produces a list)
         packedWordsList :: [BitVector 512]
-        packedWordsList = DRAM.packRowMultiWord row
+        packedWordsList = Layout.multiWordRowPacker row
 
         -- Convert the list to a static Vec.
         -- For NumWords=3 this is safe and total.
         packedWords :: Vec NumWords (BitVector 512)
         packedWords = case packedWordsList of
           [w0, w1, w2] -> w0 :> w1 :> w2 :> Nil
-          _            -> error "packRowMultiWord returned unexpected number of words"
+          _            -> error "multiWordRowPacker returned unexpected number of words"
 
-        row' = STREAM.multiWordRowParser packedWords
+        row' = Layout.multiWordRowParser packedWords
 
     row' `shouldBe` row
 
@@ -51,13 +51,13 @@ spec = describe "RowI8E pack/parse round-trip" $ do
     let mans = iterateI (+1) (0 :: Mantissa) :: Vec 4096 Mantissa
         expon = (-8) :: Exponent
         row   = RowI8E mans expon
-        packed = DRAM.packRowMultiWord row
-        vec65 :: Vec (STREAM.WordsPerRow 4096) (BitVector 512)
+        packed = Layout.multiWordRowPacker row
+        vec65 :: Vec (Layout.WordsPerRow 4096) (BitVector 512)
         vec65 = case packed of
                   -- Expect 65 words for 4096 in the NEW layout
                   _ | P.length packed == 65 -> unsafeFromList packed
                     | otherwise -> error "expected 65 words"
-        row' = STREAM.multiWordRowParser vec65
+        row' = Layout.multiWordRowParser vec65
     row' `shouldBe` row
 
   it "Q head 0 rows [0..3] round-trip exactly" $ do
@@ -73,18 +73,18 @@ spec = describe "RowI8E pack/parse round-trip" $ do
         qHead0   :: MatI8E HeadDimension ModelDimension
         qHead0   = PARAM.wqHeadQ (head (PARAM.headsQ mha0))
 
-        wordsPerRow = STREAM.wordsPerRowVal @ModelDimension
+        wordsPerRow = Layout.wordsPerRowVal @ModelDimension
         strideBytes = wordsPerRow * 64
 
         -- Helper to fetch/parse one row directly from the image
         fetchRow :: Index HeadDimension -> RowI8E ModelDimension
         fetchRow ri =
           let addrBytes :: Unsigned 32
-              addrBytes = STREAM.calculateRowAddress STREAM.QMatrix 0 0 ri
+              addrBytes = Layout.rowAddressCalculator Layout.QMatrix 0 0 ri
               baseWord  = fromIntegral (addrBytes `shiftR` 6) :: Int
               slice'     = map (\k -> dramVec !! (snatToNum (SNat @0) + toInteger (baseWord + k)))
-                              (iterateI (+1) 0 :: Vec (STREAM.WordsPerRow ModelDimension) Int)
-          in STREAM.multiWordRowParser slice'
+                              (iterateI (+1) 0 :: Vec (Layout.WordsPerRow ModelDimension) Int)
+          in Layout.multiWordRowParser slice'
 
         -- Compare rows 0..3
         go i =
@@ -99,7 +99,7 @@ spec = describe "RowI8E pack/parse round-trip" $ do
     forM_ results $ \(hcRow, dramRow) -> dramRow `shouldBe` hcRow
 
     -- Basic stride sanity between row0 and row1 (bytes)
-    let addr0 = STREAM.calculateRowAddress STREAM.QMatrix 0 0 0
-        addr1 = STREAM.calculateRowAddress STREAM.QMatrix 0 0 1
+    let addr0 = Layout.rowAddressCalculator Layout.QMatrix 0 0 0
+        addr1 = Layout.rowAddressCalculator Layout.QMatrix 0 0 1
         delta = fromIntegral (addr1 - addr0) :: Int
     delta `shouldBe` strideBytes

@@ -11,7 +11,7 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified LLaMa2.Memory.WeightStreaming as STREAM
+import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
 import Data.Type.Bool (If)
@@ -28,13 +28,10 @@ data WeightLoaderOutput dom = WeightLoaderOutput
   , dbgLoadState      :: Signal dom LoadState
   , dbgFetchTrigger   :: Signal dom Bool
   , dbgMultiWordValid :: Signal dom Bool
-  , dbgFetchedWords   :: Signal dom (Vec (STREAM.WordsPerRow ModelDimension) (BitVector 512))
+  , dbgFetchedWords   :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   , dbgCapturedRowReq :: Signal dom (Index HeadDimension)
   , dbgCapturedAddr   :: Signal dom (Unsigned 32)
   }
-
-rowStrideBytesI8E :: forall n. KnownNat n => Int
-rowStrideBytesI8E = STREAM.wordsPerRowVal @n * 64
 
 -- Simulation-only data-path checker: row does not change while 'validSig' is high
 assertRowStable
@@ -118,17 +115,17 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
 
   -- Live address from the EFFECTIVE row (uses captured row during replay)
   liveRowAddr :: Signal dom (Unsigned 32)
-  liveRowAddr = STREAM.calculateRowAddress STREAM.QMatrix layerIdx headIdx <$> rowReqEffective
+  liveRowAddr = Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx <$> rowReqEffective
 
   capturedAddr :: Signal dom (Unsigned 32)
   capturedAddr = register 0 $ mux fetchTrigger liveRowAddr capturedAddr
 
   -- AXI multiword fetcher + parser
   (axiMaster, fetchedWords, fetchValid, _requestReady) =
-      STREAM.axiMultiWordRowFetcher @_ @ModelDimension dramSlaveIn fetchTrigger liveRowAddr
+      Layout.axiMultiWordRowFetcher @_ @ModelDimension dramSlaveIn fetchTrigger liveRowAddr
 
   parsedRow :: Signal dom (RowI8E ModelDimension)
-  parsedRow = STREAM.multiWordRowParser <$> fetchedWords
+  parsedRow = Layout.multiWordRowParser <$> fetchedWords
 
   -- Stage at "row assembled"
   zeroRow :: RowI8E ModelDimension
@@ -152,11 +149,11 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   hcRowCommitted = regEn zeroRow dvRise hcRowAtAssemble
 
   -- Stage 1: Capture when fetch completes
-  fetchedWordsAssembled :: Signal dom (Vec (STREAM.WordsPerRow ModelDimension) (BitVector 512))
+  fetchedWordsAssembled :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsAssembled = regEn (repeat 0) fetchValid fetchedWords
 
   -- Stage 2: Commit when dvRise fires (same as dramRowCommitted)
-  fetchedWordsCommitted :: Signal dom (Vec (STREAM.WordsPerRow ModelDimension) (BitVector 512))
+  fetchedWordsCommitted :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
 
   -- Use committed words in assertion
@@ -166,7 +163,7 @@ weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dat
   -- OPTIONAL: sanity-check the row stride between sequential commits (detects +64B bug)
   -- This is on the live path (no DCE) but cheap. Safe to keep in simulation; remove for synth.
   expectedStride :: Unsigned 32
-  expectedStride = fromIntegral (rowStrideBytesI8E @ModelDimension)
+  expectedStride = fromIntegral (Layout.rowStrideBytesI8E @ModelDimension)
 
   prevCapIdx  = register maxBound $ mux dvRise capturedRowReq prevCapIdx  -- Use maxBound as sentinel
   prevCapAddr = register 0 $ mux dvRise capturedAddr  prevCapAddr
@@ -212,13 +209,13 @@ assertRowsMatchOnCommit :: forall dom n. (KnownNat n, KnownNat (If (OrdCond (Cmp
   -> Signal dom (Unsigned 32)          -- ^ captured address
   -> Signal dom (RowI8E n)             -- ^ committed DRAM row
   -> Signal dom (RowI8E n)             -- ^ committed HC row
-  -> Signal dom (Vec (STREAM.WordsPerRow n) (BitVector 512))  -- ^ raw fetched words
+  -> Signal dom (Vec (Layout.WordsPerRow n) (BitVector 512))  -- ^ raw fetched words
   -> Signal dom (RowI8E n)
 assertRowsMatchOnCommit commitEdge capIdx capAddr dramRow hcRow fetchedWords =
   mux commitEdge (check <$> capIdx <*> capAddr <*> dramRow <*> hcRow <*> fetchedWords) dramRow
  where
   check :: Index HeadDimension -> Unsigned 32 -> RowI8E n -> RowI8E n
-        -> Vec (STREAM.WordsPerRow n) (BitVector 512) -> RowI8E n
+        -> Vec (Layout.WordsPerRow n) (BitVector 512) -> RowI8E n
   check ri ad dr hr words' =
     let de = rowExponent dr
         he = rowExponent hr
@@ -231,7 +228,7 @@ assertRowsMatchOnCommit commitEdge capIdx capAddr dramRow hcRow fetchedWords =
 
         -- Parse the raw words to see what was actually fetched
         parsedFromWords :: RowI8E n
-        parsedFromWords = STREAM.multiWordRowParser words'
+        parsedFromWords = Layout.multiWordRowParser words'
         pw_exp = rowExponent parsedFromWords
         pw_mants = rowMantissas parsedFromWords
     in if expMatch && mantMatch

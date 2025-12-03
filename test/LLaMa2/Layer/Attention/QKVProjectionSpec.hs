@@ -16,6 +16,7 @@ import qualified Simulation.Parameters as PARAM
 import Test.Hspec
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import Data.Maybe (isNothing, isJust)
+import qualified LLaMa2.Memory.WeightsLayout as Layout
 
 -- Read-only AXI stub that returns all beats in 'payload' per AR.
 -- - ARREADY always True
@@ -84,7 +85,7 @@ createMockDRAMForRow
   -> Signal System Bool
   -> Slave.AxiSlaveIn System
 createMockDRAMForRow row arvalidSig =
-  let wordsL = DRAMSlave.packRowMultiWord @ModelDimension row  -- [BitVector 512], length = WordsPerRow ModelDimension
+  let wordsL = Layout.multiWordRowPacker @ModelDimension row  -- [BitVector 512], length = WordsPerRow ModelDimension
   in  createMockDRAMBurstL wordsL arvalidSig
 
 -- Diagnostic record for cycle-by-cycle comparison

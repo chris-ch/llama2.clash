@@ -1,10 +1,15 @@
-module LLaMa2.Memory.WeightStreaming
+module LLaMa2.Memory.WeightsLayout
   ( MatrixType(..)
   , WordsPerRow
-  , calculateRowAddress
+  , rowAddressCalculator
   , axiRowFetcher
   , axiMultiWordRowFetcher
   , multiWordRowParser
+  , multiWordRowPacker
+  , fixedPointVecPacker
+  , matrixMultiWordPacker
+  , rowStrideBytesI8E
+  , align64
   , rowParser
   , requestCaptureStage
   , wordsPerRowVal
@@ -14,13 +19,15 @@ module LLaMa2.Memory.WeightStreaming
 import Clash.Prelude
 
 import LLaMa2.Types.ModelConfig
-import LLaMa2.Numeric.Quantization (RowI8E (..))
-import LLaMa2.Numeric.Types ( Exponent )
+import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
+import LLaMa2.Numeric.Types ( Exponent, FixedPoint )
 import LLaMa2.Memory.AXI.Types
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
 import qualified GHC.TypeNats as T
 import Data.Type.Bool (If)
+import qualified Prelude as P
+import Clash.Sized.Vector (unsafeFromList)
 
 -- | Calculate how many 64-byte words are needed for a RowI8E.
 -- New layout:
@@ -37,7 +44,7 @@ wordsPerRowVal =
   in if d <= 63 then 1 else 1 + (d `div` 64)
 
 -- | Calculate words needed for a Vec n FixedPoint
--- Must match packFixedPointVec in DRAMBackedAxiSlave
+-- Must match fixedPointVecPacker in DRAMBackedAxiSlave
 wordsPerFixedPointVec :: forall n. KnownNat n => Int
 wordsPerFixedPointVec =
   let n = natToNum @n :: Int
@@ -63,6 +70,10 @@ instance KnownNat n => Eq (MultiWordFetchState n) where
   MWDone == MWDone = True
   _ == _ = False
 
+-- | Calculate stride in bytes for a RowI8E matrix row
+rowStrideBytesI8E :: forall n. KnownNat n => Int
+rowStrideBytesI8E = wordsPerRowVal @n * 64
+
 -- | Helper to align sizes to 64-byte boundaries
 align64 :: Int -> Int
 align64 n = ((n + 63) `div` 64) * 64
@@ -73,13 +84,13 @@ align64 n = ((n + 63) `div` 64) * 64
 -- CRITICAL: This must match the layout in buildMemoryFromParams exactly!
 -- - RowI8E matrices use wordsPerRowVal (63 mantissas per word)
 -- - FixedPoint vectors use wordsPerFixedPointVec (16 FP32 per word)
-calculateRowAddress ::
+rowAddressCalculator ::
   MatrixType
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Index HeadDimension
   -> Unsigned 32
-calculateRowAddress matType layerIdx headIdx rowIdx =
+rowAddressCalculator matType layerIdx headIdx rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
   where
@@ -109,7 +120,7 @@ calculateRowAddress matType layerIdx headIdx rowIdx =
     rmsFinalBytes = align64 (wordsPerModelDimFP * bytesPerWord)
 
     -- Rotary: 2 * seqLen rows of Vec RotaryDim FixedPoint (cos then sin)
-    -- Each row is packFixedPointVec'd separately
+    -- Each row is fixedPointVecPacker'd separately
     rotaryCosBytes = seqLen * wordsPerRotaryDimFP * bytesPerWord
     rotarySinBytes = seqLen * wordsPerRotaryDimFP * bytesPerWord
     rotaryRawBytes = rotaryCosBytes + rotarySinBytes
@@ -415,6 +426,79 @@ multiWordRowParser words' = RowI8E mantissas exponent'
 -- Keep old single-word parser for backward compatibility
 rowParser :: forall n. KnownNat n => BitVector 512 -> RowI8E n
 rowParser word = multiWordRowParser (singleton word)
+
+
+-- ============================================================================
+-- Row packing (RowI8E -> 64B words)
+-- ============================================================================
+
+-- | Pack a RowI8E into multiple 64-byte words using the NEW layout:
+--   Word 0: mant[0..62] at bytes 0..62, exponent at byte 63
+--   Words 1..: 64 mantissas each (no per-word padding)
+multiWordRowPacker :: forall dim. KnownNat dim => RowI8E dim -> [BitVector 512]
+multiWordRowPacker row = go 0
+  where
+    dimI      = natToNum @dim :: Int
+    numWords  = wordsPerRowVal @dim
+    allMants  = toList $ rowMantissas row
+    -- Exponent stored as full signed byte (two's complement).
+    expByte   = pack (resize (rowExponent row) :: Signed 8) :: BitVector 8
+
+    go :: Int -> [BitVector 512]
+    go w
+      | w >= numWords = []
+      | w == 0        = packFirst : go (w+1)
+      | otherwise     = packSubsequent w : go (w+1)
+
+    -- Word 0: up to 63 mantissas, exponent at byte 63
+    packFirst :: BitVector 512
+    packFirst =
+      let cnt0   = min 63 dimI
+          m0     = P.take cnt0 allMants
+          -- bytes 0..(cnt0-1): mantissas
+          -- bytes cnt0..62   : zero padding
+          mantBs = P.map pack m0 P.++ P.replicate (63 - cnt0) (0 :: BitVector 8)
+          bytes  = mantBs P.++ [expByte]
+      in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
+
+    -- Word w>=1: 64 mantissas starting at index s = 63 + (w-1)*64
+    packSubsequent :: Int -> BitVector 512
+    packSubsequent w =
+      let s      = 63 + (w - 1) * 64
+          cnt    = max 0 (min 64 (dimI - s))
+          mThis  = P.take cnt $ P.drop s allMants
+          bytes  = P.map pack mThis P.++ P.replicate (64 - cnt) (0 :: BitVector 8)
+      in pack (unsafeFromList (P.take 64 bytes) :: Vec 64 (BitVector 8))
+
+-- Pack FixedPoint vector into 64-byte words (little-endian per element).
+fixedPointVecPacker :: forall n. (KnownNat n, KnownNat (BitSize FixedPoint))
+  => Vec n FixedPoint -> [BitVector 512]
+fixedPointVecPacker v = go 0
+  where
+    nI         = natToNum @n :: Int
+    bitSizeFP  = natToNum @(BitSize FixedPoint) :: Int
+    bytesPerEl | bitSizeFP `mod` 8 /= 0 = error "FixedPoint BitSize must be a multiple of 8"
+               | otherwise               = bitSizeFP `div` 8
+    perWord    = 64 `div` bytesPerEl
+    numWords   = (nI + perWord - 1) `div` perWord
+
+    go w | w >= numWords = []
+         | otherwise     = packWord w : go (w+1)
+
+    packWord w =
+      let s = w * perWord
+          e = min (s + perWord) nI
+          els = P.take (e - s) $ P.drop s $ toList v
+          bytes = P.concatMap (\fp ->
+                    let bits = pack fp :: BitVector (BitSize FixedPoint)
+                    in [ resize (bits `shiftR` (8*i)) :: BitVector 8 | i <- [0 .. bytesPerEl-1] ]
+                   ) els
+          allB = bytes P.++ P.replicate (64 - P.length bytes) (0 :: BitVector 8)
+      in pack (unsafeFromList (P.take 64 allB) :: Vec 64 (BitVector 8))
+
+matrixMultiWordPacker :: forall rows cols. KnownNat cols
+  => MatI8E rows cols -> [BitVector 512]
+matrixMultiWordPacker m = P.concatMap multiWordRowPacker (toList m)
 
 -- | Generic multi-word AXI row fetcher
 -- Fetches 'WordsPerRow dim' consecutive 64-byte words

@@ -117,7 +117,7 @@ library
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM
       LLaMa2.Memory.KVCacheBank
-      LLaMa2.Memory.WeightStreaming
+      LLaMa2.Memory.WeightsLayout
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -166,8 +166,8 @@ test-suite llama2-test
       LLaMa2.Layer.Attention.WeightLoaderSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
-      LLaMa2.Memory.WeightStreamingSpec
-      LLaMa2.Memory.WeightStreamingRoundtripSpec
+      LLaMa2.Memory.WeightsLayoutSpec
+      LLaMa2.Memory.WeightsLayoutRoundtripSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
       Simulation.DRAMBackedAxiSlaveSpec
