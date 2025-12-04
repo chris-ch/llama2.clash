@@ -296,7 +296,7 @@ requestCaptureStage newRequest newAddr consumerReady =
               backAddrAfterPop
 
 -- | Pure AXI read state machine
-axiRowFetcher :: forall dom .
+axiRowFetcher :: forall dom.
      HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom              -- ^ From DRAM
   -> Signal dom Bool                   -- ^ Request pulse (1 cycle)
@@ -305,89 +305,42 @@ axiRowFetcher :: forall dom .
      , Signal dom (BitVector 512)      -- ^ Data (512 bits = 64 bytes)
      , Signal dom Bool                 -- ^ Data valid
      , Signal dom Bool)                -- ^ Ready (can accept new request)
-axiRowFetcher slaveIn requestPulse address = (masterOut, dataOut, dataValid, ready)
-  where
-    -- *** STEP 1: Convert pulse to held request ***
-    -- requestCapture holds the pulse until FSM can accept it
-    (reqAvail, capturedAddr) = requestCaptureStage requestPulse address ready
+axiRowFetcher slaveIn reqPulse addrIn =
+  (masterOut, dataOut, dataValid, ready)
+ where
+  state = register SIdle nextState
+  notInReset = register False (pure True)
+  ready = (state .==. pure SIdle) .&&. notInReset
+  start = ready .&&. reqPulse
 
-    -- *** STEP 2: FSM state machine ***
-    state :: Signal dom RowFetcherState
-    state = register Idle nextState
+  addrReg = regEn 0 start addrIn
 
-    -- Track if we're out of reset (prevents accepting during reset)
-    notInReset :: Signal dom Bool
-    notInReset = register False (pure True)
+  arvalidOut = state .==. pure SWaitAR
+  ardataOut  = AxiAR <$> addrReg <*> pure 0 <*> pure 6 <*> pure 1 <*> pure 0
+  rreadyOut  = pure True
 
-    -- Capture address when starting a new transaction
-    addressReg :: Signal dom (Unsigned 32)
-    addressReg = regEn 0 startTransaction capturedAddr  -- Use capturedAddr from requestCapture
+  arAccepted = arvalidOut .&&. Slave.arready slaveIn
+  rReceived  = Slave.rvalid slaveIn .&&. rreadyOut
 
-    -- Ready when idle AND out of reset
-    ready :: Signal dom Bool
-    ready = notInReset .&&. (state .==. pure Idle)
+  nextState =
+    mux start (pure SWaitAR) $
+    mux ((state .==. pure SWaitAR) .&&. arAccepted) (pure SWaitR) $
+    mux ((state .==. pure SWaitR) .&&. rReceived) (pure SIdle) state
 
-    -- Start new transaction when ready and request available
-    startTransaction :: Signal dom Bool
-    startTransaction = ready .&&. reqAvail  -- Use reqAvail from requestCapture
+  rdataField = Slave.rdata slaveIn
+  dataOut    = rdata <$> rdataField
+  dataValid  = (state .==. pure SWaitR) .&&. Slave.rvalid slaveIn
 
-    -- AR channel (address read)
-    arvalidOut :: Signal dom Bool
-    arvalidOut = state .==. pure WaitAR
-
-    ardataOut :: Signal dom AxiAR
-    ardataOut = AxiAR
-      <$> addressReg
-      <*> pure 0  -- arlen = 0 (single beat)
-      <*> pure 6  -- arsize = 6 (2^6 = 64 bytes)
-      <*> pure 1  -- arburst = 1 (INCR)
-      <*> pure 0  -- arid = 0
-
-    -- R channel (read data)
-    rreadyOut :: Signal dom Bool
-    rreadyOut = pure True  -- Always ready to receive
-
-    -- Handshakes
-    arAccepted :: Signal dom Bool
-    arAccepted = arvalidOut .&&. Slave.arready slaveIn
-
-    rReceived :: Signal dom Bool
-    rReceived = Slave.rvalid slaveIn .&&. rreadyOut
-
-    -- State transitions
-    nextState :: Signal dom RowFetcherState
-    nextState =
-      mux startTransaction
-          (pure WaitAR)                                    -- Start new transaction
-      $ mux (state .==. pure WaitAR .&&. arAccepted)
-          (pure WaitR)                                     -- AR accepted, wait for data
-      $ mux (state .==. pure WaitR .&&. rReceived)
-          (pure Idle)                                      -- Data received, back to idle
-          state                                            -- Stay in current state
-
-    -- Output data
-    rdataField :: Signal dom AxiR
-    rdataField = Slave.rdata slaveIn
-
-    dataOut :: Signal dom (BitVector 512)
-    dataOut = rdata <$> rdataField
-
-    dataValid :: Signal dom Bool
-    dataValid = (state .==. pure WaitR) .&&. Slave.rvalid slaveIn
-
-    -- Master output signals to DRAM
-    masterOut :: Master.AxiMasterOut dom
-    masterOut = Master.AxiMasterOut
-      { arvalid = arvalidOut
-      , ardata = ardataOut
-      , rready = rreadyOut
-      , awvalid = pure False
-      , awdata = pure (AxiAW 0 0 0 0 0)
-      , wvalid = pure False
-      , wdata = pure (AxiW 0 0 False)
-      , bready = pure False
-      }
-
+  masterOut = Master.AxiMasterOut
+    { arvalid = arvalidOut
+    , ardata  = ardataOut
+    , rready  = rreadyOut
+    , awvalid = pure False
+    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , wvalid  = pure False
+    , wdata   = pure (AxiW 0 0 False)
+    , bready  = pure False
+    }
 -- | Parse multiple 512-bit words into a RowI8E using the NEW layout:
 -- Word 0: mant[0..62] at [0..62], exponent at byte 63.
 -- Words 1..: 64 mantissas each (no per-word padding).
@@ -500,137 +453,116 @@ matrixMultiWordPacker :: forall rows cols. KnownNat cols
   => MatI8E rows cols -> [BitVector 512]
 matrixMultiWordPacker m = P.concatMap multiWordRowPacker (toList m)
 
--- | Generic multi-word AXI row fetcher
--- Fetches 'WordsPerRow dim' consecutive 64-byte words
+-- Handshake-strict contract:
+-- - Caller must assert requestPulse only when 'ready' is True.
+-- - We latch the address synchronously on that handshake.
+-- - No internal queueing, no combinational bypass, no reordering.
 axiMultiWordRowFetcher :: forall dom dim.
-     (HiddenClockResetEnable dom, KnownNat (WordsPerRow dim))
+     ( HiddenClockResetEnable dom
+     , KnownNat (WordsPerRow dim)
+     )
   => Slave.AxiSlaveIn dom
-  -> Signal dom Bool                   -- ^ Request pulse
-  -> Signal dom (Unsigned 32)          -- ^ Base address
+  -> Signal dom Bool                   -- ^ requestPulse (1-cycle) when ready==True
+  -> Signal dom (Unsigned 32)          -- ^ base address
   -> ( Master.AxiMasterOut dom
-     , Signal dom (Vec (WordsPerRow dim) (BitVector 512))  -- ^ All words
-     , Signal dom Bool                 -- ^ Data valid
-     , Signal dom Bool)                -- ^ Ready
-axiMultiWordRowFetcher slaveIn requestPulse address =
+     , Signal dom (Vec (WordsPerRow dim) (BitVector 512))
+     , Signal dom Bool                 -- ^ dataValid (1-cycle pulse at completion)
+     , Signal dom Bool                 -- ^ ready
+     )
+axiMultiWordRowFetcher slaveIn reqPulse addrIn =
   (masterOut, wordsOut, dataValid, ready)
-  where
-    numWords = natToNum @(WordsPerRow dim) :: Int
-    burstLen = numWords - 1  -- AXI arlen is length - 1
+ where
+  numWordsI = natToNum @(WordsPerRow dim) :: Int
+  burstLen  = numWordsI - 1
 
-    -- Request capture
-    (reqAvail, capturedAddr) = requestCaptureStage requestPulse address ready
+  state :: Signal dom (MultiWordFetchState (WordsPerRow dim))
+  state = register MWIdle nextState
 
-    -- State
-    state :: Signal dom (MultiWordFetchState (WordsPerRow dim))
-    state = register MWIdle nextState
+  notInReset :: Signal dom Bool
+  notInReset = register False (pure True)
 
-    -- Word storage
-    wordBuffer :: Signal dom (Vec (WordsPerRow dim) (BitVector 512))
-    wordBuffer = register (repeat 0) nextWordBuffer
+  ready :: Signal dom Bool
+  ready = (state .==. pure MWIdle) .&&. notInReset
 
-    -- Beat counter
-    beatCounter :: Signal dom (Index (WordsPerRow dim))
-    beatCounter = register 0 nextBeat
+  start :: Signal dom Bool
+  start = ready .&&. reqPulse
 
-    notInReset :: Signal dom Bool
-    notInReset = register False (pure True)
+  addrReg :: Signal dom (Unsigned 32)
+  addrReg = regEn 0 start addrIn
 
-    addressReg :: Signal dom (Unsigned 32)
-    addressReg = regEn 0 startTransaction capturedAddr
+  arvalidOut = state .==. pure MWWaitAR
 
-    ready :: Signal dom Bool
-    ready = notInReset .&&. (state .==. pure MWIdle)
+  ardataOut = AxiAR
+    <$> addrReg
+    <*> pure (fromIntegral burstLen)  -- arlen
+    <*> pure 6                        -- arsize = 64B
+    <*> pure 1                        -- arburst INCR
+    <*> pure 0                        -- arid
 
-    startTransaction :: Signal dom Bool
-    startTransaction = ready .&&. reqAvail
+  rreadyOut = pure True
 
-    -- AR channel
-    arvalidOut :: Signal dom Bool
-    arvalidOut = (\case
-      MWWaitAR -> True
-      _ -> False) <$> state
+  arAccepted = arvalidOut .&&. Slave.arready slaveIn
+  rReceived  = Slave.rvalid slaveIn .&&. rreadyOut
 
-    ardataOut :: Signal dom AxiAR
-    ardataOut = AxiAR
-      <$> addressReg
-      <*> pure (fromIntegral burstLen)  -- arlen = numWords - 1
-      <*> pure 6                         -- arsize = 6 (64 bytes)
-      <*> pure 1                         -- arburst = INCR
-      <*> pure 0                         -- arid = 0
+  -- beat counter
+  beat :: Signal dom (Index (WordsPerRow dim))
+  beat = register 0 nextBeat
 
-    -- R channel
-    rreadyOut :: Signal dom Bool
-    rreadyOut = pure True
+  nextBeat =
+    mux ((isWaitR <$> state) .&&. rReceived)
+        (succWrap <$> beat)
+        beat
+   where
+    isWaitR (MWWaitR _) = True
+    isWaitR _           = False
+    succWrap b = if b == maxBound then 0 else b + 1
 
-    arAccepted :: Signal dom Bool
-    arAccepted = arvalidOut .&&. Slave.arready slaveIn
-
-    rReceived :: Signal dom Bool
-    rReceived = Slave.rvalid slaveIn .&&. rreadyOut
-
-    rdataField :: Signal dom AxiR
-    rdataField = Slave.rdata slaveIn
-
-    currentRData :: Signal dom (BitVector 512)
-    currentRData = rdata <$> rdataField
-
-    -- State transitions
-    nextState :: Signal dom (MultiWordFetchState (WordsPerRow dim))
-    nextState =
-      mux startTransaction
-          (pure MWWaitAR)
-      $ mux ((\case
-        MWWaitAR -> True
-        _ -> False) <$> state .&&. arAccepted)
-          (pure (MWWaitR 0))
-      $ mux ((  \case
+  -- state transitions
+  nextState =
+    mux start (pure MWWaitAR) $
+    mux (arAccepted .&&. (state .==. pure MWWaitAR)) (pure (MWWaitR 0)) $
+    mux ((state .==. pure (MWWaitR 0)) .&&. rReceived .&&. (beat .==. pure maxBound))
+         (pure MWDone) $
+    mux (((\case
         MWWaitR _ -> True
-        _ -> False
-      ) <$> state .&&. rReceived)
-          ((\s _ ->
-            case s of
-              MWWaitR n -> if n == maxBound then MWDone else MWWaitR (n + 1)
-              _ -> s
-           ) <$> state <*> beatCounter)
-      $ mux ((  \case
-        MWDone -> True
-        _ -> False) <$> state)
-          (pure MWIdle)
-          state
+        _ -> False) <$> state) .&&. rReceived)
+         state
+         (mux (state .==. pure MWDone) (pure MWIdle) state)
 
-    -- Update word buffer
-    nextWordBuffer =
-      mux ((  \case
-        MWWaitR _ -> True
-        _ -> False) <$> state .&&. rReceived)
-          (replace <$> beatCounter <*> currentRData <*> wordBuffer)
-          wordBuffer
+  -- Store beats
+  rdataField :: Signal dom AxiR
+  rdataField = Slave.rdata slaveIn
 
-    -- Update beat counter
-    nextBeat =
-      mux ((\case
-        MWWaitR _ -> True
-        _ -> False) <$> state .&&. rReceived)
-          ((\beat -> if beat == maxBound then 0 else beat + 1) <$> beatCounter)
-      $ mux ((\case
-        MWDone -> True
-        _ -> False) <$> state)
-          (pure 0)
-          beatCounter
+  currWord :: Signal dom (BitVector 512)
+  currWord = rdata <$> rdataField
 
-    -- Outputs
-    wordsOut = wordBuffer
-    dataValid = (\case
-      MWDone -> True
-      _ -> False) <$> state
+  bufInit = repeat 0 :: Vec (WordsPerRow dim) (BitVector 512)
 
-    masterOut = Master.AxiMasterOut
-      { arvalid = arvalidOut
-      , ardata = ardataOut
-      , rready = rreadyOut
-      , awvalid = pure False
-      , awdata = pure (AxiAW 0 0 0 0 0)
-      , wvalid = pure False
-      , wdata = pure (AxiW 0 0 False)
-      , bready = pure False
-      }
+  wordBuffer :: Signal dom (Vec (WordsPerRow dim) (BitVector 512))
+  wordBuffer = register bufInit nextBuf
+
+  nextBuf =
+    mux (((\case
+      MWWaitR _ -> True
+      _ -> False) <$> state) .&&. rReceived)
+        (replace <$> beat <*> currWord <*> wordBuffer)
+        wordBuffer
+
+  wordsOut  = wordBuffer
+  dataValid = state .==. pure MWDone
+
+  masterOut = Master.AxiMasterOut
+    { arvalid = arvalidOut
+    , ardata  = ardataOut
+    , rready  = rreadyOut
+    , awvalid = pure False
+    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , wvalid  = pure False
+    , wdata   = pure (AxiW 0 0 False)
+    , bready  = pure False
+    }
+
+-- Single-beat version with the same strict handshake contract
+data SState = SIdle | SWaitAR | SWaitR
+  deriving (Generic, NFDataX, Show, Eq)
+

@@ -293,8 +293,6 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
         validsSampled = sampleN maxCycles dvDRAM
         readysSampled = sampleN maxCycles readyOut
         statesSampled = sampleN maxCycles (dbgLoadState outDRAM)
-        triggersSampled = sampleN maxCycles (dbgFetchTrigger outDRAM)
-        fetchValidsSampled = sampleN maxCycles (dbgMultiWordValid outDRAM)
         capRowsSampled = sampleN maxCycles (dbgCapturedRowReq outDRAM)
         capAddrsSampled = sampleN maxCycles (dbgCapturedAddr outDRAM)
         liveAddrsSampled = sampleN maxCycles (dbgRequestedAddr outDRAM)
@@ -310,18 +308,16 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
           rqv = reqValidsSampled P.!! n
           rdy = readysSampled P.!! n
           st = statesSampled P.!! n
-          trig = triggersSampled P.!! n
-          fval = fetchValidsSampled P.!! n
           dv = validsSampled P.!! n
           capRow = capRowsSampled P.!! n
           capAddr = capAddrsSampled P.!! n
           liveAddr = liveAddrsSampled P.!! n
 
       -- Only print interesting cycles (state changes or signals active)
-      when (trig || fval || dv || rqv || n < 5) $
-        P.putStrLn $ printf "%3d | %3d | %3s | %3s | %8s | %4s | %4s | %3s | %6d | %7d | %8d"
+      when (dv || rqv || n < 5) $
+        P.putStrLn $ printf "%3d | %3d | %3s | %4s | %4s | %3s | %6d | %7d | %8d"
           n (fromEnum req :: Int) (show rqv) (show rdy) (show st)
-          (show trig) (show fval) (show dv)
+          (show dv)
           (fromEnum capRow :: Int) capAddr liveAddr
 
     -- Verify all 4 completed
@@ -368,8 +364,6 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
           -- Sample debug signals
           liveAddrSampled = sampleN maxCycles (dbgRequestedAddr outDRAM)
           capAddrSampled = sampleN maxCycles (dbgCapturedAddr outDRAM)
-          triggerSampled = sampleN maxCycles (dbgFetchTrigger outDRAM)
-          fetchValidSampled = sampleN maxCycles (dbgMultiWordValid outDRAM)
           dvSampled = sampleN maxCycles dvDRAM
           capRowSampled = sampleN maxCycles (dbgCapturedRowReq outDRAM)
 
@@ -389,14 +383,12 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
             ara = arAddrSampled P.!! n
             live = liveAddrSampled P.!! n
             cap = capAddrSampled P.!! n
-            trig = triggerSampled P.!! n
-            fval = fetchValidSampled P.!! n
             dv = dvSampled P.!! n
             row = capRowSampled P.!! n
 
-        when (arv || trig || fval || dv || n < 5) $
-          P.putStrLn $ printf "%3d | %5s | %7d | %8d | %7d | %4s | %4s | %2s | %d"
-            n (show arv) ara live cap (show trig) (show fval) (show dv) (fromEnum row :: Int)
+        when (arv || dv || n < 5) $
+          P.putStrLn $ printf "%3d | %5s | %7d | %8d | %7d | %2s | %d"
+            n (show arv) ara live cap (show dv) (fromEnum row :: Int)
 
       -- Find cycles where AR was valid
       let arValidCycles = [(n, arAddrSampled P.!! n) | n <- [0..maxCycles-1], arValidSampled P.!! n]

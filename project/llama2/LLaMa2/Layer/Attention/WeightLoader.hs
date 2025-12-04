@@ -25,17 +25,9 @@ data WeightLoaderOutput dom = WeightLoaderOutput
   { hcRowOut          :: Signal dom (RowI8E ModelDimension)
   , dramRowOut        :: Signal dom (RowI8E ModelDimension)
   , dbgRequestedAddr  :: Signal dom (Unsigned 32)
-  , dbgLoadState      :: Signal dom LoadState
-  , dbgFetchTrigger   :: Signal dom Bool
-  , dbgMultiWordValid :: Signal dom Bool
-  , dbgFetchedWords   :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
-  , dbgCapturedRowReq :: Signal dom (Index HeadDimension)
   , dbgCapturedAddr   :: Signal dom (Unsigned 32)
-  , dbgRowReqEffective    :: Signal dom (Index HeadDimension)
-  , dbgReplayFirst        :: Signal dom Bool
-  , dbgExpectedAddrFromRow :: Signal dom (Unsigned 32)
-  , dbgAddrMismatch       :: Signal dom Bool
-  , dbgHcRowFromCapture   :: Signal dom (RowI8E ModelDimension)
+  , dbgCapturedRowReq :: Signal dom (Index HeadDimension)
+  , dbgLoadState      :: Signal dom LoadState
   }
 
 assertRowStable
@@ -51,164 +43,135 @@ assertRowStable validSig rowSig = checked
   check v r pr = if not v || (r == pr) then r
                  else P.error "Row changed while valid (loader/consumer)"
 
-weightLoader
-  :: forall dom. HiddenClockResetEnable dom
+weightLoader :: forall dom. HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension)
-  -> Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom Bool
+  -> Signal dom Bool       -- ^ rowReqValid (pulse)
+  -> Signal dom Bool       -- ^ downstreamReady (level)
+  -> Signal dom Bool       -- ^ dataConsumed (pulse)
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom
-     , Signal dom Bool
-     , Signal dom Bool
+     , Signal dom Bool     -- ^ weightValid (level)
+     , Signal dom Bool     -- ^ weightReady (level)
      )
-weightLoader dramSlaveIn layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
-  (axiMaster, loaderOutput, weightValidLevel, weightReadyLevel)
+weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
+  (axiMaster, out, weightValid, weightReady)
  where
+  -- Hardcoded (HC) weights for this layer/head
   hcWeights :: MatI8E HeadDimension ModelDimension
   hcWeights =
     PARAM.qMatrix
       (PARAM.qHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
 
+  -- Loader FSM
   loadState :: Signal dom LoadState
   loadState = register LIdle nextState
-   where
-    nextState =
-      withLoad <$> loadState <*> rowReqValid <*> fetchValid <*> downstreamReady <*> dataConsumed
-    withLoad LIdle     rv _  _  _  = if rv then LFetching else LIdle
-    withLoad LFetching _  fv _  _  = if fv then LDone     else LFetching
-    withLoad LDone     _  _  rd dc = if rd && dc then LIdle else LDone
 
-  weightReadyLevel :: Signal dom Bool
-  weightReadyLevel = loadState .==. pure LIdle
+  weightReady :: Signal dom Bool
+  weightReady = loadState .==. pure LIdle
 
-  weightValidLevel :: Signal dom Bool
-  weightValidLevel = loadState .==. pure LDone
+  weightValid :: Signal dom Bool
+  weightValid = loadState .==. pure LDone
 
-  prevValid = register False weightValidLevel
-  dvRise    = weightValidLevel .&&. (not <$> prevValid)
+  -- Rising edge when a new row becomes valid to the downstream
+  prevValid = register False weightValid
+  dvRise    = weightValid .&&. (not <$> prevValid)
 
-  outOfReset     = register False (pure True)
-  outOfResetPrev = register False outOfReset
+  -- Live request and address (combinational)
+  liveRow  :: Signal dom (Index HeadDimension)
+  liveRow  = rowReq
 
-  reqDuringResetFlag :: Signal dom Bool
-  reqDuringResetFlag = register False (rowReqValid .&&. weightReadyLevel)
+  liveAddr :: Signal dom (Unsigned 32)
+  liveAddr = Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx <$> liveRow
 
-  reqDuringResetRow :: Signal dom (Index HeadDimension)
-  reqDuringResetRow = regEn 0 (rowReqValid .&&. weightReadyLevel) rowReq
-
-  replayFirst :: Signal dom Bool
-  replayFirst = (not <$> outOfResetPrev) .&&. outOfReset .&&. reqDuringResetFlag
-
+  -- Start a new fetch only when idle and the request pulses
   fetchTrigger :: Signal dom Bool
-  fetchTrigger =
-    (rowReqValid .&&. weightReadyLevel .&&. outOfReset) .||. replayFirst
+  fetchTrigger = weightReady .&&. rowReqValid
 
-  rowReqEffective :: Signal dom (Index HeadDimension)
-  rowReqEffective = mux replayFirst reqDuringResetRow rowReq
+  -- Transaction record captured exactly at the same handshake that starts the AXI read
+  -- NOTE: We capture (row, addr) on fetchTrigger. The strict fetcher also latches liveAddr
+  -- on this same pulse, removing any possibility of skew.
+  txnReg :: Signal dom Txn
+  txnReg = regEn (Txn 0 0) fetchTrigger (Txn <$> liveRow <*> liveAddr)
 
-  liveRowAddr :: Signal dom (Unsigned 32)
-  liveRowAddr = Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx <$> rowReqEffective
+  -- AXI multi-word fetcher (STRICT!):
+  -- Feed it liveAddr so that both it and txnReg “see” the exact same value at fetchTrigger.
+  (axiMaster, fetchedWords, fetchValid, _readyStrict) =
+    Layout.axiMultiWordRowFetcher @_ @ModelDimension dram fetchTrigger liveAddr
 
-  capturedAddr :: Signal dom (Unsigned 32)
-  capturedAddr = register 0 $ mux fetchTrigger liveRowAddr capturedAddr
-
-  (axiMaster, fetchedWords, fetchValid, _requestReady) =
-      Layout.axiMultiWordRowFetcher @_ @ModelDimension dramSlaveIn fetchTrigger liveRowAddr
-
+  -- Parse and stage the DRAM row
   parsedRow :: Signal dom (RowI8E ModelDimension)
   parsedRow = Layout.multiWordRowParser <$> fetchedWords
 
   zeroRow :: RowI8E ModelDimension
   zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
 
+  -- Assemble on fetch completion; commit on dvRise (interface contract)
   dramRowAssembled :: Signal dom (RowI8E ModelDimension)
   dramRowAssembled = regEn zeroRow fetchValid parsedRow
 
   dramRowCommitted :: Signal dom (RowI8E ModelDimension)
   dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
 
-  capturedRowReq :: Signal dom (Index HeadDimension)
-  capturedRowReq = register 0 $ mux fetchTrigger rowReqEffective capturedRowReq
-
-  hcRowAtAssemble :: Signal dom (RowI8E ModelDimension)
-  hcRowAtAssemble = regEn zeroRow fetchValid ((!!) hcWeights <$> capturedRowReq)
-
-  hcRowCommitted :: Signal dom (RowI8E ModelDimension)
-  hcRowCommitted = regEn zeroRow dvRise hcRowAtAssemble
-
-  fetchedWordsAssembled :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
+  -- Keep the words for diagnostics (parsed back in the assertion)
+  fetchedWordsAssembled
+    :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsAssembled = regEn (repeat 0) fetchValid fetchedWords
 
-  fetchedWordsCommitted :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
+  fetchedWordsCommitted
+    :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
 
-  expectedStride :: Unsigned 32
-  expectedStride = fromIntegral (Layout.rowStrideBytesI8E @ModelDimension)
+  -- HC rows aligned with commit
+  hcRowCommitted :: Signal dom (RowI8E ModelDimension)
+  hcRowCommitted = regEn zeroRow dvRise ((!!) hcWeights . tRow <$> txnReg)
 
-  prevCapIdx  = register maxBound $ mux dvRise capturedRowReq prevCapIdx
-  prevCapAddr = register 0 $ mux dvRise capturedAddr prevCapAddr
-
-  expectedAddrFromRow :: Signal dom (Unsigned 32)
-  expectedAddrFromRow = Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx <$> capturedRowReq
-
-  addrMismatch :: Signal dom Bool
-  addrMismatch = (/=) <$> capturedAddr <*> expectedAddrFromRow
-
+  -- HC row captured at the same time as the fetch handshake (for assert text)
   hcRowFromCapture :: Signal dom (RowI8E ModelDimension)
-  hcRowFromCapture = regEn zeroRow fetchTrigger ((!!) hcWeights <$> rowReqEffective)
+  hcRowFromCapture = regEn zeroRow fetchTrigger ((!!) hcWeights <$> liveRow)
 
-  -- FIXED: Added hcRowFromCapture as 7th argument
-  dramRowAfterEqCheck = assertRowsMatchOnCommitEnhanced 
-    dvRise 
-    capturedRowReq 
-    capturedAddr
-    expectedAddrFromRow 
-    dramRowCommitted 
-    hcRowCommitted 
-    hcRowFromCapture        -- This was missing!
-    fetchedWordsCommitted 
-    layerIdx 
-    headIdx
+  -- Expected address recomputed from the captured row index
+  expectedAddrFromRow :: Signal dom (Unsigned 32)
+  expectedAddrFromRow =
+    Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx . tRow <$> txnReg
 
-  dramRowOutLive = assertStrideOnCommit dvRise prevCapIdx capturedRowReq 
-    prevCapAddr capturedAddr expectedStride dramRowAfterEqCheck
-    where
-      assertStrideOnCommit commitEdge prevIdx curIdx prevAddr curAddr strideB rowSig =
-        mux commitEdge (check <$> prevIdx <*> curIdx <*> prevAddr <*> curAddr <*> rowSig) rowSig
-        where
-          check p c pa ca r =
-            let pI = fromEnum p :: Int
-                cI = fromEnum c :: Int
-                firstCommit = (p == maxBound)
-                sequential = (cI == pI + 1)
-                ok = firstCommit || not sequential || (ca == pa + strideB)
-            in if ok then r
-              else P.error $ "Row stride mismatch at commit: prevIdx=" P.++ show pI
-                          P.++ " currIdx=" P.++ show cI
-                          P.++ " prevAddr=" P.++ show pa
-                          P.++ " currAddr=" P.++ show ca
-                          P.++ " expected stride=" P.++ show strideB
+  -- COMMIT-TIME CHECK: do not remove or downgrade.
+  dramRowAfterEqCheck :: Signal dom (RowI8E ModelDimension)
+  dramRowAfterEqCheck =
+    assertRowsMatchOnCommitEnhanced
+      dvRise
+      (tRow  <$> txnReg)              -- capIdx
+      (tAddr <$> txnReg)              -- capAddr
+      expectedAddrFromRow             -- expectedAddr
+      dramRowCommitted                -- dramRow
+      hcRowCommitted                  -- hcRow
+      hcRowFromCapture               -- hcRowCapture
+      fetchedWordsCommitted           -- fetchedWords'
+      layerIdx
+      headIdx
 
-  loaderOutput = WeightLoaderOutput
+  -- Loader FSM next-state
+  nextState =
+    mux (loadState .==. pure LIdle .&&. rowReqValid)
+        (pure LFetching)
+    $ mux (loadState .==. pure LFetching .&&. fetchValid)
+        (pure LDone)
+    $ mux (loadState .==. pure LDone .&&. downstreamReady .&&. dataConsumed)
+        (pure LIdle)
+        loadState
+
+  -- Outputs (dramRowOut is post-assertion)
+  out :: WeightLoaderOutput dom
+  out = WeightLoaderOutput
     { hcRowOut          = hcRowCommitted
-    , dramRowOut        = dramRowOutLive
-    , dbgRequestedAddr  = liveRowAddr
+    , dramRowOut        = dramRowAfterEqCheck
+    , dbgRequestedAddr  = liveAddr
+    , dbgCapturedAddr   = tAddr <$> txnReg
+    , dbgCapturedRowReq = tRow  <$> txnReg
     , dbgLoadState      = loadState
-    , dbgFetchTrigger   = fetchTrigger
-    , dbgMultiWordValid = fetchValid
-    , dbgFetchedWords   = fetchedWords
-    , dbgCapturedRowReq = capturedRowReq
-    , dbgCapturedAddr   = capturedAddr
-    , dbgRowReqEffective    = rowReqEffective
-    , dbgReplayFirst        = replayFirst
-    , dbgExpectedAddrFromRow = expectedAddrFromRow
-    , dbgAddrMismatch       = addrMismatch
-    , dbgHcRowFromCapture   = hcRowFromCapture
     }
 
 assertRowsMatchOnCommitEnhanced 
@@ -278,3 +241,8 @@ assertRowsMatchOnCommitEnhanced commitEdge capIdx capAddr expectedAddr
              P.++ "\n  Parsed from fetchedWords exp=" P.++ show pw_exp
              P.++ "\n  Parsed from fetchedWords mant[0..7]=" P.++ show pw0
              P.++ "\n  Raw word[0] (hex)=" P.++ word0_hex
+
+data Txn = Txn
+  { tRow  :: Index HeadDimension
+  , tAddr :: Unsigned 32
+  } deriving (Generic, NFDataX, Show, Eq)
