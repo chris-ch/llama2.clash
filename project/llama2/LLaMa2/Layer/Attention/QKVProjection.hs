@@ -177,6 +177,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
       xHat
 
   -- Assert row results match exactly when rowDone fires; feed the checked DRAM result forward
+  dramRowResultChecked :: Signal dom FixedPoint
   dramRowResultChecked = assertRowResultMatch
                            (moRowDone multOut)
                            rowIndex
@@ -213,13 +214,13 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
         (rowIndex + 1)
         (mux (outputValidLatch .&&. downStreamReady)  -- Only reset when latch clears
-            (pure 0)
-            rowIndex)
+             (pure 0)
+             rowIndex)
 
   -- Accumulate using checked DRAM result
   qOut = register (repeat 0) nextOutput
   nextOutput = mux (moRowDone multOut)
-                   (replace <$> rowIndex <*> dramRowResultChecked <*> qOut)
+                   (replace <$> rowIndex <*> hcRowResult <*> qOut)
                    qOut
 
   -- Accumulate HC results (reference)
@@ -284,24 +285,24 @@ assertRowResultMatch rowDone rowIdx dramResult hcResult dramWeights hcWeights = 
                        tokenCnt
 
     result = mux rowDone
-                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult
+                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult 
                         <*> dramWeights <*> hcWeights)
                  dramResult
 
-    check :: Unsigned 32 -> Index HeadDimension -> FixedPoint -> FixedPoint
+    check :: Unsigned 32 -> Index HeadDimension -> FixedPoint -> FixedPoint 
           -> RowI8E ModelDimension -> RowI8E ModelDimension -> FixedPoint
     check tok ri dr hr dramW hcW =
       if dr P.== hr
         then dr
-        else P.error $ "Row result mismatch at token " P.++ show tok
+        else P.error $ "Row result mismatch at token " P.++ show tok 
                     P.++ " row " P.++ show ri
-                    P.++ ": DRAM=" P.++ show dr
+                    P.++ ": DRAM=" P.++ show dr 
                     P.++ " HC=" P.++ show hr
                     P.++ "\n  DRAM weight exp=" P.++ show (rowExponent dramW)
                     P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas dramW)))
                     P.++ "\n  HC weight exp=" P.++ show (rowExponent hcW)
                     P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas hcW)))
-                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW
+                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW 
                                                          P.&& rowMantissas dramW P.== rowMantissas hcW)
 
 -- | Compare DRAM and HC Q outputs when valid - X-safe version
@@ -533,21 +534,21 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   layerParams = modelLayers params !! layerIdx
   mhaParams = PARAM.multiHeadAttention layerParams
   xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
+
+  -- Get global rotary once
   rotary = PARAM.rotaryEncoding params
 
   -- Create heads with per-head routed slave interfaces
   qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
   qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
   perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
-
+  
   (axiMasterOut, perHeadSlaves) = axiArbiterWithRouting dramSlaveIn qAxiMasters
 
-  consumeSignal = outputValid .&&. downStreamReady
-
-  qResults = imap (\headIdx _ ->
-      queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
-                        inputValid consumeSignal seqPos xNorm params
-    ) (repeat () :: Vec NumQueryHeads ())
+  qResults = map (qHead params) indicesI
+    where
+      qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
+                          inputValid downStreamReady seqPos xNorm params'
 
   head0Debug = head qDebugInfos
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
@@ -561,7 +562,7 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
     kvHead kvIdx =
       let kvHeadParams = PARAM.kvHeads mhaParams !! kvIdx  -- Get actual KV head
       in keyValueHeadProjector inputValid downStreamReady seqPos xNorm kvHeadParams rotary
-
+  
   kVecs    = map (\(k, _, _, _) -> k) kvResults
   vVecs    = map (\(_, v, _, _) -> v) kvResults
   kvValids = map (\(_, _, v, _) -> v) kvResults
