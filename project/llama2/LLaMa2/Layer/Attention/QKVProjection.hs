@@ -220,7 +220,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   -- Accumulate using checked DRAM result
   qOut = register (repeat 0) nextOutput
   nextOutput = mux (moRowDone multOut)
-                   (replace <$> rowIndex <*> hcRowResult <*> qOut)
+                   (replace <$> rowIndex <*> dramRowResultChecked <*> qOut) -- ! dramRowResultChecked, use hcRowResult to disable comparison
                    qOut
 
   -- Accumulate HC results (reference)
@@ -548,7 +548,15 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   qResults = map (qHead params) indicesI
     where
       qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
-                          inputValid downStreamReady seqPos xNorm params'
+                        inputValid downStreamReady seqPos xNorm params'
+
+  --- IDEALLY IT SHOULD BE THE BELOW BUT IT BREAKS THE CONSTANT PARAMETERS PATH
+  consumeSignal = outputValid .&&. downStreamReady
+
+  qResults' = imap (\headIdx _ ->
+      queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
+                        inputValid consumeSignal seqPos xNorm params
+    ) (repeat () :: Vec NumQueryHeads ())
 
   head0Debug = head qDebugInfos
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
