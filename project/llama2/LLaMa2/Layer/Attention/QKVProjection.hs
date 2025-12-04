@@ -21,6 +21,8 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified Prelude as P
+import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..), AxiAW (..), AxiW (..))
+import Clash.Debug (trace)
 
 data RowFetchState = RFIdle | RFFetching | RFProcessing | RFDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -81,11 +83,18 @@ multiplier column row colValid rowValid downStreamReady rowIndex =
     , moDebug         = dbgInfo
     }
   where
+    rowValidRise = rowValid .&&. (not <$> register False rowValid)
+
+    colValidTraced = go <$> rowValidRise <*> colValid
+      where
+        go True cv = trace ("MULT: rowValid ROSE, colValid=" P.++ show cv) cv
+        go False cv = cv
+
     (rowResult, rowDone, accValue) =
       OPS.parallel64RowProcessor rowReset rowEnable row column
 
     (state, rowReqValid, rowReset, rowEnable, outputValid, readyForInputRaw) =
-      OPS.matrixMultiplierStateMachine colValid rowValid downStreamReady rowDone rowIndex
+      OPS.matrixMultiplierStateMachine colValidTraced rowValid downStreamReady rowDone rowIndex
 
     dbgInfo = MultiplierDebug
       { accValue  = accValue
@@ -117,7 +126,7 @@ queryHeadMatrixMultiplier :: forall dom.
 queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady xHat params =
   QueryHeadOutput
     { qhoAxiMaster     = axiMaster
-    , qhoResult        = qOutChecked
+    , qhoResult        = qOutFinal
     , qhoOutputValid   = outputValid
     , qhoReadyForInput = readyForInput
     , qhoDebugInfo     = debugInfo
@@ -126,10 +135,25 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   rowIndex :: Signal dom (Index HeadDimension)
   rowIndex = register 0 nextRowIndex
 
+  -- Latch inputValid until we complete all rows
+  inputValidLatched :: Signal dom Bool
+  inputValidLatched = register False nextInputValidLatched
+    where
+      nextInputValidLatched = mux inputValid (pure True)
+                            $ mux (outputValid .&&. downStreamReady) (pure False)
+                              inputValidLatched
+
+  weightValidRise = weightValid .&&. (not <$> register False weightValid)
+
+  inputValidLatched' = go <$> weightValidRise <*> inputValidLatched
+    where
+      go True ivl = trace ("H" P.++ show headIdx P.++ " WVALID_RISE ivl=" P.++ show ivl) ivl
+      go False ivl = ivl
+
   -- Weight loader (note: pass moRowDone to allow the loader to hold LDone until consumed)
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
     LOADER.weightLoader dramSlaveIn layerIdx headIdx
-                        rowIndex rowReqValidGated downStreamReady
+                        rowIndex rowReqValidTraced downStreamReady
                         (moRowDone multOut)
                         params
 
@@ -142,7 +166,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
   -- DRAM path multiplier
-  multOut = multiplier xHat currentRowDram inputValid weightValid downStreamReady rowIndex
+  multOut = multiplier xHat currentRowDram inputValidLatched' weightValid downStreamReady rowIndex
 
   -- HC path: reuse the DRAM path's control signals
   (hcRowResult, _hcRowDone, _hcAccValue) =
@@ -162,15 +186,35 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
                            currentRowHC
 
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
+
+  traceInputValid :: Signal dom Bool -> Signal dom Bool
+  traceInputValid sig = go <$> sig <*> inputValid <*> weightValid <*> rowIndex
+    where
+      go req True wv ri = trace ("H" P.++ show headIdx P.++ " INPUT_VALID wv=" P.++ show wv P.++ " ri=" P.++ show ri) req
+      go req False _ _ = req
+
+  rowReqValidTraced = traceInputValid rowReqValidGated
+
   readyForInput    = moReadyForInput multOut .&&. weightReady
-  outputValid      = moOutputValid multOut
+
+    -- Latch outputValid until downstream consumes it
+  outputValidLatch :: Signal dom Bool
+  outputValidLatch = register False nextOutputValidLatch
+    where
+      -- Set when multiplier signals done, clear when downstream ready AND we're valid
+      nextOutputValidLatch = mux (moOutputValid multOut) (pure True)
+                          $ mux (outputValidLatch .&&. downStreamReady) (pure False)
+                            outputValidLatch
+
+  -- Use the latched version externally
+  outputValid = outputValidLatch
 
   nextRowIndex =
     mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
         (rowIndex + 1)
-        (mux ((moState multOut .==. pure OPS.MDone) .&&. downStreamReady)
-             (pure 0)
-             rowIndex)
+        (mux (outputValidLatch .&&. downStreamReady)  -- Only reset when latch clears
+            (pure 0)
+            rowIndex)
 
   -- Accumulate using checked DRAM result
   qOut = register (repeat 0) nextOutput
@@ -186,6 +230,22 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
                      qOutHC
 
   qOutChecked = assertQOutputsMatch outputValid rowIndex qOut qOutHC
+
+  traceMultState :: Signal dom (Vec HeadDimension FixedPoint) -> Signal dom (Vec HeadDimension FixedPoint)
+  traceMultState qOut' = go <$> moState multOut <*> outputValid <*> rowIndex <*> moRowDone multOut <*> downStreamReady <*> qOut'
+    where
+      go st ov ri rd dsr out =
+        let msg = "H" P.++ show headIdx
+                  P.++ " st=" P.++ show st
+                  P.++ " ov=" P.++ show ov
+                  P.++ " ri=" P.++ show ri
+                  P.++ " rd=" P.++ show rd
+                  P.++ " dsr=" P.++ show dsr
+        in if rd  -- Trace every time rowDone fires
+          then trace msg out
+          else out
+
+  qOutFinal = traceMultState qOutChecked
 
   debugInfo = QHeadDebugInfo
     { qhRowIndex        = rowIndex
@@ -224,24 +284,24 @@ assertRowResultMatch rowDone rowIdx dramResult hcResult dramWeights hcWeights = 
                        tokenCnt
 
     result = mux rowDone
-                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult 
+                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult
                         <*> dramWeights <*> hcWeights)
                  dramResult
 
-    check :: Unsigned 32 -> Index HeadDimension -> FixedPoint -> FixedPoint 
+    check :: Unsigned 32 -> Index HeadDimension -> FixedPoint -> FixedPoint
           -> RowI8E ModelDimension -> RowI8E ModelDimension -> FixedPoint
     check tok ri dr hr dramW hcW =
       if dr P.== hr
         then dr
-        else P.error $ "Row result mismatch at token " P.++ show tok 
+        else P.error $ "Row result mismatch at token " P.++ show tok
                     P.++ " row " P.++ show ri
-                    P.++ ": DRAM=" P.++ show dr 
+                    P.++ ": DRAM=" P.++ show dr
                     P.++ " HC=" P.++ show hr
                     P.++ "\n  DRAM weight exp=" P.++ show (rowExponent dramW)
                     P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas dramW)))
                     P.++ "\n  HC weight exp=" P.++ show (rowExponent hcW)
                     P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas hcW)))
-                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW 
+                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW
                                                          P.&& rowMantissas dramW P.== rowMantissas hcW)
 
 -- | Compare DRAM and HC Q outputs when valid - X-safe version
@@ -356,45 +416,99 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
   outputValid = kValidOut .&&. vValidOut
   readyForInput = kReadyOut .&&. vReadyOut
 
---------------------------------------------------------------------------------
--- AXI arbiter (unchanged)
---------------------------------------------------------------------------------
-axiArbiter :: forall dom n.
+-- | AXI arbiter that properly routes responses back to the requesting master
+axiArbiterWithRouting :: forall dom n.
   (HiddenClockResetEnable dom, KnownNat n)
-  => Vec n (Master.AxiMasterOut dom)
-  -> Master.AxiMasterOut dom
-axiArbiter masters = Master.AxiMasterOut
-  { arvalid = sel Master.arvalid
-  , ardata  = sel Master.ardata
-  , rready  = sel Master.rready
-  , awvalid = sel Master.awvalid
-  , awdata  = sel Master.awdata
-  , wvalid  = sel Master.wvalid
-  , wdata   = sel Master.wdata
-  , bready  = sel Master.bready
-  }
+  => Slave.AxiSlaveIn dom              -- ^ Single DRAM slave
+  -> Vec n (Master.AxiMasterOut dom)   -- ^ Multiple masters (heads)
+  -> ( Master.AxiMasterOut dom         -- ^ Combined master to DRAM
+     , Vec n (Slave.AxiSlaveIn dom)    -- ^ Per-head slave interfaces
+     )
+axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
   where
     arRequests :: Vec n (Signal dom Bool)
     arRequests = map Master.arvalid masters
+
+    -- Transaction tracking state machine
+    inFlight :: Signal dom Bool
+    inFlight = register False nextInFlight
+
+    transactionOwner :: Signal dom (Index n)
+    transactionOwner = register 0 nextTransactionOwner
+
     lastGranted :: Signal dom (Index n)
-    lastGranted = register 0 nextGranted
-    selectedIdx :: Signal dom (Index n)
-    selectedIdx = findNextRequester <$> bundle arRequests <*> lastGranted
+    lastGranted = register 0 nextLastGranted
+
+    -- Round-robin selection: find next requesting head
+    nextRequester :: Signal dom (Index n)
+    nextRequester = findNextRequester <$> bundle arRequests <*> lastGranted
+
+    findNextRequester :: Vec n Bool -> Index n -> Index n
     findNextRequester reqs lastR =
       let start = if lastR == maxBound then 0 else lastR + 1
-          go i n
-            | n == (0 :: Int) = lastR
+          go i cnt
+            | cnt == (0 :: Int) = lastR
             | reqs !! i = i
-            | i == maxBound = go 0 (n-1)
-            | otherwise = go (i+1) (n-1)
+            | i == maxBound = go 0 (cnt - 1)
+            | otherwise = go (i + 1) (cnt - 1)
       in go start (natToNum @n)
-    anyRequest = or <$> bundle arRequests
-    nextGranted = mux anyRequest selectedIdx lastGranted
-    sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
-    sel f = (!!) <$> bundle (map f masters) <*> selectedIdx
+
+    -- Active index: locked to owner when in-flight, otherwise round-robin
+    activeIdx :: Signal dom (Index n)
+    activeIdx = mux inFlight transactionOwner nextRequester
+
+    -- AR handshake detection
+    selectedArValid = (!!) <$> bundle arRequests <*> activeIdx
+    arHandshake = selectedArValid .&&. Slave.arready slaveIn .&&. (not <$> inFlight)
+
+    -- R channel handshake detection
+    selectedRReady = (!!) <$> bundle (map Master.rready masters) <*> transactionOwner
+    rHandshake = Slave.rvalid slaveIn .&&. selectedRReady
+    rLast = rlast <$> Slave.rdata slaveIn
+    transactionDone = rHandshake .&&. rLast .&&. inFlight
+
+    -- State transitions
+    nextInFlight = mux arHandshake (pure True)
+                 $ mux transactionDone (pure False)
+                   inFlight
+
+    nextTransactionOwner = mux arHandshake activeIdx transactionOwner
+
+    -- Update lastGranted only when a transaction completes (for fair round-robin)
+    nextLastGranted = mux transactionDone transactionOwner lastGranted
+
+    -- Build master output using activeIdx for AR, transactionOwner for R
+    masterOut = Master.AxiMasterOut
+      { arvalid = mux inFlight (pure False) selectedArValid  -- Don't issue AR while in-flight
+      , ardata  = (!!) <$> bundle (map Master.ardata masters) <*> activeIdx
+      , rready  = (!!) <$> bundle (map Master.rready masters) <*> transactionOwner
+      , awvalid = pure False
+      , awdata  = pure (AxiAW 0 0 0 0 0)
+      , wvalid  = pure False
+      , wdata   = pure (AxiW 0 0 False)
+      , bready  = pure False
+      }
+
+    -- Per-head slave interfaces with response routing
+    perHeadSlaves :: Vec n (Slave.AxiSlaveIn dom)
+    perHeadSlaves = map makeHeadSlave indicesI
+
+    makeHeadSlave :: Index n -> Slave.AxiSlaveIn dom
+    makeHeadSlave headIdx = Slave.AxiSlaveIn
+      { arready = isActiveAndIdle .&&. Slave.arready slaveIn
+      , rvalid  = isOwner .&&. Slave.rvalid slaveIn
+      , rdata   = Slave.rdata slaveIn
+      , awready = pure False
+      , wready  = pure False
+      , bvalid  = pure False
+      , bdata   = pure (AxiB 0 0)
+      }
+      where
+        isActiveAndIdle = (activeIdx .==. pure headIdx) .&&. (not <$> inFlight)
+        isOwner = inFlight .&&. (transactionOwner .==. pure headIdx)
 
 --------------------------------------------------------------------------------
--- QKV projector (unchanged)
+-- QKV projector
 --------------------------------------------------------------------------------
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -419,28 +533,35 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   layerParams = modelLayers params !! layerIdx
   mhaParams = PARAM.multiHeadAttention layerParams
   xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
-
-  -- Get global rotary once
   rotary = PARAM.rotaryEncoding params
 
-  qResults = map (qHead params) indicesI
-    where
-      qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
-                          inputValid downStreamReady seqPos xNorm params'
+  -- Create heads with per-head routed slave interfaces
+  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
+  qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
+  perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
+
+  (axiMasterOut, perHeadSlaves) = axiArbiterWithRouting dramSlaveIn qAxiMasters
+
+  consumeSignal = outputValid .&&. downStreamReady
+
+  qResults = imap (\headIdx _ ->
+      queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
+                        inputValid consumeSignal seqPos xNorm params
+    ) (repeat () :: Vec NumQueryHeads ())
+
   head0Debug = head qDebugInfos
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
   qVecs       = map (\(_, q, _, _, _) -> q) qResults
   qValids     = map (\(_, _, v, _, _) -> v) qResults
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
-  axiMasterOut = axiArbiter qAxiMasters
 
   kvResults = map kvHead indicesI
    where
     kvHead kvIdx =
       let kvHeadParams = PARAM.kvHeads mhaParams !! kvIdx  -- Get actual KV head
       in keyValueHeadProjector inputValid downStreamReady seqPos xNorm kvHeadParams rotary
-  
+
   kVecs    = map (\(k, _, _, _) -> k) kvResults
   vVecs    = map (\(_, v, _, _) -> v) kvResults
   kvValids = map (\(_, _, v, _) -> v) kvResults

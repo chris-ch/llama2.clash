@@ -12,7 +12,7 @@ import qualified Prelude as P
 import LLaMa2.Memory.AXI.Types
     ( AxiW(wdata),
       AxiAW(AxiAW, awid, awaddr, awlen),
-      AxiR(AxiR),
+      AxiR(..),
       AxiAR(AxiAR, arid, arlen, araddr),
       AxiB(AxiB) )
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -22,6 +22,7 @@ import LLaMa2.Types.ModelConfig
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
 import qualified LLaMa2.Memory.WeightsLayout as Layout
+import Clash.Debug (trace)
 
 -- | Timing configuration
 -- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
@@ -133,7 +134,7 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
   Slave.AxiSlaveIn
     { arready = arreadySig
     , rvalid  = rvalidSig
-    , rdata   = rdataSig
+    , rdata   = rdataSigTraced
     , awready = awreadySig
     , wready  = wreadySig
     , bvalid  = bvalidSig
@@ -342,3 +343,17 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
 
     bdataSig :: Signal dom AxiB
     bdataSig = AxiB 0 . awid <$> capturedAW
+
+    traceRead :: Signal dom AxiR -> Signal dom AxiR
+    traceRead rdataIn = 
+      go <$> rvalidSig <*> currentAddress <*> readAddrIdx <*> rdataIn
+        where
+          go True addr idx r = 
+            trace ("DRAM READ: addr=" P.++ show addr 
+                    P.++ " wordIdx=" P.++ show idx
+                    P.++ " data[0..3]=" P.++ show (P.take 4 $ toList $ unpack (rdata r) :: [BitVector 8]))
+            r
+          go False _ _ r = r
+
+    rdataSigTraced :: Signal dom AxiR
+    rdataSigTraced = traceRead rdataSig

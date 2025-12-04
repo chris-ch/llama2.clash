@@ -2,7 +2,7 @@ module LLaMa2.Layer.Attention.WeightLoader
   ( weightLoader
   , WeightLoaderOutput(..)
   , LoadState(..)
-  , assertRowStable          -- optional, for reuse at the consumer
+  , assertRowStable
   ) where
 
 import Clash.Prelude
@@ -17,6 +17,9 @@ import qualified Prelude as P
 import Data.Type.Bool (If)
 import Data.Type.Ord (OrdCond)
 import qualified GHC.TypeNats as T
+import Clash.Debug (trace)
+import qualified Simulation.DRAMBackedAxiSlave as Sim
+import Clash.Sized.Vector (unsafeFromList)
 
 data LoadState = LIdle | LFetching | LDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -70,6 +73,7 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
   loadState :: Signal dom LoadState
   loadState = register LIdle nextState
 
+  -- Expose loader-level ready (for external interface)
   weightReady :: Signal dom Bool
   weightReady = loadState .==. pure LIdle
 
@@ -80,6 +84,9 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
   prevValid = register False weightValid
   dvRise    = weightValid .&&. (not <$> prevValid)
 
+  dvRiseD1 :: Signal dom Bool
+  dvRiseD1 = register False dvRise  -- one cycle delayed
+
   -- Live request and address (combinational)
   liveRow  :: Signal dom (Index HeadDimension)
   liveRow  = rowReq
@@ -87,20 +94,32 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
   liveAddr :: Signal dom (Unsigned 32)
   liveAddr = Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx <$> liveRow
 
-  -- Start a new fetch only when idle and the request pulses
-  fetchTrigger :: Signal dom Bool
-  fetchTrigger = weightReady .&&. rowReqValid
+  -- ========== KEY FIX: Use fetcher's ready as the single handshake ==========
+  -- The actual fetch start: requires BOTH loader idle AND fetcher ready
+  actualFetchStart :: Signal dom Bool
+  actualFetchStart = weightReady .&&. fetcherReady .&&. rowReqValid
 
-  -- Transaction record captured exactly at the same handshake that starts the AXI read
-  -- NOTE: We capture (row, addr) on fetchTrigger. The strict fetcher also latches liveAddr
-  -- on this same pulse, removing any possibility of skew.
+  -- AXI multi-word fetcher - now returns debug signals too
+  (axiMaster, fetchedWords, fetchValid, fetcherReady, fetcherDebug) =
+    Layout.axiMultiWordRowFetcher @_ @ModelDimension dram actualFetchStart liveAddr
+
+  -- Transaction record captured on THE SAME handshake as the fetcher's address
   txnReg :: Signal dom Txn
-  txnReg = regEn (Txn 0 0) fetchTrigger (Txn <$> liveRow <*> liveAddr)
+  txnReg = regEn (Txn 0 0) actualFetchStart (Txn <$> liveRow <*> liveAddr)
+  -- ========== END KEY FIX ==========
 
-  -- AXI multi-word fetcher (STRICT!):
-  -- Feed it liveAddr so that both it and txnReg “see” the exact same value at fetchTrigger.
-  (axiMaster, fetchedWords, fetchValid, _readyStrict) =
-    Layout.axiMultiWordRowFetcher @_ @ModelDimension dram fetchTrigger liveAddr
+  -- ========== ARADDR ASSERTION ==========
+  -- Verify that when AR is accepted, the fetcher's latched address matches our txnReg
+  dramRowWithArCheck :: Signal dom (RowI8E ModelDimension)
+  dramRowWithArCheck = assertArAddrMatch
+      (Layout.dbgArAccepted fetcherDebug)
+      (Layout.dbgLatchedAddr fetcherDebug)
+      (tAddr <$> txnReg)
+      (tRow <$> txnReg)
+      layerIdx
+      headIdx
+      dramRowCommitted  -- pass through this signal
+  -- ========== END ARADDR ASSERTION ==========
 
   -- Parse and stage the DRAM row
   parsedRow :: Signal dom (RowI8E ModelDimension)
@@ -116,13 +135,11 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
   dramRowCommitted :: Signal dom (RowI8E ModelDimension)
   dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
 
-  -- Keep the words for diagnostics (parsed back in the assertion)
-  fetchedWordsAssembled
-    :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
+  -- Keep the words for diagnostics
+  fetchedWordsAssembled :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsAssembled = regEn (repeat 0) fetchValid fetchedWords
 
-  fetchedWordsCommitted
-    :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
+  fetchedWordsCommitted :: Signal dom (Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
   fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
 
   -- HC rows aligned with commit
@@ -131,31 +148,40 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
 
   -- HC row captured at the same time as the fetch handshake (for assert text)
   hcRowFromCapture :: Signal dom (RowI8E ModelDimension)
-  hcRowFromCapture = regEn zeroRow fetchTrigger ((!!) hcWeights <$> liveRow)
+  hcRowFromCapture = regEn zeroRow actualFetchStart ((!!) hcWeights <$> liveRow)
 
   -- Expected address recomputed from the captured row index
   expectedAddrFromRow :: Signal dom (Unsigned 32)
   expectedAddrFromRow =
     Layout.rowAddressCalculator Layout.QMatrix layerIdx headIdx . tRow <$> txnReg
 
-  -- COMMIT-TIME CHECK: do not remove or downgrade.
+  dramRowWithTrace :: Signal dom (RowI8E ModelDimension)
+  dramRowWithTrace = traceRowIndices
+      actualFetchStart
+      dvRise
+      liveRow
+      (tRow <$> txnReg)
+      headIdx              -- add this parameter
+      dramRowWithArCheck
+
+  -- COMMIT-TIME CHECK
   dramRowAfterEqCheck :: Signal dom (RowI8E ModelDimension)
   dramRowAfterEqCheck =
     assertRowsMatchOnCommitEnhanced
-      dvRise
-      (tRow  <$> txnReg)              -- capIdx
-      (tAddr <$> txnReg)              -- capAddr
-      expectedAddrFromRow             -- expectedAddr
-      dramRowCommitted                -- dramRow
-      hcRowCommitted                  -- hcRow
-      hcRowFromCapture               -- hcRowCapture
-      fetchedWordsCommitted           -- fetchedWords'
+      dvRiseD1
+      (tRow  <$> txnReg)
+      (tAddr <$> txnReg)
+      expectedAddrFromRow
+      dramRowWithTrace    -- changed
+      hcRowCommitted
+      hcRowFromCapture
+      fetchedWordsCommitted
       layerIdx
       headIdx
 
-  -- Loader FSM next-state
+  -- Loader FSM next-state - use actualFetchStart for consistency
   nextState =
-    mux (loadState .==. pure LIdle .&&. rowReqValid)
+    mux (loadState .==. pure LIdle .&&. actualFetchStart)
         (pure LFetching)
     $ mux (loadState .==. pure LFetching .&&. fetchValid)
         (pure LDone)
@@ -163,16 +189,102 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
         (pure LIdle)
         loadState
 
-  -- Outputs (dramRowOut is post-assertion)
+  dramRowFinal :: Signal dom (RowI8E ModelDimension)
+  dramRowFinal = staticDramCheck params layerIdx headIdx hcWeights dramRowAfterEqCheck
+  
+  -- Outputs
   out :: WeightLoaderOutput dom
   out = WeightLoaderOutput
     { hcRowOut          = hcRowCommitted
-    , dramRowOut        = dramRowAfterEqCheck
+    , dramRowOut        = dramRowFinal
     , dbgRequestedAddr  = liveAddr
     , dbgCapturedAddr   = tAddr <$> txnReg
     , dbgCapturedRowReq = tRow  <$> txnReg
     , dbgLoadState      = loadState
     }
+
+staticDramCheck
+  :: PARAM.DecoderParameters
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> MatI8E HeadDimension ModelDimension  -- hcWeights
+  -> Signal dom a  -- pass-through
+  -> Signal dom a
+staticDramCheck params layerIdx' headIdx' hcW sig =
+  let dramImage = Sim.buildMemoryFromParams @65536 params
+      -- Check row 0
+      testRow = 0 :: Index HeadDimension
+      testAddr = Layout.rowAddressCalculator Layout.QMatrix layerIdx' headIdx' testRow
+      wordIdx = fromIntegral testAddr `div` 64 :: Int
+      numWords = Layout.wordsPerRowVal @ModelDimension
+      dramWordsList = P.take numWords (P.drop wordIdx (toList dramImage))
+      dramRow = Layout.multiWordRowParser 
+                  (unsafeFromList dramWordsList 
+                     :: Vec (Layout.WordsPerRow ModelDimension) (BitVector 512))
+      hcRow = hcW !! testRow
+      
+      errMsg = "STATIC CHECK FAILED!"
+            P.++ "\n  layer=" P.++ show layerIdx'
+            P.++ " head=" P.++ show headIdx'
+            P.++ " row=" P.++ show testRow
+            P.++ "\n  addr=" P.++ show testAddr
+            P.++ " wordIdx=" P.++ show wordIdx
+            P.++ "\n  DRAM exp=" P.++ show (rowExponent dramRow)
+            P.++ " HC exp=" P.++ show (rowExponent hcRow)
+            P.++ "\n  DRAM[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas dramRow)
+            P.++ "\n  HC[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas hcRow)
+  in if dramRow /= hcRow
+     then P.error errMsg
+     else sig
+
+traceRowIndices
+  :: Signal dom Bool                   -- actualFetchStart
+  -> Signal dom Bool                   -- dvRise
+  -> Signal dom (Index HeadDimension)  -- liveRow
+  -> Signal dom (Index HeadDimension)  -- txnReg.tRow
+  -> Index NumQueryHeads               -- headIdx (static)
+  -> Signal dom (RowI8E ModelDimension)  -- pass-through signal
+  -> Signal dom (RowI8E ModelDimension)
+traceRowIndices start rise lRow txnRow headIdx' rowIn =
+  go <$> start <*> rise <*> lRow <*> txnRow <*> rowIn
+ where
+  go True _ lr _ row = 
+    trace ("CAPTURE H" P.++ show headIdx' P.++ ": liveRow=" P.++ show lr) row
+  go _ True _ tr row = 
+    let msg = "COMMIT H" P.++ show headIdx' P.++ ": txnReg.tRow=" P.++ show tr
+        finalMsg = if tr == maxBound 
+                   then msg P.++ " *** FINAL ROW ***"
+                   else msg
+    in trace finalMsg row
+  go _ _ _ _ row = row
+
+-- | ARADDR assertion: fires when AR is accepted if addresses don't match
+-- Change assertArAddrMatch to return the row unchanged (passthrough) but check on the way
+assertArAddrMatch
+  :: Signal dom Bool                   -- ^ arAccepted (from fetcher)
+  -> Signal dom (Unsigned 32)          -- ^ fetcher's latched address
+  -> Signal dom (Unsigned 32)          -- ^ loader's txnReg address
+  -> Signal dom (Index HeadDimension)  -- ^ row index for diagnostics
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Signal dom (RowI8E ModelDimension)  -- ^ row to pass through
+  -> Signal dom (RowI8E ModelDimension)  -- ^ same row, but assertion checked
+assertArAddrMatch arAccepted fetcherAddr loaderAddr rowIdx layerIdx' headIdx' rowIn =
+  check <$> arAccepted <*> fetcherAddr <*> loaderAddr <*> rowIdx <*> rowIn
+ where
+  check True fAddr lAddr ri row
+    | fAddr /= lAddr = P.error $
+        "ARADDR MISMATCH at AR accept!"
+        P.++ "\n  *** LOCATION: layer=" P.++ show layerIdx'
+        P.++ " head=" P.++ show headIdx'
+        P.++ " row=" P.++ show ri P.++ " ***"
+        P.++ "\n  Fetcher latched addr: " P.++ show fAddr
+        P.++ "\n  Loader txnReg addr:   " P.++ show lAddr
+        P.++ "\n  Delta: " P.++ show (if fAddr > lAddr 
+                                       then fAddr - lAddr 
+                                       else lAddr - fAddr)
+    | otherwise = row
+  check False _ _ _ row = row
 
 assertRowsMatchOnCommitEnhanced 
   :: forall dom n. (KnownNat n, KnownNat (If (OrdCond (CmpNat n 63) 'True 'True 'False) 1 (1 + Div n 64) T.* 64))

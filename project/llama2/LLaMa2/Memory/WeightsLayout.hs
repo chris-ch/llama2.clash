@@ -14,6 +14,7 @@ module LLaMa2.Memory.WeightsLayout
   , requestCaptureStage
   , wordsPerRowVal
   , wordsPerFixedPointVec  -- Export for testing
+  , FetcherDebug(..)           -- export debug type
   ) where
 
 import Clash.Prelude
@@ -453,6 +454,12 @@ matrixMultiWordPacker :: forall rows cols. KnownNat cols
   => MatI8E rows cols -> [BitVector 512]
 matrixMultiWordPacker m = P.concatMap multiWordRowPacker (toList m)
 
+-- | Debug signals from the multi-word fetcher for assertion checking
+data FetcherDebug dom = FetcherDebug
+  { dbgLatchedAddr :: Signal dom (Unsigned 32)  -- Address actually latched by fetcher
+  , dbgArAccepted  :: Signal dom Bool           -- AR handshake completed
+  }
+
 -- Handshake-strict contract:
 -- - Caller must assert requestPulse only when 'ready' is True.
 -- - We latch the address synchronously on that handshake.
@@ -468,9 +475,10 @@ axiMultiWordRowFetcher :: forall dom dim.
      , Signal dom (Vec (WordsPerRow dim) (BitVector 512))
      , Signal dom Bool                 -- ^ dataValid (1-cycle pulse at completion)
      , Signal dom Bool                 -- ^ ready
+     , FetcherDebug dom                -- ^ debug signals for assertions
      )
 axiMultiWordRowFetcher slaveIn reqPulse addrIn =
-  (masterOut, wordsOut, dataValid, ready)
+  (masterOut, wordsOut, dataValid, ready, debugOut)
  where
   numWordsI = natToNum @(WordsPerRow dim) :: Int
   burstLen  = numWordsI - 1
@@ -560,6 +568,12 @@ axiMultiWordRowFetcher slaveIn reqPulse addrIn =
     , wvalid  = pure False
     , wdata   = pure (AxiW 0 0 False)
     , bready  = pure False
+    }
+
+  -- Debug outputs for assertion checking
+  debugOut = FetcherDebug
+    { dbgLatchedAddr = addrReg
+    , dbgArAccepted  = arAccepted
     }
 
 -- Single-beat version with the same strict handshake contract
