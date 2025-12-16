@@ -33,8 +33,7 @@ data WeightLoaderOutput dom = WeightLoaderOutput
   , dbgLoadState      :: Signal dom LoadState
   }
 
-assertRowStable
-  :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
+assertRowStable :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
   => Signal dom Bool
   -> Signal dom (RowI8E n)
   -> Signal dom (RowI8E n)
@@ -46,6 +45,273 @@ assertRowStable validSig rowSig = checked
   check v r pr = if not v || (r == pr) then r
                  else P.error "Row changed while valid (loader/consumer)"
 
+-- | Weight loader with DRAM fetching and hardcoded (HC) reference path.
+--
+-- == Overview
+--
+-- This component manages weight loading for a single query head. It provides
+-- two parallel paths:
+-- 1. __DRAM path__: Fetches weights from external memory via AXI
+-- 2. __HC path__: Provides hardcoded reference weights from parameters
+--
+-- The dual-path design enables verification: DRAM results can be compared
+-- against HC results to detect memory or timing errors.
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────────────────┐
+--                    │                   weightLoader                          │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │                 DRAM Path                       │    │
+--                    │  │                                                 │    │
+--   dramSlaveIn ────►│  │  ┌──────────────┐    ┌──────────────┐           │    │
+--     .arready       │  │  │  AXI Master  │    │   Row        │           │    │
+--     .rvalid        │  │  │  Controller  │───►│   Assembly   │           │───►│ dramRowOut
+--     .rdata         │  │  │              │    │  (2 words→   │           │    │
+--                    │  │  │ Issues AR,   │    │   1 row)     │           │    │
+--   rowReqValid ────►│  │  │ tracks resp  │    │              │           │    │
+--                    │  │  └──────────────┘    └──────────────┘           │    │
+--   rowIndex ───────►│  │         │                   │                   │    │
+--                    │  │         │                   ▼                   │    │
+--   layerIdx ───────►│  │         │           ┌──────────────┐            │    │
+--   headIdx ────────►│  │         │           │  DRAM Valid  │────────────│───►│ weightValid
+--                    │  │         │           │    Latch     │            │    │
+--                    │  │         ▼           └──────────────┘            │    │
+--                    │  │  ┌──────────────┐                               │    │
+--                    │  │  │  axiMaster   │───────────────────────────────│───►│ axiMaster
+--                    │  │  │    Out       │                               │    │
+--                    │  │  └──────────────┘                               │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │                  HC Path                        │    │
+--                    │  │                                                 │    │
+--   params ─────────►│  │  ┌──────────────┐                               │    │
+--                    │  │  │   Direct     │                               │───►│ hcRowOut
+--                    │  │  │   Lookup     │                               │    │
+--                    │  │  │              │                               │    │
+--                    │  │  │ qMatrix[head]│                               │    │
+--                    │  │  │   [row]      │                               │    │
+--                    │  │  └──────────────┘                               │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              Ready Logic                        │    │
+--                    │  │                                                 │    │
+--   downStreamReady─►│  │  weightReady = (loaderState == LIdle)           │───►│ weightReady
+--                    │  │              || (loaderState == LDone)          │    │
+--   rowDone ────────►│  │                                                 │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    └─────────────────────────────────────────────────────────┘
+-- @
+--
+-- == Input Signals
+--
+-- [@dramSlaveIn@] AXI slave interface from arbiter (routed per-head response).
+--                 - arready: Arbiter accepted our address request
+--                 - rvalid: Data is available on rdata
+--                 - rdata: 512-bit data word from DRAM
+--
+-- [@layerIdx@] Current transformer layer (0 to NumLayers-1).
+--              Used to compute DRAM address offset.
+--
+-- [@headIdx@] Query head index (0 to NumQueryHeads-1).
+--             Used to compute DRAM address offset and HC lookup.
+--
+-- [@rowIndex@] Current row being processed (0 to HeadDimension-1).
+--              Used for both DRAM address and HC lookup.
+--
+-- [@rowReqValid@] Request signal from multiplier FSM (state == MFetching).
+--                 Triggers a new DRAM fetch when loader is idle.
+--
+-- [@downStreamReady@] Downstream acknowledgment (for state transitions).
+--
+-- [@rowDone@] Row computation complete signal from multiplier.
+--             Used to hold LDone state until row is actually consumed.
+--
+-- [@params@] Model parameters containing hardcoded weights.
+--
+-- == Output Signals
+--
+-- [@axiMaster@] AXI master interface to arbiter.
+--               - arvalid: Request to read from DRAM
+--               - ardata: Address and burst parameters
+--               - rready: Ready to accept read data
+--
+-- [@weightLoaderOut@] Bundled row outputs.
+--                     - dramRowOut: Row assembled from DRAM data
+--                     - hcRowOut: Row from hardcoded parameters
+--
+-- [@weightValid@] __Level signal__. True when DRAM row is valid and stable.
+--                 The multiplier should only process when this is True.
+--
+-- [@weightReady@] __Level signal__. True when loader can accept new request.
+--                 Used to gate rowReqValid from the multiplier.
+--
+-- == Loader State Machine
+--
+-- @
+--     ┌─────────┐  rowReqValid    ┌───────────────┐
+--     │  LIdle  │────────────────►│ LFetchingWord1│
+--     │         │                 │               │
+--     │ ready=T │                 │ Issue AR for  │
+--     │ valid=F │                 │ first 512-bit │
+--     └────┬────┘                 │ word          │
+--          ▲                      └───────┬───────┘
+--          │                              │ rvalid (word 1 arrives)
+--          │                              ▼
+--          │                      ┌───────────────┐
+--          │                      │ LFetchingWord2│
+--          │                      │               │
+--          │                      │ Issue AR for  │
+--          │                      │ second 512-bit│
+--          │                      │ word          │
+--          │                      └───────┬───────┘
+--          │                              │ rvalid (word 2 arrives)
+--          │                              ▼
+--          │                      ┌───────────────┐
+--          │  downStreamReady     │    LDone      │
+--          │  && rowDone          │               │
+--          └──────────────────────│ ready=T       │
+--                                 │ valid=T       │
+--                                 │               │
+--                                 │ (holds until  │
+--                                 │  consumed)    │
+--                                 └───────────────┘
+-- @
+--
+-- == Memory Layout
+--
+-- Each row requires 2 DRAM words (2 × 512 bits = 128 bytes):
+-- - Word 1: mantissas[0..63] (64 × 8-bit = 512 bits)
+-- - Word 2: mantissas[0] (8-bit) + exponent (8-bit) + padding
+--
+-- Note: For ModelDimension=64, one row fits in ~65 bytes, but aligned to 128.
+--
+-- Address calculation:
+-- @
+-- baseAddr = weightsBaseOffset 
+--          + layerIdx * layerStride
+--          + qWeightsOffset
+--          + headIdx * headStride
+--          + rowIndex * rowStride
+--
+-- word1Addr = baseAddr
+-- word2Addr = baseAddr + 64  -- Next 512-bit word
+-- @
+--
+-- == Row Assembly
+--
+-- @
+-- ┌─────────────────────────────────────────────────────────────────┐
+-- │                        DRAM Word 1 (512 bits)                   │
+-- │  ┌──────┬──────┬──────┬─────────────────────────────┬──────┐    │
+-- │  │mant0 │mant1 │mant2 │  ...                        │mant63│    │
+-- │  │ 8b   │ 8b   │ 8b   │                             │ 8b   │    │
+-- │  └──────┴──────┴──────┴─────────────────────────────┴──────┘    │
+-- └─────────────────────────────────────────────────────────────────┘
+--
+-- ┌─────────────────────────────────────────────────────────────────┐
+-- │                        DRAM Word 2 (512 bits)                   │
+-- │  ┌──────┬──────┬──────────────────────────────────────────────┐ │
+-- │  │ exp  │ pad  │              (unused)                        │ │
+-- │  │ 8b   │      │                                              │ │
+-- │  └──────┴──────┴──────────────────────────────────────────────┘ │
+-- └─────────────────────────────────────────────────────────────────┘
+--
+--                              │
+--                              ▼ Assembly
+--
+-- ┌─────────────────────────────────────────────────────────────────┐
+-- │                      RowI8E ModelDimension                      │
+-- │  rowMantissas: Vec 64 (Signed 8) = [mant0, mant1, ..., mant63]  │
+-- │  rowExponent:  Signed 16         = sign-extended exp            │
+-- └─────────────────────────────────────────────────────────────────┘
+-- @
+--
+-- == Timing Diagram
+--
+-- @
+-- Cycle:         0    1    2    3    4    5    6    7    8
+--
+-- rowReqValid:   ─────┐___________________________________________
+-- loaderState:   Idle Idle Ftch1 Ftch1 Ftch2 Ftch2 Done Done Idle
+-- 
+-- axiMaster.arv: ___________┐_____┐_____┐_________________________
+-- slaveIn.ardy:  ___________┐_____┐___________________________________
+-- slaveIn.rvalid:______________┐________┐____________________________
+-- 
+-- word1Latched:  _______________┐────────────────────────────────────
+-- word2Latched:  ______________________┐─────────────────────────────
+-- 
+-- weightValid:   ______________________┐────────────────┐____________
+-- weightReady:   ───────────┐________________________┐_______________
+--
+-- rowDone:       ____________________________________┐________________
+-- downStreamRdy: ____________________________________┐________________
+-- @
+--
+-- == HC Path Operation
+--
+-- The hardcoded path is purely combinational:
+--
+-- @
+-- hcRowOut = qMatrix params !! layerIdx !! headIdx !! rowIndex
+-- @
+--
+-- This provides a reference value that tracks rowIndex changes immediately,
+-- while DRAM path has multi-cycle latency. The comparison between paths
+-- happens in queryHeadMatrixMultiplier after both paths have valid data.
+--
+-- == Stability Assertion
+--
+-- The loader includes an assertion helper:
+--
+-- @
+-- assertRowStable :: Signal dom Bool -> Signal dom (RowI8E n) -> Signal dom (RowI8E n)
+-- assertRowStable valid row = ...
+-- @
+--
+-- This checks that committed row data doesn't change while valid=True,
+-- catching bugs where DRAM data might shift unexpectedly.
+--
+-- == Integration with Multiplier
+--
+-- @
+-- -- In queryHeadMatrixMultiplier:
+-- 
+-- (axiMaster, weightLoaderOut, weightValid, weightReady) =
+--     LOADER.weightLoader dramSlaveIn layerIdx headIdx
+--                         rowIndex rowReqValidGated downStreamReady
+--                         (moRowDone multOut)
+--                         params
+--
+-- -- Gate request by ready to prevent spurious requests
+-- rowReqValidGated = moRowReqValid multOut .&&. weightReady
+--
+-- -- Pass valid to multiplier FSM (rowValid input)
+-- multOut = multiplier xHat currentRowHC inputValidLatched' weightValid ...
+-- @
+--
+-- == Usage Notes
+--
+-- 1. Always gate rowReqValid with weightReady to prevent requests while busy.
+--
+-- 2. The loader holds LDone until rowDone fires, ensuring data stability
+--    throughout the row computation.
+--
+-- 3. For HC-only operation, weightValid can be driven by (loaderState == LDone)
+--    or simply pure True if no DRAM latency simulation is needed.
+--
+-- 4. The DRAM and HC paths should produce identical results; any mismatch
+--    indicates a bug in address calculation, data assembly, or timing.
+--
 weightLoader :: forall dom. HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
   -> Index NumLayers

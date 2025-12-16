@@ -2,11 +2,10 @@ module LLaMa2.Numeric.Operations
   ( accumulator
   , MultiplierState(..)
   , matrixMultiplierStateMachine
-  , parallel64RowMatrixMultiplier
-  , cyclicalCounter64
-  , parallel64RowProcessor
-  , parallelRowMatrixMultiplier
   , parallelRowMatrixMultiplierDyn
+  , parallel64RowProcessor
+  , parallelRowMatrixMultiplier -- to be migrated to dynamic version
+  , cyclicalCounter64 -- should be internal only
   ) where
 
 import Clash.Prelude
@@ -42,8 +41,7 @@ parallelRowMatrixMultiplier = parallel64RowMatrixMultiplier
 --   - A signal carrying the current accumulated sum as a FixedPoint value.
 --
 -- The accumulator updates the sum based on the enable and reset signals.
-accumulator
-  :: HiddenClockResetEnable dom
+accumulator :: HiddenClockResetEnable dom
   => Signal dom Bool        -- reset
   -> Signal dom Bool        -- enable
   -> Signal dom FixedPoint  -- input
@@ -65,103 +63,132 @@ accumulator reset enable input = acc
 data MultiplierState = MIdle | MFetching | MReset | MProcessing | MDone
   deriving (Show, Eq, Generic, NFDataX)
 
--- | Finite-state controller for the sequential /parallel-row/ engine.
+-- | Finite-state controller for sequential row-by-row matrix-vector multiplication.
 --
--- This FSM coordinates:
+-- == Overview
 --
---   * accepting a new input vector,
---   * fetching (or latching) a new row,
---   * resetting and enabling the row-processor,
---   * detecting per-row completion,
---   * signalling final completion of the whole matrix-vector product.
+-- This FSM coordinates the processing of a matrix-vector product one row at a time.
+-- It manages the lifecycle of fetching row weights, resetting the row processor,
+-- enabling computation, and signaling completion.
 --
--- The FSM is entirely **level-sensitive**: it does not watch edges or
--- pulses.  All control signals are sampled synchronously on each clock
--- edge based on their instantaneous Boolean level.
+-- == State Diagram
 --
--- = Inputs
+-- @
+--                    ┌─────────────────────────────────────────────┐
+--                    │                                             │
+--                    ▼                                             │
+--               ┌─────────┐                                        │
+--        ┌─────►│  MIdle  │◄──────────────────────────┐            │
+--        │      └────┬────┘                           │            │
+--        │           │ colValid                       │            │
+--        │           ▼                                │            │
+--        │      ┌──────────┐                          │            │
+--        │      │MFetching │─────────────────────┐    │            │
+--        │      └────┬─────┘                     │    │            │
+--        │           │ rowValid                  │    │            │
+--        │           ▼                           │    │            │
+--        │      ┌─────────┐                      │    │            │
+--        │      │ MReset  │                      │    │            │
+--        │      └────┬────┘                      │    │            │
+--        │           │ (always, 1 cycle)         │    │            │
+--        │           ▼                           │    │            │
+--        │      ┌────────────┐                   │    │            │
+--        │      │MProcessing │───────────────────┤    │            │
+--        │      └─────┬──────┘                   │    │            │
+--        │            │ rowDone                  │    │            │
+--        │            ├──────────────────────────┘    │            │
+--        │            │ (rowIdx /= maxBound)          │            │
+--        │            │                               │            │
+--        │            │ rowDone && rowIdx == maxBound │            │
+--        │            ▼                               │            │
+--        │      ┌─────────┐                           │            │
+--        │      │  MDone  │───────────────────────────┘            │
+--        │      └────┬────┘  downStreamReady                       │
+--        │           │                                             │
+--        │           │ (wait for consumer)                         │
+--        └───────────┴─────────────────────────────────────────────┘
+-- @
 --
---   * **inputValid :: Signal dom Bool**  
---     Level-true indicates that the upstream producer is offering a new
---     input vector.  
---     The FSM may accept it only while in state 'MIdle'.  
---     Hold high until 'readyForInput' becomes True.
+-- == Input Signals (directly accent or DIRECTLY connected to inputs)
 --
---   * **downStreamReady :: Signal dom Bool**  
---     Level-true indicates that the downstream consumer is ready to accept
---     the completed output vector.  
---     When the FSM reaches 'MDone', it will remain there until this signal
---     goes high.
+-- [@colValid@] __Level signal__. When True in MIdle state, starts processing.
+--              Typically driven by a latched version of upstream's inputValid.
+--              The FSM samples this only in MIdle; once processing starts,
+--              changes to colValid are ignored until the FSM returns to MIdle.
 --
---   * **rowDone :: Signal dom Bool**  
---     Level-true for one cycle when the row processor has finished the
---     current row.  
---     The FSM uses this to determine whether to:
---       - fetch the next row, or
---       - transition to 'MDone' if the last row has completed.
+-- [@rowValid@] __Level signal__. Indicates row weights are available.
+--              For constant weights (HC path): always @pure True@.
+--              For DRAM path: driven by weight loader's valid signal.
+--              The FSM waits in MFetching until rowValid becomes True.
 --
---   * **rowValid :: Signal dom Bool**  
---     Level-true indicates that the row data is available (after fetch).  
---     For systems without memory latency, this is simply 'pure True'.
+-- [@downStreamReady@] __Level signal__. Indicates downstream consumer can accept output.
+--                     The FSM waits in MDone until this becomes True.
+--                     When True in MDone, transitions to MIdle on next cycle.
 --
---   * **rowIndex :: Signal dom (Index rows)**  
---     Indicates which row is currently being processed.  
---     Used to detect when the last row has been reached.
+-- [@rowDone@] __Level signal__ (but typically True for only 1 cycle).
+--             Asserted by the row processor when current row computation completes.
+--             When True in MProcessing:
+--               - If rowIndex == maxBound: transition to MDone
+--               - Otherwise: transition to MFetching for next row
 --
--- = Outputs (control lines)
+-- [@rowIndex@] __Data signal__. Current row being processed (0 to rows-1).
+--              Used to detect when the last row has completed.
+--              Managed externally; FSM only reads it.
 --
---   * **fetchTrigger :: Signal dom Bool**  
---     Level-true while in 'MFetching'.  
---     Used to initiate a row fetch or latch.  
---     The FSM will not advance until 'rowValid' is True.
+-- == Output Signals
 --
---   * **rowReset :: Signal dom Bool**  
---     Level-true while in 'MReset'.  
---     Must be interpreted by the row-processor as a synchronous “start
---     new row” reset.  
---     Hold high for exactly one cycle.
+-- [@state@] Current FSM state, exposed for debugging.
 --
---   * **rowEnable :: Signal dom Bool**  
---     Level-true while in 'MProcessing'.  
---     Causes the row-processor to advance its 64-lane step.  
---     If 'rowDone' becomes True, the FSM transitions to a fetch of the
---     next row or to 'MDone'.
+-- [@fetchTrigger@] __Level signal__. True while state == MFetching.
+--                  Used to trigger weight loading from memory.
+--                  For HC path, this is typically ignored.
 --
---   * **outputValid :: Signal dom Bool**  
---     Level-true while in 'MDone'.  
---     Indicates to the downstream consumer that the entire output vector
---     is ready and stable.
+-- [@rowReset@] __Level signal__. True while state == MReset (exactly 1 cycle).
+--              Connected to row processor's reset input.
+--              Clears accumulator and column counter for new row.
 --
---   * **readyForInput :: Signal dom Bool**  
---     Level-true while in 'MIdle'.  
---     Indicates to the upstream producer that a new input vector may be
---     provided.
+-- [@rowEnable@] __Level signal__. True while state == MProcessing AND rowDone == False.
+--               Connected to row processor's enable input.
+--               Advances column counter and accumulates products.
+--               Note: Deasserts on the cycle rowDone becomes True to prevent
+--               extra accumulation.
 --
--- = Protocol summary
+-- [@outputValid@] __Level signal__. True while state == MDone.
+--                 Indicates all rows complete, output vector is valid and stable.
+--                 Remains True until downStreamReady causes transition to MIdle.
 --
---   **1. Upstream provides an input vector**  
---      Hold 'inputValid' = True until 'readyForInput' = True.  
---      FSM transitions: @MIdle → MFetching@.
+-- [@readyForInput@] __Level signal__. True while state == MIdle.
+--                   Indicates FSM can accept a new matrix-vector operation.
 --
---   **2. Row fetch**  
---      FSM asserts 'fetchTrigger' (level).  
---      Once 'rowValid' = True, FSM moves @MFetching → MReset@.
+-- == Timing Example (3 rows, 64 columns each = 1 cycle per row)
 --
---   **3. Row reset**  
---      FSM asserts 'rowReset' for one cycle: @MReset → MProcessing@.
+-- @
+-- Cycle:    0    1    2    3    4    5    6    7    8    9   10   11   12
+-- colValid: ─────┐________________________________________________________
+--                └────────────────────────────────────────────────────────
+-- state:    Idle Idle Ftch Rst  Proc Ftch Rst  Proc Ftch Rst  Proc Done Idle
+-- rowIndex: 0    0    0    0    0    1    1    1    2    2    2    2    0
+-- rowReset: ___________┐____┐___________┐____┐___________┐____┐____________
+-- rowEnable:________________┐____┐___________┐____┐___________┐____┐_______
+-- rowDone:  __________________┐________________┐________________┐__________
+-- outValid: _______________________________________________________┐______
+-- downReady:________________________________________________________┐_____
+-- @
 --
---   **4. Row processing**  
---      FSM holds 'rowEnable' = True until 'rowDone' = True.  
---      If not the last row: @MProcessing → MFetching@.  
---      If last row:          @MProcessing → MDone@.
+-- == Usage Notes
 --
---   **5. Output ready**  
---      FSM asserts 'outputValid' while in 'MDone'.  
---      Waits for 'downStreamReady' = True: @MDone → MIdle@.
+-- 1. The caller must manage rowIndex externally, incrementing it when rowDone
+--    fires (except on the last row).
 --
--- The protocol uses **levels only**. No pulse generation or edge detection
--- is required from the caller: simply hold the control signals high or low
--- for as long as the FSM requires them.
+-- 2. The FSM is purely reactive to levels. No edge detection required.
+--
+-- 3. For back-to-back operations: after downStreamReady clears MDone,
+--    the FSM returns to MIdle and will immediately start again if colValid
+--    is still True. To prevent this, ensure colValid is pulsed or cleared.
+--
+-- 4. The rowEnable output is gated by (not rowDone) to ensure the row
+--    processor doesn't accumulate an extra cycle after completion.
+--
 matrixMultiplierStateMachine :: forall dom rows .
   (HiddenClockResetEnable dom, KnownNat rows)  =>
   Signal dom Bool ->  -- colValid
@@ -222,73 +249,138 @@ addOffset idx offset =
       maxIdx = fromEnum (maxBound :: Index size)
   in toEnum (min newIdx maxIdx)  -- Clamp BEFORE calling toEnum
 
--- | Parallel 64-lane row processor.
+-- | Parallel 64-lane dot product engine for a single matrix row.
 --
--- This unit consumes one row of quantized mantissas and a full input vector,
--- and produces /one scalar dot-product result/ per row by processing
--- 64 columns per cycle. It internally keeps track of the current
--- column index and accumulates partial sums until the entire row
--- has been consumed.
+-- == Overview
 --
--- = Control protocol
+-- This unit computes the dot product of a quantized row vector (RowI8E format)
+-- with an input vector of FixedPoint values. It processes 64 elements per cycle,
+-- making it efficient for large vectors while maintaining reasonable hardware cost.
 --
--- The control signals of this block are **level-sensitive**, not edge-sensitive:
+-- The row format uses I8E quantization: 8-bit signed mantissas with a shared
+-- exponent per row. The final result is scaled by 2^exponent.
 --
---   * **reset :: Signal dom Bool**  
---     A /level/ signal.  
---     When 'True', the internal accumulator, the row-completion flag,
---     and the 64-column cyclical counter are synchronously reset to zero
---     on the next clock edge.  
---     It must be held high for exactly one cycle to start a new row.
---     (Holding it longer will simply keep the internal state cleared.)
+-- == Architecture
 --
---   * **enable :: Signal dom Bool**  
---     A /level/ signal.  
---     When 'True', the 64-column step is executed:
---       - the cyclical counter advances by 64,
---       - the 64 mantissa/column lane products are computed,
---       - the masked lane-sum is added into the accumulator (unless the last
---         column has been reached, in which case 0 is injected instead).
---     When 'False', the processor holds all internal registers (no progress).
+-- @
+--                    ┌─────────────────────────────────────────────┐
+--                    │           parallel64RowProcessor            │
+--                    │                                             │
+--   reset ──────────►│  ┌─────────────┐                            │
+--                    │  │ Column      │                            │
+--   enable ─────────►│  │ Counter     │──► columnIndex             │
+--                    │  │ (+64/cycle) │                            │
+--                    │  └─────────────┘                            │
+--                    │         │                                   │
+--   row ────────────►│  ┌──────▼──────┐                            │
+--   (RowI8E)         │  │ 64 Parallel │                            │
+--                    │  │   Lanes     │                            │
+--   columnVec ──────►│  │ mant[i]*col │                            │
+--   (Vec n FP)       │  │    [i]      │                            │
+--                    │  └──────┬──────┘                            │
+--                    │         │ (masked for overflow)             │
+--                    │  ┌──────▼──────┐                            │
+--                    │  │  Tree Sum   │                            │
+--                    │  │  (64→1)     │                            │
+--                    │  └──────┬──────┘                            │
+--                    │         │                                   │
+--                    │  ┌──────▼──────┐                            │
+--                    │  │ Accumulator │──────────────────►acc      │
+--                    │  └──────┬──────┘                            │
+--                    │         │                                   │
+--                    │  ┌──────▼──────┐                            │
+--                    │  │Scale by 2^e │──────────────────►output   │
+--                    │  └─────────────┘                            │
+--                    │                                             │
+--                    │  ┌─────────────┐                            │
+--                    │  │ Done Detect │──────────────────►rowDone  │
+--                    │  └─────────────┘                            │
+--                    └─────────────────────────────────────────────┘
+-- @
 --
--- Neither 'reset' nor 'enable' detect edges. The block reacts to their
--- instantaneous Boolean level at each cycle.
+-- == Input Signals
 --
--- = Output protocol
+-- [@reset@] __Level signal__. Synchronous reset for new row.
+--           When True:
+--             - Column counter resets to 0
+--             - Accumulator resets to 0  
+--             - rowDone flag clears to False
+--           Must be asserted for exactly 1 cycle before processing begins.
+--           Typically driven by FSM's rowReset output.
 --
---   * **output :: Signal dom FixedPoint**  
---     The scaled, accumulated result for the current row.  
---     Meaningful only when 'rowDone' is asserted.
+-- [@enable@] __Level signal__. Advances computation when True.
+--            Each cycle with enable=True:
+--              - Column counter advances by 64 (clamped to maxBound)
+--              - 64 products computed and summed
+--              - Sum added to accumulator
+--            When False, all state holds (no progress).
+--            Typically driven by FSM's rowEnable output.
 --
---   * **rowDone :: Signal dom Bool**  
---     A /level/ signal that becomes 'True' for one cycle
---     when the processor has consumed the last column of the row.  
---     It is internally registered: asserted on the cycle *after* the
---     final 64-lane chunk completes.  
---     Automatically cleared on the next 'reset'.
+-- [@row@] __Data signal__. The quantized row vector (RowI8E format).
+--         Contains: rowMantissas (Vec n (Signed 8)) and rowExponent (Signed 16).
+--         Must remain stable while enable=True.
+--         For HC path: constant from parameters.
+--         For DRAM path: loaded from weight loader.
 --
---   * **acc :: Signal dom FixedPoint**  
---     Internal accumulator state, exposed for observability.
+-- [@columnVec@] __Data signal__. The input vector to multiply with.
+--               Must remain stable while enable=True.
+--               Typically the normalized input (xNorm) for attention.
 --
--- = Usage notes
+-- == Output Signals
 --
--- * To start a new row, assert 'reset' = True for one cycle while keeping
---   'enable' = False.  
---   On the next cycle, deassert 'reset' and assert 'enable' to begin
---   processing.
+-- [@output@] __Data signal__. The scaled dot product result.
+--            Computed as: accumulator * 2^(rowExponent)
+--            Valid when rowDone=True; stable until next reset.
 --
--- * Keep 'enable' = True for as many cycles as needed. The block will
---   automatically detect when the last column group is processed.
+-- [@rowDone@] __Level signal__ (registered). Asserted for 1+ cycles when
+--             the last column group has been processed.
+--             Specifically: True when columnIndex + 63 >= maxBound after
+--             an enabled cycle.
+--             Cleared by reset.
+--             Note: Remains True until explicitly reset, so it's actually
+--             a "level" that stays high.
 --
--- * When 'rowDone' becomes True, the caller may read the final 'output'
---   and should assert 'reset' in the next cycle to prepare for the next row.
+-- [@acc@] __Data signal__. Raw accumulator value before scaling.
+--         Exposed for debugging/verification.
 --
--- * Inputs ('row' and 'columnVec') are sampled combinationally each cycle.
---   They must stay valid while 'enable' is asserted.
+-- == Processing Timeline (for n=64, i.e., 1 cycle to complete)
 --
--- This processor is purely synchronous with explicit state.
--- No edge-detection or hand-shake pulses are required: simply hold the
--- control lines at the appropriate levels each cycle.
+-- @
+-- Cycle:     0      1      2      3
+-- reset:     True   False  False  False
+-- enable:    False  True   False  False
+-- colIndex:  0      0      63     63
+-- acc:       0      0      sum    sum
+-- rowDone:   False  False  True   True
+-- output:    0      0      scaled scaled
+-- @
+--
+-- == Processing Timeline (for n=128, i.e., 2 cycles to complete)
+--
+-- @
+-- Cycle:     0      1      2      3      4
+-- reset:     True   False  False  False  False
+-- enable:    False  True   True   False  False
+-- colIndex:  0      0      64     127    127
+-- acc:       0      0      sum1   sum2   sum2
+-- rowDone:   False  False  False  True   True
+-- output:    0      0      x      scaled scaled
+-- @
+--
+-- == Implementation Notes
+--
+-- 1. The 64-lane parallelism is fixed. For vectors smaller than 64 elements,
+--    lanes beyond the vector size are masked to 0.
+--
+-- 2. Column index is clamped to maxBound, not wrapped. This ensures
+--    out-of-bounds accesses read the last element (masked anyway).
+--
+-- 3. The accumulator receives 0 on the cycle rowDone becomes True,
+--    preventing double-accumulation of the final chunk.
+--
+-- 4. Tree reduction for 64 lanes uses Clash's built-in 'sum' which
+--    synthesizes to an efficient adder tree.
+--
 parallel64RowProcessor :: forall dom size.
   ( HiddenClockResetEnable dom
   , KnownNat size)
@@ -338,9 +430,10 @@ parallel64RowProcessor reset enable row columnVec = (output, rowDone, acc)
 
     -- Done when index + 63 >= maxBound
     lastColumnFlag = ((\idx -> fromEnum idx + 63>= fromEnum (maxBound :: Index size)) <$> columnIndex) .&&. enable
-    rowDone = register False nextRowDone
-      where
-        nextRowDone = mux reset (pure False) lastColumnFlag
+
+    -- Combinational, true only when condition first met
+    rowDoneRaw = lastColumnFlag .&&. (not <$> register False lastColumnFlag)
+    rowDone = register False rowDoneRaw
 
 cyclicalCounter64 :: forall dom size . (HiddenClockResetEnable dom, KnownNat size)
   => Signal dom Bool

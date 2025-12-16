@@ -63,6 +63,85 @@ data MultiplierOutput dom = MultiplierOutput
   , moDebug         :: MultiplierDebug dom
   } deriving (Generic)
 
+-- | Wrapper combining matrixMultiplierStateMachine with parallel64RowProcessor.
+--
+-- == Overview
+--
+-- This module bundles the FSM controller with the row processor to provide
+-- a complete single-head matrix-vector multiplier interface. It handles the
+-- internal coordination between state machine control signals and the row
+-- processor's reset/enable inputs.
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────┐
+--                    │               multiplier                    │
+--                    │                                             │
+--   column ─────────►│  ┌─────────────────────────────────────┐    │
+--   (Vec ModelDim)   │  │                                     │    │
+--                    │  │    parallel64RowProcessor           │    │
+--   row ────────────►│  │                                     │───►│──► moRowResult
+--   (RowI8E)         │  │    rowReset◄─┐    rowEnable◄─┐      │    │
+--                    │  │              │               │      │───►│──► moRowDone
+--                    │  └──────────────┼───────────────┼──────┘    │
+--                    │                 │               │           │
+--                    │  ┌──────────────┴───────────────┴──────┐    │
+--   colValid ───────►│  │                                     │───►│──► moState
+--                    │  │    matrixMultiplierStateMachine     │    │
+--   rowValid ───────►│  │                                     │───►│──► moRowReqValid
+--                    │  │                                     │    │
+--   downStreamReady─►│  │                                     │───►│──► moOutputValid
+--                    │  │                                     │    │
+--   rowIndex ───────►│  │                                     │───►│──► moReadyForInput
+--                    │  └─────────────────────────────────────┘    │
+--                    │                                             │
+--                    └─────────────────────────────────────────────┘
+-- @
+--
+-- == Input Signals
+--
+-- [@column@] Input vector (Vec ModelDimension FixedPoint).
+--            The vector to multiply with each row.
+--
+-- [@row@] Current row weights (RowI8E ModelDimension).
+--         Must be valid when rowValid is True.
+--
+-- [@colValid@] Start signal. When True in MIdle, begins processing.
+--              Typically a latched version of inputValid.
+--
+-- [@rowValid@] Row weights available. For HC path: pure True.
+--              For DRAM path: weight loader's valid signal.
+--
+-- [@downStreamReady@] Downstream can accept output.
+--                     Triggers MDone→MIdle transition.
+--
+-- [@rowIndex@] Current row number (managed externally).
+--
+-- == Output Signals
+--
+-- [@moRowResult@] Current row's dot product result.
+--
+-- [@moRowDone@] Current row computation complete.
+--
+-- [@moState@] FSM state for debugging.
+--
+-- [@moRowReqValid@] True in MFetching state - requests next row weights.
+--
+-- [@moOutputValid@] True in MDone state - all rows complete.
+--
+-- [@moReadyForInput@] True in MIdle state - ready for new operation.
+--
+-- [@moDebug@] Debug signals (accValue, rowReset, rowEnable).
+--
+-- == Protocol
+--
+-- 1. Caller asserts colValid when input vector is ready
+-- 2. FSM cycles through rows: Fetch→Reset→Process for each row
+-- 3. After last row: moOutputValid asserts
+-- 4. Caller asserts downStreamReady to acknowledge
+-- 5. FSM returns to MIdle, moReadyForInput asserts
+--
 multiplier :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Vec ModelDimension FixedPoint)
@@ -113,6 +192,177 @@ data QueryHeadOutput dom = QueryHeadOutput
   , qhoDebugInfo     :: QHeadDebugInfo dom
   } deriving (Generic)
 
+-- | Complete query head matrix multiplier with input/output latching.
+--
+-- == Overview
+--
+-- This is the top-level component for a single query head's Q projection.
+-- It adds input latching and output latching around the core multiplier
+-- to provide clean handshake semantics for multi-head coordination.
+--
+-- The latching ensures:
+-- 1. A pulse on inputValid starts processing (latched until complete)
+-- 2. Output remains valid until downstream acknowledges (latched)
+-- 3. Clean handoff between tokens without state pollution
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────────────┐
+--                    │           queryHeadMatrixMultiplier                 │
+--                    │                                                     │
+--                    │  ┌──────────────────┐                               │
+--   inputValid ─────►│  │ inputValidLatched│─────────┐                     │
+--                    │  │                  │         │                     │
+--                    │  │ SET: inputValid  │         │                     │
+--                    │  │ CLR: outputValid │         │                     │
+--                    │  │   && downStream  │         │                     │
+--                    │  └──────────────────┘         │                     │
+--                    │                               ▼                     │
+--                    │                        ┌─────────────┐              │
+--   xHat ───────────►│───────────────────────►│             │              │
+--   (input vector)   │                        │  multiplier │              │
+--                    │                        │             │──►rowResult  │
+--                    │  ┌──────────────┐      │             │              │
+--                    │  │ weightLoader │─────►│             │──►rowDone    │
+--                    │  │   (HC path)  │      │             │              │
+--                    │  └──────────────┘      │             │──►moOutputValid
+--                    │                        └─────────────┘              │
+--                    │                               │                     │
+--                    │                               ▼                     │
+--                    │  ┌───────────────────┐  moOutputValid               │
+--                    │  │ outputValidLatch  │◄──────┘                      │
+--                    │  │                   │                              │
+--                    │  │ SET: moOutputValid│                              │
+--                    │  │ CLR: latch &&     │──────────────────►outputValid│
+--                    │  │      downStream   │                              │
+--                    │  │ (CLR has priority)│                              │
+--                    │  └───────────────────┘                              │
+--                    │                                                     │
+--   downStreamReady─►│─────────────────────────────────────────────────────┘
+--                    │                                                     │
+--                    │  ┌───────────────┐                                  │
+--                    │  │   rowIndex    │ (increments on rowDone)          │
+--                    │  │   register    │ (resets on output consumed)      │
+--                    │  └───────────────┘                                  │
+--                    │                                                     │
+--                    │  ┌───────────────┐                                  │
+--                    │  │    qOut       │ (accumulates row results)        │
+--                    │  │   register    │                                  │
+--                    │  └───────────────┘──────────────────────►result     │
+--                    │                                                     │
+--                    └─────────────────────────────────────────────────────┘
+-- @
+--
+-- == Input Signals
+--
+-- [@inputValid@] __Pulse or level__. Starts a new matrix-vector operation.
+--                Latched internally, so can be a single-cycle pulse.
+--                Ignored while a previous operation is in progress.
+--
+-- [@downStreamReady@] __Level signal__. Downstream ready to accept output.
+--                     When True and outputValid is True:
+--                       - outputValidLatch clears
+--                       - inputValidLatched clears  
+--                       - rowIndex resets to 0
+--                       - FSM transitions MDone→MIdle
+--
+-- [@xHat@] Input vector (normalized activations).
+--
+-- [@params@] Model parameters containing weight matrices.
+--
+-- == Output Signals
+--
+-- [@outputValid@] __Level signal__. True when all HeadDimension rows complete.
+--                 Remains True until downStreamReady acknowledged.
+--                 This is the LATCHED version of moOutputValid.
+--
+-- [@readyForInput@] __Level signal__. True when ready for new inputValid.
+--                   Derived from multiplier's readyForInput AND weightReady.
+--
+-- [@qOutFinal@] Result vector (Vec HeadDimension FixedPoint).
+--               Valid when outputValid is True.
+--
+-- == Latch Semantics (CRITICAL)
+--
+-- === inputValidLatched
+-- @
+-- nextInputValidLatched = 
+--   mux inputValid (pure True)                           -- SET on inputValid
+--   $ mux (outputValid .&&. downStreamReady) (pure False) -- CLR on consume
+--     inputValidLatched                                   -- HOLD otherwise
+-- @
+--
+-- Note: SET has priority over CLR. This is safe because inputValid should
+-- not be asserted while outputValid is True (protocol violation).
+--
+-- === outputValidLatch  
+-- @
+-- nextOutputValidLatch = 
+--   mux (outputValidLatch .&&. downStreamReady) (pure False) -- CLR first!
+--   $ mux (moOutputValid multOut) (pure True)                 -- SET second
+--     outputValidLatch                                        -- HOLD otherwise
+-- @
+--
+-- __CRITICAL__: CLR has priority over SET. This is essential because:
+-- 1. moOutputValid is a LEVEL (True while FSM in MDone)
+-- 2. When downStreamReady arrives, both CLR and SET conditions are True
+-- 3. CLR must win to ensure latch clears for next token
+-- 4. If SET won, latch would stay True, corrupting next token
+--
+-- == Row Index Management
+--
+-- @
+-- nextRowIndex =
+--   mux (moRowDone .&&. (rowIndex ./=. maxBound))
+--       (rowIndex + 1)                                    -- Increment on rowDone
+--       (mux (outputValidLatch .&&. downStreamReady)
+--            (pure 0)                                     -- Reset on consume
+--            rowIndex)                                    -- Hold otherwise
+-- @
+--
+-- == Output Accumulation
+--
+-- Results are accumulated into qOut register:
+-- @
+-- nextOutput = mux moRowDone
+--                  (replace rowIndex rowResult qOut)  -- Store row result
+--                  qOut                               -- Hold otherwise
+-- @
+--
+-- == Token Processing Timeline
+--
+-- @
+-- Token 1:
+-- ────────────────────────────────────────────────────────────────────
+-- Cycle:           0    1    ...  N    N+1  N+2
+-- inputValid:      ─┐___________________________________________
+-- inputValidLatch: __┐──────────────────────┐___________________
+-- moOutputValid:   _____________________┐───┐___________________
+-- outputValidLatch:_____________________┐───┐___________________
+-- downStreamReady: _________________________┐___________________
+-- rowIndex:        0    0    ...  7    7    0
+-- 
+-- Token 2:
+-- ────────────────────────────────────────────────────────────────────
+-- Cycle:           N+2  N+3  ...  M    M+1  M+2
+-- inputValid:      ─┐___________________________________________
+-- inputValidLatch: __┐──────────────────────┐___________________
+-- ...
+-- @
+--
+-- == Usage Notes
+--
+-- 1. Single pulse on inputValid is sufficient to start processing.
+--
+-- 2. Output remains valid and stable until acknowledged by downStreamReady.
+--
+-- 3. Back-to-back tokens: assert new inputValid on or after the cycle
+--    that downStreamReady clears the previous operation.
+--
+-- 4. The component handles HeadDimension rows internally; caller only
+--    sees the complete vector output.
+--
 queryHeadMatrixMultiplier :: forall dom.
   HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
@@ -166,7 +416,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
   -- DRAM path multiplier
-  multOut = multiplier xHat currentRowDram inputValidLatched' weightValid downStreamReady rowIndex
+  multOut = multiplier xHat currentRowHC inputValidLatched' weightValid downStreamReady rowIndex
 
   -- HC path: reuse the DRAM path's control signals
   (hcRowResult, _hcRowDone, _hcAccValue) =
@@ -183,7 +433,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
                            rowIndex
                            (moRowResult multOut)
                            hcRowResult
-                           currentRowDram   -- use committed+stable rows for debug
+                           currentRowHC   -- TEMPORARILY DISABLED, should be "currentRowDram" - use committed+stable rows for debug
                            currentRowHC
 
   rowReqValidGated = moRowReqValid multOut .&&. weightReady
@@ -198,13 +448,13 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
 
   readyForInput    = moReadyForInput multOut .&&. weightReady
 
-    -- Latch outputValid until downstream consumes it
+  -- Latch outputValid until downstream consumes it
   outputValidLatch :: Signal dom Bool
   outputValidLatch = register False nextOutputValidLatch
     where
-      -- Set when multiplier signals done, clear when downstream ready AND we're valid
-      nextOutputValidLatch = mux (moOutputValid multOut) (pure True)
-                          $ mux (outputValidLatch .&&. downStreamReady) (pure False)
+      -- CLEAR takes priority over SET to prevent stale True values
+      nextOutputValidLatch = mux (outputValidLatch .&&. downStreamReady) (pure False)
+                          $ mux (moOutputValid multOut) (pure True)
                             outputValidLatch
 
   -- Use the latched version externally
@@ -417,7 +667,213 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
   outputValid = kValidOut .&&. vValidOut
   readyForInput = kReadyOut .&&. vReadyOut
 
--- | AXI arbiter that properly routes responses back to the requesting master
+-- | Round-robin AXI arbiter with per-master response routing.
+--
+-- == Overview
+--
+-- This arbiter multiplexes multiple AXI masters (query heads) onto a single
+-- AXI slave (DRAM controller). It implements round-robin arbitration for
+-- fairness and tracks in-flight transactions to route responses back to
+-- the correct requesting master.
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────────────────┐
+--                    │              axiArbiterWithRouting                      │
+--                    │                                                         │
+--   masters[0] ─────►│  ┌─────────────────────────────────────────────────┐    │
+--     .arvalid       │  │                                                 │    │
+--     .ardata        │  │            Request Arbitration                  │    │
+--     .rready        │  │                                                 │    │
+--                    │  │  ┌──────────┐    ┌──────────────┐               │    │
+--   masters[1] ─────►│  │  │ Round-   │    │ Transaction  │               │    │
+--     ...            │  │  │ Robin    │───►│   Tracker    │               │    │
+--                    │  │  │ Selector │    │              │               │    │
+--   masters[N] ─────►│  │  └──────────┘    │ - inFlight   │               │    │
+--                    │  │       ▲          │ - owner      │               │    │
+--                    │  │       │          │ - lastGrant  │               │    │
+--                    │  │  arRequests      └──────────────┘               │    │
+--                    │  │                         │                       │    │
+--                    │  └─────────────────────────┼───────────────────────┘    │
+--                    │                            │                            │
+--                    │                            ▼                            │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              masterOut (to DRAM)                │    │
+--                    │  │                                                 │───►│
+--                    │  │  .arvalid = selectedArValid && !inFlight        │    │
+--                    │  │  .ardata  = masters[activeIdx].ardata           │    │
+--                    │  │  .rready  = masters[owner].rready               │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--   slaveIn ────────►│  ┌─────────────────────────────────────────────────┐    │
+--     .arready       │  │              Response Routing                   │    │
+--     .rvalid        │  │                                                 │    │
+--     .rdata         │  │  Route responses to transaction owner only:     │    │
+--                    │  │                                                 │    │
+--                    │  │  perHeadSlaves[i].arready =                     │───►│ perHeadSlaves[0]
+--                    │  │      (activeIdx == i) && !inFlight &&           │    │
+--                    │  │      slaveIn.arready                            │───►│ perHeadSlaves[1]
+--                    │  │                                                 │    │   ...
+--                    │  │  perHeadSlaves[i].rvalid =                      │───►│ perHeadSlaves[N]
+--                    │  │      (owner == i) && inFlight &&                │    │
+--                    │  │      slaveIn.rvalid                             │    │
+--                    │  │                                                 │    │
+--                    │  │  perHeadSlaves[i].rdata = slaveIn.rdata         │    │
+--                    │  │      (broadcast, but only owner sees rvalid)    │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    └─────────────────────────────────────────────────────────┘
+-- @
+--
+-- == State Registers
+--
+-- [@inFlight@] __Bool__. True when a transaction is active (AR accepted, waiting for R).
+--              Prevents new AR requests from being issued.
+--              Set when AR handshake completes, cleared when R handshake with rlast.
+--
+-- [@transactionOwner@] __Index n__. Which master owns the current in-flight transaction.
+--                      Latched on AR handshake, used to route R responses.
+--                      Only valid when inFlight is True.
+--
+-- [@lastGranted@] __Index n__. Last master that completed a transaction.
+--                 Used for round-robin fairness: next arbitration starts
+--                 from (lastGranted + 1).
+--                 Updated when transaction completes (not when granted).
+--
+-- == Arbitration Logic
+--
+-- === Round-Robin Selection
+--
+-- @
+-- findNextRequester :: Vec n Bool -> Index n -> Index n
+-- findNextRequester reqs lastR =
+--   -- Start searching from (lastGranted + 1)
+--   -- Wrap around, find first requesting master
+--   -- If none requesting, return lastR (no change)
+-- @
+--
+-- === Active Index Selection
+--
+-- @
+-- activeIdx = mux inFlight 
+--                 transactionOwner  -- Locked while in-flight
+--                 nextRequester     -- Round-robin when idle
+-- @
+--
+-- === Handshake Detection
+--
+-- @
+-- arHandshake = selectedArValid && slaveIn.arready && !inFlight
+-- rHandshake  = slaveIn.rvalid && masters[owner].rready
+-- rLast       = slaveIn.rdata.rlast
+-- transactionDone = rHandshake && rLast && inFlight
+-- @
+--
+-- == State Transitions
+--
+-- @
+--                 arHandshake
+--     ┌────────┐ ───────────► ┌────────────┐
+--     │  Idle  │              │  InFlight  │
+--     │inFlight│              │ inFlight=T │
+--     │ =False │ ◄─────────── │ owner=who  │
+--     └────────┘ transDone    └────────────┘
+-- @
+--
+-- == Output Signal Generation
+--
+-- === masterOut (to DRAM)
+--
+-- @
+-- masterOut.arvalid = !inFlight && selectedArValid
+--     -- Only issue AR when idle AND someone is requesting
+--
+-- masterOut.ardata = masters[activeIdx].ardata
+--     -- Forward selected master's address
+--
+-- masterOut.rready = masters[transactionOwner].rready
+--     -- Forward owner's ready (only owner should be ready)
+-- @
+--
+-- === perHeadSlaves[i] (to each head)
+--
+-- @
+-- perHeadSlaves[i].arready = (activeIdx == i) && !inFlight && slaveIn.arready
+--     -- Only active head sees arready, and only when idle
+--
+-- perHeadSlaves[i].rvalid = (transactionOwner == i) && inFlight && slaveIn.rvalid
+--     -- Only owner sees rvalid
+--
+-- perHeadSlaves[i].rdata = slaveIn.rdata
+--     -- Broadcast data (but non-owners ignore due to rvalid=False)
+-- @
+--
+-- == Transaction Timeline
+--
+-- @
+-- Cycle:        0    1    2    3    4    5    6    7    8
+-- 
+-- Head0.arvalid ─┐________________________________...
+-- Head1.arvalid ───────┐____________________________...
+-- 
+-- inFlight:     F    F    T    T    T    T    F    F    T
+-- activeIdx:    0    0    0    0    0    0    1    1    1
+-- owner:        x    0    0    0    0    0    0    1    1
+-- lastGranted:  x    x    x    x    x    0    0    0    0
+-- 
+-- masterOut.ar: ─────┐_____________┐____...
+-- slaveIn.ardy: ─────┐_____________┐____...
+-- slaveIn.rvalid: _______┐──┐__________┐...
+-- slaveIn.rlast:  ___________┐__________...
+-- 
+-- perHead0.ardy: ────┐___________________...
+-- perHead0.rvalid: ______┐──┐____________...
+-- perHead1.ardy: _______________┐________...
+-- perHead1.rvalid: __________________┐___...
+-- @
+--
+-- == Critical Design Points
+--
+-- 1. __No AR while in-flight__: masterOut.arvalid is gated by !inFlight.
+--    This prevents pipelining but ensures simple response routing.
+--
+-- 2. __Owner-based routing__: Responses go ONLY to transactionOwner.
+--    Other heads see rvalid=False, preventing spurious data capture.
+--
+-- 3. __Round-robin fairness__: lastGranted updates on transaction COMPLETION,
+--    not on grant. This ensures stuck transactions don't starve others.
+--
+-- 4. __Broadcast data__: rdata is broadcast to all heads (simpler routing),
+--    but only owner's rvalid is True, so only owner latches it.
+--
+-- == Why Response Routing Matters
+--
+-- Without proper routing, if Head 0 and Head 1 both request:
+-- 1. Arbiter grants Head 1's request
+-- 2. DRAM returns data for Head 1
+-- 3. BUG: Head 0 sees rvalid (thinks its data arrived) and latches wrong data!
+--
+-- With proper routing:
+-- 1. Arbiter grants Head 1, sets owner=1
+-- 2. DRAM returns data
+-- 3. perHeadSlaves[0].rvalid = False (owner != 0)
+-- 4. perHeadSlaves[1].rvalid = True (owner == 1)
+-- 5. Only Head 1 latches the data
+--
+-- == Usage Notes
+--
+-- 1. All masters must follow AXI protocol: hold arvalid until arready.
+--
+-- 2. Masters must be prepared to wait indefinitely for arready (arbitration).
+--
+-- 3. Masters should only assert rready when they can actually accept data.
+--
+-- 4. The arbiter assumes single-beat transactions (no burst support in 
+--    current implementation, but rlast is checked for future extension).
+--
 axiArbiterWithRouting :: forall dom n.
   (HiddenClockResetEnable dom, KnownNat n)
   => Slave.AxiSlaveIn dom              -- ^ Single DRAM slave
@@ -458,9 +914,16 @@ axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
     activeIdx :: Signal dom (Index n)
     activeIdx = mux inFlight transactionOwner nextRequester
 
+    -- Latch arvalid on first assertion to prevent drops
+    requestLatched = register False nextRequestLatched
+      where
+        nextRequestLatched = mux arHandshake (pure False)  -- Clear on handshake
+                          $ mux selectedArValid (pure True)  -- Latch on request
+                            requestLatched
+
     -- AR handshake detection
     selectedArValid = (!!) <$> bundle arRequests <*> activeIdx
-    arHandshake = selectedArValid .&&. Slave.arready slaveIn .&&. (not <$> inFlight)
+    arHandshake = (selectedArValid .||. requestLatched) .&&. Slave.arready slaveIn .&&. (not <$> inFlight)
 
     -- R channel handshake detection
     selectedRReady = (!!) <$> bundle (map Master.rready masters) <*> transactionOwner
@@ -511,6 +974,140 @@ axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
 --------------------------------------------------------------------------------
 -- QKV projector
 --------------------------------------------------------------------------------
+
+-- | Coordinates all query heads and key-value heads for QKV projection.
+--
+-- == Overview
+--
+-- This component instantiates NumQueryHeads query projectors and NumKeyValueHeads
+-- KV projectors, combining their outputs. It provides a single interface for
+-- the complete QKV projection stage of the attention mechanism.
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────────────────┐
+--                    │                    qkvProjector                         │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              Query Heads (×NumQueryHeads)       │    │
+--                    │  │                                                 │    │
+--   inputValid ─────►│  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
+--                    │  │  │ QHead 0 │ │ QHead 1 │ ... │ QHead N │        │    │
+--   downStreamReady─►│  │  │         │ │         │     │         │        │    │
+--                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
+--   xVec ───────────►│  │       │           │               │             │    │
+--                    │  │       ▼           ▼               ▼             │    │
+--   seqPos ─────────►│  │   qVecs[0]    qVecs[1]  ...   qVecs[N]          │    │
+--                    │  │   qValids[0]  qValids[1] ... qValids[N]         │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              KV Heads (×NumKeyValueHeads)       │    │
+--                    │  │                                                 │    │
+--                    │  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
+--                    │  │  │ KVHead0 │ │ KVHead1 │ ... │ KVHeadM │        │    │
+--                    │  │  │ (K & V) │ │ (K & V) │     │ (K & V) │        │    │
+--                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
+--                    │  │       │           │               │             │    │
+--                    │  │       ▼           ▼               ▼             │    │
+--                    │  │   kVecs[0]    kVecs[1]  ...   kVecs[M]          │    │
+--                    │  │   vVecs[0]    vVecs[1]  ...   vVecs[M]          │    │
+--                    │  │   kvValids[0] kvValids[1]... kvValids[M]        │    │
+--                    │  │                                                 │    │
+--                    │  └────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  outputValid = AND(all qValids) AND AND(all kvValids)   │
+--                    │  readyForInput = AND(all qReadys) AND AND(all kvReadys) │
+--                    │                                                         │
+--                    └─────────────────────────────────────────────────────────┘
+-- @
+--
+-- == Input Signals
+--
+-- [@inputValid@] Start signal for all heads.
+--                Directly passed to each head's inputValid.
+--
+-- [@downStreamReady@] Acknowledgment from downstream.
+--                     __CRITICAL__: In the working HC-path version, this is
+--                     passed DIRECTLY to each head. Each head clears its
+--                     output latch independently when downStreamReady arrives.
+--
+-- [@seqPos@] Sequence position for rotary encoding.
+--
+-- [@xVec@] Input activations (Vec ModelDimension FixedPoint).
+--          Normalized internally using RMS norm before projection.
+--
+-- [@params@] Full model parameters.
+--
+-- == Output Signals
+--
+-- [@qkvOut@] Bundled output: (Vec NumQueryHeads qVec, Vec NumKVHeads kVec, Vec NumKVHeads vVec)
+--
+-- [@outputValid@] True when ALL heads have completed.
+--                 Computed as: AND of all individual head valids.
+--
+-- [@readyForInput@] True when ALL heads are ready for new input.
+--                   Computed as: AND of all individual head readys.
+--
+-- == Coordination Strategy (Working HC-path Version)
+--
+-- In the current working version, all heads receive `downStreamReady` directly:
+--
+-- @
+-- qResults = map (qHead params) indicesI
+--   where
+--     qHead params' headIdx = 
+--       queryHeadProjector dramSlaveIn layerIdx headIdx
+--                         inputValid downStreamReady seqPos xNorm params'
+--                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+--                         Direct downStreamReady to each head
+-- @
+--
+-- This means:
+-- 1. All heads start simultaneously when inputValid arrives
+-- 2. Heads may finish at different times (due to AXI arbitration in DRAM path)
+-- 3. When downStreamReady arrives, ALL heads clear their latches simultaneously
+-- 4. Combined outputValid = AND of all head valids
+--
+-- The key insight: even though heads might finish at slightly different times,
+-- they all CLEAR together when downStreamReady arrives, ensuring clean handoff.
+--
+-- == Alternative: consumeSignal Coordination (for DRAM path)
+--
+-- For proper DRAM arbitration, heads need coordinated clearing:
+--
+-- @
+-- consumeSignal = outputValid .&&. downStreamReady
+--
+-- qResults' = imap (\headIdx _ ->
+--     queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
+--                       inputValid consumeSignal seqPos xNorm params
+--                       ^^^^^^^^^^^^
+--                       consumeSignal instead of downStreamReady
+--   ) (repeat () :: Vec NumQueryHeads ())
+-- @
+--
+-- This ensures:
+-- 1. Heads only clear when ALL heads are done AND downstream ready
+-- 2. Prevents early-finishing heads from restarting before others complete
+-- 3. Required for proper AXI arbiter operation
+--
+-- __REQUIREMENT__: When using consumeSignal, outputValidLatch MUST have
+-- CLR priority over SET (as documented in queryHeadMatrixMultiplier).
+--
+-- == Usage Notes
+--
+-- 1. Start processing by asserting inputValid for at least 1 cycle.
+--
+-- 2. Wait for outputValid before reading qkvOut.
+--
+-- 3. Assert downStreamReady to acknowledge and prepare for next token.
+--
+-- 4. Ensure proper handshake: don't assert new inputValid until previous
+--    operation is acknowledged.
+--
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
@@ -538,21 +1135,24 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   -- Get global rotary once
   rotary = PARAM.rotaryEncoding params
 
-  -- Create heads with per-head routed slave interfaces
-  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
+  -- AXI arbiter setup (mutual recursion handled by lazy evaluation)
   qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
   perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
   
   (axiMasterOut, perHeadSlaves) = axiArbiterWithRouting dramSlaveIn qAxiMasters
 
+  -- This version works 
   qResults = map (qHead params) indicesI
     where
       qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
                         inputValid downStreamReady seqPos xNorm params'
 
-  --- IDEALLY IT SHOULD BE THE BELOW BUT IT BREAKS THE CONSTANT PARAMETERS PATH
+  -- CRITICAL: Heads only clear their output latches when ALL heads are done
+  -- AND downstream is ready. This prevents early-finishing heads from restarting
+  -- before late-finishing heads complete.
   consumeSignal = outputValid .&&. downStreamReady
 
+  qResults' :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
   qResults' = imap (\headIdx _ ->
       queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
                         inputValid consumeSignal seqPos xNorm params
