@@ -484,6 +484,21 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   currentRowDram = LOADER.assertRowStable weightValid currentRowDramRaw
   currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
+  currentRowDramTraced = traceDramHCMatch weightValid currentRowDram currentRowHC
+
+  traceDramHCMatch :: Signal dom Bool
+    -> Signal dom (RowI8E ModelDimension)
+    -> Signal dom (RowI8E ModelDimension)
+    -> Signal dom (RowI8E ModelDimension)
+  traceDramHCMatch valid dram hc = result
+    where
+      result = check <$> valid <*> dram <*> hc
+      check v d h = 
+        if v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h)
+          then trace ("WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d) 
+                    P.++ " exp_h=" P.++ show (rowExponent h)) d
+          else d
+
   -- DRAM path multiplier
   multOut = multiplier xHat currentRowHC inputValidLatched' weightValid downStreamReady rowIndex
 
@@ -579,8 +594,8 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
     , qhRowEnable       = rowEnable (moDebug multOut)
     , qhAccumValue      = accValue (moDebug multOut)
     , qhQOut            = qOut
-    , qhCurrentRowExp   = register 0 (rowExponent <$> currentRowDram)
-    , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRowDram)
+    , qhCurrentRowExp   = register 0 (rowExponent <$> currentRowDramTraced)
+    , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRowDramTraced)
     , qhRowReqValid     = moRowReqValid multOut
     , qhWeightReady     = weightReady
     , qhWeightValid     = weightValid
