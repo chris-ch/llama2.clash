@@ -110,8 +110,21 @@ data MultiplierOutput dom = MultiplierOutput
 -- [@colValid@] Start signal. When True in MIdle, begins processing.
 --              Typically a latched version of inputValid.
 --
--- [@rowValid@] Row weights available. For HC path: pure True.
---              For DRAM path: weight loader's valid signal.
+-- [@rowValid@] Row weights available. Indicates that the current row data
+--              on the 'row' input is stable and ready to use.
+--              
+--              For HC path: pure True (weights always available).
+--              For DRAM path: driven by weight loader's valid signal.
+--              
+--              CRITICAL INTERACTION: The FSM waits in MFetching state until
+--              rowValid becomes True. On the cycle when rowValid rises:
+--                1. FSM transitions MFetching → MReset
+--                2. rowValid rising is traced/logged (rowValidRise detector)
+--                3. colValid state is traced for debugging
+--              
+--              This handshake ensures weights are stable before processing begins.
+--              The caller must hold rowValid True until the row is consumed
+--              (typically until rowDone fires).
 --
 -- [@downStreamReady@] Downstream can accept output.
 --                     Triggers MDone→MIdle transition.
@@ -122,7 +135,7 @@ data MultiplierOutput dom = MultiplierOutput
 --
 -- [@moRowResult@] Current row's dot product result.
 --
--- [@moRowDone@] Current row computation complete.
+-- [@moRowDone@] Current row computation complete (ONE-CYCLE PULSE from row processor).
 --
 -- [@moState@] FSM state for debugging.
 --
@@ -137,10 +150,35 @@ data MultiplierOutput dom = MultiplierOutput
 -- == Protocol
 --
 -- 1. Caller asserts colValid when input vector is ready
--- 2. FSM cycles through rows: Fetch→Reset→Process for each row
--- 3. After last row: moOutputValid asserts
--- 4. Caller asserts downStreamReady to acknowledge
--- 5. FSM returns to MIdle, moReadyForInput asserts
+-- 2. For DRAM path: Caller monitors moRowReqValid and provides rowValid when weights ready
+-- 3. FSM cycles through rows: Fetch(wait for rowValid)→Reset→Process for each row
+-- 4. After last row: moOutputValid asserts
+-- 5. Caller asserts downStreamReady to acknowledge
+-- 6. FSM returns to MIdle, moReadyForInput asserts
+--
+-- == colValid vs rowValid Handshake
+--
+-- The interaction between colValid and rowValid is as follows:
+--
+-- - __colValid__: Overall "start processing" signal, latched by caller until complete
+-- - __rowValid__: Per-row "weights are ready" signal from weight loader
+--
+-- For HC (hardcoded) path:
+-- @
+-- rowValid = pure True  -- Always ready, FSM never waits in MFetching
+-- @
+--
+-- For DRAM path:
+-- @
+-- Cycle:       0    1    2    3    4    5    6    7
+-- colValid:    ────┐─────────────────────────────────  (latched high)
+-- state:       Idle Ftch Ftch Rst  Proc Ftch Rst  Proc
+-- rowReqValid: ────┐────┐────────────┐─────────────────  (MFetching)
+-- rowValid:    ─────────┐────┐───────────┐────┐─────────  (from loader)
+--              (FSM waits in MFetching until rowValid arrives)
+-- @
+--
+-- The rowValidRise detector and colValidTraced logging help debug this handshake.
 --
 multiplier :: forall dom.
   HiddenClockResetEnable dom
@@ -205,6 +243,26 @@ data QueryHeadOutput dom = QueryHeadOutput
 -- 2. Output remains valid until downstream acknowledges (latched)
 -- 3. Clean handoff between tokens without state pollution
 --
+-- == CURRENT CONFIGURATION (TEMPORARY)
+--
+-- __IMPORTANT__: This component is currently configured for HC-path testing only.
+-- Both the "DRAM path" and "HC path" multipliers use the same HC weights
+-- (currentRowHC) to verify the multiplier logic before enabling DRAM loading.
+--
+-- When DRAM path is fully enabled:
+-- - multOut should use currentRowDram instead of currentRowHC
+-- - assertRowResultMatch should compare currentRowDram vs currentRowHC
+--
+-- Current configuration:
+-- @
+-- multOut = multiplier xHat currentRowHC ...  -- SHOULD BE: currentRowDram
+-- 
+-- dramRowResultChecked = assertRowResultMatch
+--                          ...
+--                          currentRowHC   -- TEMP: should be currentRowDram
+--                          currentRowHC   -- HC reference
+-- @
+--
 -- == Architecture
 --
 -- @
@@ -223,9 +281,9 @@ data QueryHeadOutput dom = QueryHeadOutput
 --   xHat ───────────►│───────────────────────►│             │              │
 --   (input vector)   │                        │  multiplier │              │
 --                    │                        │             │──►rowResult  │
---                    │  ┌──────────────┐      │             │              │
---                    │  │ weightLoader │─────►│             │──►rowDone    │
---                    │  │   (HC path)  │      │             │              │
+--                    │  ┌──────────────┐      │  (HC path   │              │
+--                    │  │ weightLoader │─────►│   temp)     │──►rowDone    │
+--                    │  │  (disabled)  │      │             │              │
 --                    │  └──────────────┘      │             │──►moOutputValid
 --                    │                        └─────────────┘              │
 --                    │                               │                     │
@@ -362,6 +420,8 @@ data QueryHeadOutput dom = QueryHeadOutput
 --
 -- 4. The component handles HeadDimension rows internally; caller only
 --    sees the complete vector output.
+--
+-- 5. DRAM weight loading is currently disabled - all paths use HC weights.
 --
 queryHeadMatrixMultiplier :: forall dom.
   HiddenClockResetEnable dom
@@ -666,7 +726,6 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 
   outputValid = kValidOut .&&. vValidOut
   readyForInput = kReadyOut .&&. vReadyOut
-
 -- | Round-robin AXI arbiter with per-master response routing.
 --
 -- == Overview
@@ -675,6 +734,27 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 -- AXI slave (DRAM controller). It implements round-robin arbitration for
 -- fairness and tracks in-flight transactions to route responses back to
 -- the correct requesting master.
+--
+-- == CURRENT STATUS: DISABLED
+--
+-- __IMPORTANT__: This arbiter is instantiated in qkvProjector but NOT connected
+-- to the data path. The current working implementation (qResults) passes
+-- dramSlaveIn directly to all query heads, bypassing the arbiter completely.
+--
+-- The arbiter code (qResults' with perHeadSlaves) exists but is unused:
+-- @
+-- (axiMasterOut, perHeadSlaves) = axiArbiterWithRouting dramSlaveIn qAxiMasters
+-- qResults' = imap (\headIdx _ ->
+--     queryHeadProjector (perHeadSlaves !! headIdx) ...  -- NOT USED
+--   ) ...
+-- 
+-- qResults = map (qHead params) indicesI  -- ACTUALLY USED
+--   where
+--     qHead params' headIdx = 
+--       queryHeadProjector dramSlaveIn layerIdx headIdx ...  -- Direct connection
+-- @
+--
+-- To enable the arbiter, replace qResults with qResults' in qkvProjector.
 --
 -- == Architecture
 --
@@ -693,7 +773,8 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 --   masters[N] ─────►│  │  └──────────┘    │ - inFlight   │               │    │
 --                    │  │       ▲          │ - owner      │               │    │
 --                    │  │       │          │ - lastGrant  │               │    │
---                    │  │  arRequests      └──────────────┘               │    │
+--                    │  │  arRequests      │ - reqLatched │               │    │
+--                    │  │                  └──────────────┘               │    │
 --                    │  │                         │                       │    │
 --                    │  └─────────────────────────┼───────────────────────┘    │
 --                    │                            │                            │
@@ -701,7 +782,7 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 --                    │  ┌─────────────────────────────────────────────────┐    │
 --                    │  │              masterOut (to DRAM)                │    │
 --                    │  │                                                 │───►│
---                    │  │  .arvalid = selectedArValid && !inFlight        │    │
+--                    │  │  .arvalid = !inFlight && selectedArValid        │    │
 --                    │  │  .ardata  = masters[activeIdx].ardata           │    │
 --                    │  │  .rready  = masters[owner].rready               │    │
 --                    │  │                                                 │    │
@@ -743,6 +824,17 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 --                 from (lastGranted + 1).
 --                 Updated when transaction completes (not when granted).
 --
+-- [@requestLatched@] __Bool__. Latches the selected master's arvalid to prevent
+--                    drops during multi-cycle arready waits.
+--                    Set when selectedArValid becomes True, cleared on AR handshake.
+--                    
+--                    __IMPLEMENTATION BUG__: requestLatched is used in arHandshake
+--                    detection but NOT included in masterOut.arvalid, creating
+--                    an inconsistency. The handshake can complete using the latched
+--                    request, but the output arvalid doesn't reflect it.
+--                    
+--                    This may cause spurious handshakes or missed transactions.
+--
 -- == Arbitration Logic
 --
 -- === Round-Robin Selection
@@ -766,11 +858,16 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 -- === Handshake Detection
 --
 -- @
--- arHandshake = selectedArValid && slaveIn.arready && !inFlight
+-- selectedArValid = arRequests !! activeIdx
+-- requestLatched = latch selectedArValid (cleared on handshake)
+-- 
+-- arHandshake = (selectedArValid || requestLatched) && slaveIn.arready && !inFlight
 -- rHandshake  = slaveIn.rvalid && masters[owner].rready
 -- rLast       = slaveIn.rdata.rlast
 -- transactionDone = rHandshake && rLast && inFlight
 -- @
+--
+-- __BUG__: requestLatched is in arHandshake but not in masterOut.arvalid!
 --
 -- == State Transitions
 --
@@ -789,7 +886,8 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 --
 -- @
 -- masterOut.arvalid = !inFlight && selectedArValid
---     -- Only issue AR when idle AND someone is requesting
+--     -- BUG: Should include requestLatched!
+--     -- Should be: !inFlight && (selectedArValid || requestLatched)
 --
 -- masterOut.ardata = masters[activeIdx].ardata
 --     -- Forward selected master's address
@@ -849,6 +947,9 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 -- 4. __Broadcast data__: rdata is broadcast to all heads (simpler routing),
 --    but only owner's rvalid is True, so only owner latches it.
 --
+-- 5. __Request latching__: Prevents arvalid drops during multi-cycle waits,
+--    but has implementation bug (not included in output arvalid).
+--
 -- == Why Response Routing Matters
 --
 -- Without proper routing, if Head 0 and Head 1 both request:
@@ -863,6 +964,11 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 -- 4. perHeadSlaves[1].rvalid = True (owner == 1)
 -- 5. Only Head 1 latches the data
 --
+-- == Known Issues
+--
+-- 1. requestLatched not included in masterOut.arvalid output
+-- 2. Entire arbiter currently disabled in qkvProjector (qResults used instead of qResults')
+--
 -- == Usage Notes
 --
 -- 1. All masters must follow AXI protocol: hold arvalid until arready.
@@ -873,6 +979,8 @@ keyValueHeadProjector inputValid downStreamReady stepCountSig xHatSig kvHeadPara
 --
 -- 4. The arbiter assumes single-beat transactions (no burst support in 
 --    current implementation, but rlast is checked for future extension).
+--
+-- 5. To enable this arbiter, modify qkvProjector to use qResults' instead of qResults.
 --
 axiArbiterWithRouting :: forall dom n.
   (HiddenClockResetEnable dom, KnownNat n)

@@ -294,6 +294,7 @@ addOffset idx offset =
 --                    │                                             │
 --                    │  ┌─────────────┐                            │
 --                    │  │ Done Detect │──────────────────►rowDone  │
+--                    │  │ (edge det.) │                            │
 --                    │  └─────────────┘                            │
 --                    └─────────────────────────────────────────────┘
 -- @
@@ -304,7 +305,7 @@ addOffset idx offset =
 --           When True:
 --             - Column counter resets to 0
 --             - Accumulator resets to 0  
---             - rowDone flag clears to False
+--             - rowDone flag preparation resets
 --           Must be asserted for exactly 1 cycle before processing begins.
 --           Typically driven by FSM's rowReset output.
 --
@@ -332,13 +333,15 @@ addOffset idx offset =
 --            Computed as: accumulator * 2^(rowExponent)
 --            Valid when rowDone=True; stable until next reset.
 --
--- [@rowDone@] __Level signal__ (registered). Asserted for 1+ cycles when
---             the last column group has been processed.
---             Specifically: True when columnIndex + 63 >= maxBound after
---             an enabled cycle.
---             Cleared by reset.
---             Note: Remains True until explicitly reset, so it's actually
---             a "level" that stays high.
+-- [@rowDone@] __Pulse signal__ (one-cycle high). Asserted for exactly ONE cycle
+--             when the last column group has been processed.
+--             Implementation uses edge detection: fires on the cycle when
+--             (columnIndex + 63 >= maxBound) transitions from False to True
+--             while enable is True.
+--             
+--             CRITICAL: This is a PULSE, not a level. It is high for exactly
+--             one cycle. The FSM must be designed to respond to this single-cycle
+--             pulse, not wait for a level to clear.
 --
 -- [@acc@] __Data signal__. Raw accumulator value before scaling.
 --         Exposed for debugging/verification.
@@ -351,7 +354,7 @@ addOffset idx offset =
 -- enable:    False  True   False  False
 -- colIndex:  0      0      63     63
 -- acc:       0      0      sum    sum
--- rowDone:   False  False  True   True
+-- rowDone:   False  False  True   False  ← ONE CYCLE PULSE
 -- output:    0      0      scaled scaled
 -- @
 --
@@ -363,7 +366,7 @@ addOffset idx offset =
 -- enable:    False  True   True   False  False
 -- colIndex:  0      0      64     127    127
 -- acc:       0      0      sum1   sum2   sum2
--- rowDone:   False  False  False  True   True
+-- rowDone:   False  False  False  True   False  ← ONE CYCLE PULSE
 -- output:    0      0      x      scaled scaled
 -- @
 --
@@ -375,10 +378,18 @@ addOffset idx offset =
 -- 2. Column index is clamped to maxBound, not wrapped. This ensures
 --    out-of-bounds accesses read the last element (masked anyway).
 --
--- 3. The accumulator receives 0 on the cycle rowDone becomes True,
---    preventing double-accumulation of the final chunk.
+-- 3. Edge detection for rowDone:
+--    @
+--    lastColumnFlag = (columnIndex + 63 >= maxBound) && enable
+--    rowDoneRaw = lastColumnFlag && !register(lastColumnFlag)  -- Rising edge
+--    rowDone = register rowDoneRaw                              -- Delay by 1 cycle
+--    @
+--    This ensures rowDone pulses exactly once per row completion.
 --
--- 4. Tree reduction for 64 lanes uses Clash's built-in 'sum' which
+-- 4. The accumulator receives 0 (via mux) during the cycle when rowDone is True,
+--    which doesn't affect the result since enable should be False after completion.
+--
+-- 5. Tree reduction for 64 lanes uses Clash's built-in 'sum' which
 --    synthesizes to an efficient adder tree.
 --
 parallel64RowProcessor :: forall dom size.
