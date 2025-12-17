@@ -108,7 +108,7 @@ data MultiplierOutput dom = MultiplierOutput
 --         Must be valid when rowValid is True.
 --
 -- [@colValid@] Start signal. When True in MIdle, begins processing.
---              Typically a latched version of inputValid.
+--              Must remain asserted until at least the first rowValid handshake completes.
 --
 -- [@rowValid@] Row weights available. Indicates that the current row data
 --              on the 'row' input is stable and ready to use.
@@ -125,6 +125,9 @@ data MultiplierOutput dom = MultiplierOutput
 --              This handshake ensures weights are stable before processing begins.
 --              The caller must hold rowValid True until the row is consumed
 --              (typically until rowDone fires).
+--
+--              rowValid is only a permission signal. The data on row must remain stable
+--              from the cycle rowValid is accepted through the entire MProcessing phase.
 --
 -- [@downStreamReady@] Downstream can accept output.
 --                     Triggers MDone→MIdle transition.
@@ -244,6 +247,9 @@ data QueryHeadOutput dom = QueryHeadOutput
 -- 3. Clean handoff between tokens without state pollution
 --
 -- == CURRENT CONFIGURATION (TEMPORARY)
+-- NOTE: As of now, DRAM data does NOT affect computation.
+-- All numerical results come exclusively from HC weights.
+-- DRAM logic is instantiated only for handshake validation.
 --
 -- __IMPORTANT__: This component is currently configured for HC-path testing only.
 -- Both the "DRAM path" and "HC path" multipliers use the same HC weights
@@ -367,6 +373,9 @@ data QueryHeadOutput dom = QueryHeadOutput
 -- 2. When downStreamReady arrives, both CLR and SET conditions are True
 -- 3. CLR must win to ensure latch clears for next token
 -- 4. If SET won, latch would stay True, corrupting next token
+--
+-- ⚠️ Do NOT connect moOutputValid directly downstream.
+-- Always use the latched outputValid.
 --
 -- == Row Index Management
 --
