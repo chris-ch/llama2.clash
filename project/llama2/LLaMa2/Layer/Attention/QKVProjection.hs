@@ -459,9 +459,10 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   inputValidLatched :: Signal dom Bool
   inputValidLatched = register False nextInputValidLatched
     where
-      nextInputValidLatched = mux inputValid (pure True)
-                            $ mux consumeSignal (pure False)  -- Use consumeSignal here
-                              inputValidLatched
+      nextInputValidLatched = 
+        mux (inputValid .&&. (not <$> outputValidLatch)) (pure True)  -- SET gated by LOCAL outputValidLatch
+        $ mux (outputValidLatch .&&. downStreamReady) (pure False)    -- CLR when THIS head finishes AND downstream ready
+          inputValidLatched                                            -- HOLD
 
   -- Weight loader (note: pass moRowDone to allow the loader to hold LDone until consumed)
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
