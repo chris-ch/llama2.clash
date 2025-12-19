@@ -437,12 +437,13 @@ queryHeadMatrixMultiplier :: forall dom.
   => Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom Bool
-  -> Signal dom Bool
+  -> Signal dom Bool                    -- inputValid
+  -> Signal dom Bool                    -- downStreamReady (for FSM row-by-row)
+  -> Signal dom Bool                    -- consumeSignal (for output latch clearing)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> PARAM.DecoderParameters
   -> QueryHeadOutput dom
-queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady xHat params =
+queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params =
   QueryHeadOutput
     { qhoAxiMaster     = axiMaster
     , qhoResult        = qOutFinal
@@ -459,20 +460,13 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   inputValidLatched = register False nextInputValidLatched
     where
       nextInputValidLatched = mux inputValid (pure True)
-                            $ mux (outputValid .&&. downStreamReady) (pure False)
+                            $ mux consumeSignal (pure False)  -- Use consumeSignal here
                               inputValidLatched
-
-  weightValidRise = weightValid .&&. (not <$> register False weightValid)
-
-  inputValidLatched' = go <$> weightValidRise <*> inputValidLatched
-    where
-      go True ivl = trace ("H" P.++ show headIdx P.++ " WVALID_RISE ivl=" P.++ show ivl) ivl
-      go False ivl = ivl
 
   -- Weight loader (note: pass moRowDone to allow the loader to hold LDone until consumed)
   (axiMaster, weightLoaderOut, weightValid, weightReady) =
     LOADER.weightLoader dramSlaveIn layerIdx headIdx
-                        rowIndex rowReqValidTraced downStreamReady
+                        rowIndex rowReqValidTraced consumeSignal
                         (moRowDone multOut)
                         params
 
@@ -495,12 +489,33 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
       result = check <$> valid <*> dram <*> hc
       check v d h = 
         if v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h)
-          then trace ("WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d) 
+          then trace ("L" P.++ show layerIdx P.++ " WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d) 
                     P.++ " exp_h=" P.++ show (rowExponent h)) d
           else d
 
+  -- 1. Trace inputValidLatched state changes
+  inputValidLatchedTraced = traceInputLatch <$> inputValidLatched <*> register False inputValidLatched <*> rowIndex
+    where
+      traceInputLatch current prev ri =
+        let rise = current && not prev
+            fall = not current && prev
+        in if rise
+          then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " IVL_RISE ri=" P.++ show ri) current
+          else if fall
+            then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " IVL_FALL ri=" P.++ show ri) current
+            else current
+
+  -- 4. Trace rowIndex changes
+  rowIndexTraced = traceRowIndex <$> rowIndex <*> register 0 rowIndex <*> moRowDone multOut <*> outputValidLatchTraced <*> downStreamReady
+    where
+      traceRowIndex current prev done ovl dsr =
+        if current /= prev
+          then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " RI_CHANGE " P.++ show prev P.++ "->" P.++ show current 
+                    P.++ " done=" P.++ show done P.++ " ovl=" P.++ show ovl P.++ " dsr=" P.++ show dsr) current
+          else current
+
   -- DRAM path multiplier
-  multOut = multiplier xHat currentRowHC inputValidLatched' weightValid downStreamReady rowIndex
+  multOut = multiplier xHat currentRowHC inputValidLatchedTraced weightValid downStreamReady rowIndexTraced
 
   -- HC path: reuse the DRAM path's control signals
   (hcRowResult, _hcRowDone, _hcAccValue) =
@@ -525,7 +540,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   traceInputValid :: Signal dom Bool -> Signal dom Bool
   traceInputValid sig = go <$> sig <*> inputValid <*> weightValid <*> rowIndex
     where
-      go req True wv ri = trace ("H" P.++ show headIdx P.++ " INPUT_VALID wv=" P.++ show wv P.++ " ri=" P.++ show ri) req
+      go req True wv ri = trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " INPUT_VALID wv=" P.++ show wv P.++ " ri=" P.++ show ri) req
       go req False _ _ = req
 
   rowReqValidTraced = traceInputValid rowReqValidGated
@@ -533,28 +548,55 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   readyForInput    = moReadyForInput multOut .&&. weightReady
 
   -- Latch outputValid until downstream consumes it
+  -- Output latch uses consumeSignal
   outputValidLatch :: Signal dom Bool
   outputValidLatch = register False nextOutputValidLatch
     where
-      -- CLEAR takes priority over SET to prevent stale True values
-      nextOutputValidLatch = mux (outputValidLatch .&&. downStreamReady) (pure False)
+      nextOutputValidLatch = mux (outputValidLatch .&&. consumeSignal) (pure False)  -- Use consumeSignal
                           $ mux (moOutputValid multOut) (pure True)
                             outputValidLatch
 
-  -- Use the latched version externally
-  outputValid = outputValidLatch
+  nextRowIndex = mux (rowDoneTraced .&&. (rowIndex ./=. pure maxBound))
+                      (rowIndex + 1)
+                      (mux (outputValidLatch .&&. consumeSignal)  -- Use consumeSignal
+                          (pure 0)
+                          rowIndex)
+  
+  -- 2. Trace outputValidLatch state changes
+  outputValidLatchTraced = traceOutputLatch <$> outputValidLatch <*> register False outputValidLatch <*> rowIndex <*> downStreamReady
+    where
+      traceOutputLatch current prev ri dsr =
+        let rise = current && not prev
+            fall = not current && prev
+        in if rise
+          then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " OVL_RISE ri=" P.++ show ri) current
+          else if fall
+            then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " OVL_FALL ri=" P.++ show ri P.++ " dsr=" P.++ show dsr) current
+            else current
 
-  nextRowIndex =
-    mux (moRowDone multOut .&&. (rowIndex ./=. pure maxBound))
-        (rowIndex + 1)
-        (mux (outputValidLatch .&&. downStreamReady)  -- Only reset when latch clears
-             (pure 0)
-             rowIndex)
+  -- Use the latched version externally
+  outputValid = outputValidLatchTraced
+
+  rowDoneTraced = traceRowDone <$> moRowDone multOut <*> rowIndex <*> moRowResult multOut
+        where
+          traceRowDone rd ri res =
+            if rd 
+              then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " row=" P.++ show ri 
+                          P.++ " result=" P.++ show res) rd
+              else rd
 
   -- Accumulate using checked DRAM result
   qOut = register (repeat 0) nextOutput
+  -- 3. Trace qOut accumulation with values
+  qOutTraced = traceQOutAccum <$> moRowDone multOut <*> rowIndex <*> dramRowResultChecked <*> qOut
+    where
+      traceQOutAccum done ri result current =
+        if done
+          then trace ("L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " QOUT_ACCUM ri=" P.++ show ri P.++ " val=" P.++ show result) current
+          else current
+
   nextOutput = mux (moRowDone multOut)
-                   (replace <$> rowIndex <*> dramRowResultChecked <*> qOut) -- ! dramRowResultChecked, use hcRowResult to disable comparison
+                   (replace <$> rowIndex <*> dramRowResultChecked <*> qOutTraced) -- ! dramRowResultChecked, use hcRowResult to disable comparison
                    qOut
 
   -- Accumulate HC results (reference)
@@ -570,7 +612,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   traceMultState qOut' = go <$> moState multOut <*> outputValid <*> rowIndex <*> moRowDone multOut <*> downStreamReady <*> qOut'
     where
       go st ov ri rd dsr out =
-        let msg = "H" P.++ show headIdx
+        let msg = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx
                   P.++ " st=" P.++ show st
                   P.++ " ov=" P.++ show ov
                   P.++ " ri=" P.++ show ri
@@ -698,6 +740,7 @@ queryHeadProjector :: forall dom.
   -> Index NumQueryHeads
   -> Signal dom Bool
   -> Signal dom Bool
+  -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
   -> PARAM.DecoderParameters
@@ -707,13 +750,13 @@ queryHeadProjector :: forall dom.
      , Signal dom Bool
      , QHeadDebugInfo dom
      )
-queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady stepCount xHat params =
+queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal stepCount xHat params =
   (qhoAxiMaster qhOut, qRoOut, qhoOutputValid qhOut, qhoReadyForInput qhOut, qhoDebugInfo qhOut)
- where
-  qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx
-                                    inputValid downStreamReady xHat params
+    where
+      qhOut = queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx
+                                        inputValid downStreamReady consumeSignal xHat params
 
-  qRoOut = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> qhoResult qhOut
+      qRoOut = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> qhoResult qhOut
 
 --------------------------------------------------------------------------------
 -- KV head projector
@@ -1273,21 +1316,30 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   
   (axiMasterOut, perHeadSlaves) = axiArbiterWithRouting dramSlaveIn qAxiMasters
 
-  -- This version works 
-  qResults = map (qHead params) indicesI
-    where
-      qHead params' headIdx = queryHeadProjector dramSlaveIn layerIdx headIdx
-                        inputValid downStreamReady seqPos xNorm params'
-
   -- CRITICAL: Heads only clear their output latches when ALL heads are done
   -- AND downstream is ready. This prevents early-finishing heads from restarting
   -- before late-finishing heads complete.
   consumeSignal = outputValid .&&. downStreamReady
 
+  -- Working version: direct connection, each head gets downStreamReady for FSM
+  -- and consumeSignal for latch clearing
+  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
+  qResults = imap (\headIdx _ ->
+      queryHeadProjector dramSlaveIn layerIdx headIdx
+                        inputValid 
+                        (pure True)      -- downStreamReady for FSM (always ready for next row)
+                        downStreamReady    -- consumeSignal for latch clearing
+                        seqPos xNorm params
+    ) (repeat () :: Vec NumQueryHeads ())
+
+  -- Alternative with arbiter (currently unused)
   qResults' :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
   qResults' = imap (\headIdx _ ->
       queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
-                        inputValid consumeSignal seqPos xNorm params
+                        inputValid 
+                        (pure True)      -- downStreamReady for FSM
+                        consumeSignal    -- consumeSignal for latch clearing
+                        seqPos xNorm params
     ) (repeat () :: Vec NumQueryHeads ())
 
   head0Debug = head qDebugInfos

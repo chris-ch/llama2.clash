@@ -258,9 +258,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           dbgFetchedWord  = dbgFetchedWordSampled !! cycleIdx
           seqPosition  = seqPosSampled !! cycleIdx
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone || dbgFetchValid) $
+        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %14s| %10s | %16s | %8s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %14s| %10s | %16s"
               cycleIdx
               li
               (show rdy)
@@ -277,7 +277,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show paramQ0Row0)
               (show dbgRowIdx)
               (show dbgSt)
-              (show dbgFetchValid)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 
