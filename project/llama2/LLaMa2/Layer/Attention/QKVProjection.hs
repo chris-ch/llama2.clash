@@ -460,7 +460,7 @@ queryHeadMatrixMultiplier dramSlaveIn layerIdx headIdx inputValid downStreamRead
   inputValidLatched = register False nextInputValidLatched
     where
       nextInputValidLatched = 
-        mux (inputValid .&&. (not <$> outputValidLatch)) (pure True)  -- SET gated by LOCAL outputValidLatch
+        mux (inputValid .&&. (not <$> inputValidLatched)) (pure True)  -- SET gated by LOCAL inputValidLatched
         $ mux (outputValidLatch .&&. downStreamReady) (pure False)    -- CLR when THIS head finishes AND downstream ready
           inputValidLatched                                            -- HOLD
 
