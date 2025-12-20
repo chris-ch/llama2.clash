@@ -11,7 +11,7 @@ import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo (..))
+import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
 import LLaMa2.Numeric.Operations (MultiplierState)
 
 data LayerOutputs dom = LayerOutputs

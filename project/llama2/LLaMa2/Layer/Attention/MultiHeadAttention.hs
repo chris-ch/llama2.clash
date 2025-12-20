@@ -8,7 +8,7 @@ import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (.
 import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController, QHeadDebugInfo)
+import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankController)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
@@ -16,6 +16,7 @@ import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
+import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>

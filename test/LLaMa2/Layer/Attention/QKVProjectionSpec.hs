@@ -4,7 +4,6 @@ import Clash.Prelude
 import qualified Prelude as P
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo (..), queryHeadProjector)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Memory.AXI.Types
@@ -17,6 +16,7 @@ import Test.Hspec
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import Data.Maybe (isNothing, isJust)
 import qualified LLaMa2.Memory.WeightsLayout as Layout
+import LLaMa2.Layer.Attention.QueryHeadProjector (queryHeadProjector, QHeadDebugInfo (..))
 
 -- Read-only AXI stub that returns all beats in 'payload' per AR.
 -- - ARREADY always True
@@ -197,6 +197,7 @@ spec = do
                   headIdx
                   validIn
                   downStreamReady
+                  downStreamReady
                   stepCount
                   input
                   paramsWL
@@ -254,7 +255,7 @@ spec = do
             CS.systemClockGen CS.resetGen CS.enableGen
 
           (masterOut, _, _, _, debugInfo) = exposeClockResetEnable
-              (queryHeadProjector stubSlaveIn 0 0 validIn (pure True) (pure 0) (pure (repeat 1.0)) params)
+              (queryHeadProjector stubSlaveIn 0 0 validIn (pure True) (pure True) (pure 0) (pure (repeat 1.0)) params)
               CS.systemClockGen CS.resetGen CS.enableGen
 
           states = sampleN maxCycles (qhState debugInfo)

@@ -14,8 +14,8 @@ import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, T
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import LLaMa2.Layer.Attention.QKVProjection (QHeadDebugInfo)
 import Simulation.Parameters (DecoderParameters(..))
+import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 
 ffnController ::
   (HiddenClockResetEnable dom) =>

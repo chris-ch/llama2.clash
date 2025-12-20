@@ -105,11 +105,14 @@ library
       LLaMa2.Layer.Attention.KVCache
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
+      LLaMa2.Layer.Attention.QueryHeadProjector
+      LLaMa2.Layer.Attention.KeyValueHeadProjector
       LLaMa2.Layer.Attention.RotaryEncoding
       LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.TransformerLayer
+      LLaMa2.Memory.AXI.Arbiter
       LLaMa2.Memory.AXI.Master
       LLaMa2.Memory.AXI.Slave
       LLaMa2.Memory.AXI.Types
