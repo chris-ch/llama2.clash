@@ -63,7 +63,7 @@ traceRowIndexChange layerIdx headIdx current prev done ovl dsr = traced
       | curr /= p = trace (prefix P.++ "RI_CHANGE " P.++ show p P.++ "->" P.++ show curr 
                           P.++ " done=" P.++ show d P.++ " ovl=" P.++ show o P.++ " dsr=" P.++ show ds) curr
       | otherwise = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[QueryHeadProjector] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 -- | Trace row computation results
 traceRowDone :: Index NumLayers -> Index NumQueryHeads
@@ -75,7 +75,7 @@ traceRowDone layerIdx headIdx rowDone ri result = traced
     go rd ridx res
       | rd        = trace (prefix P.++ "row=" P.++ show ridx P.++ " result=" P.++ show res) rd
       | otherwise = rd
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[QueryHeadProjector] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 -- | Trace multiplier state on rowDone
 traceMultiplierState :: Index NumLayers -> Index NumQueryHeads
