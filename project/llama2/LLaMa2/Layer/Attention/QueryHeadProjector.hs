@@ -21,6 +21,7 @@ import qualified LLaMa2.Layer.Attention.OutputTransactionController as OutputTra
 import qualified LLaMa2.Layer.Attention.OutputAccumulator as OutputAccumulator
 import qualified LLaMa2.Layer.Attention.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.RowComputeUnit as RowComputeUnit
+import qualified LLaMa2.Layer.Attention.RowScheduler as RowScheduler
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -228,13 +229,20 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     rowIndex :: Signal dom (Index HeadDimension)
     rowIndex = register 0 nextRowIndex
 
-    nextRowIndex = mux (rowDoneTraced .&&. (rowIndex ./=. pure maxBound)) (rowIndex + 1)
-                 $ mux (OutputTransactionController.otcOutputValid outputTxn .&&. consumeSignal) (pure 0)
-                   rowIndex
-
     rowIndexTraced = traceRowIndexChange layerIdx headIdx 
                        rowIndex (register 0 rowIndex)
                        (RowComputeUnit.rcRowDone compute) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
+
+    -- RowScheduler computes next index (combinatorial)
+    rowSched = RowScheduler.rowScheduler
+                 RowScheduler.RowSchedulerIn
+                   { rsRowDone       = rowDoneTraced
+                   , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
+                   , rsConsumeSignal = consumeSignal
+                   , rsCurrentIndex  = rowIndexTraced  -- Feed current registered value
+                   }
+    
+    nextRowIndex = RowScheduler.rsNextRowIndex rowSched  -- Get next combinatorial value
 
     inputTxn = InputTransactionController.inputTransactionController layerIdx headIdx rowIndex
                  InputTransactionController.InputTransactionIn

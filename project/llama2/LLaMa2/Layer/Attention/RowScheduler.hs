@@ -1,59 +1,37 @@
 module LLaMa2.Layer.Attention.RowScheduler
-  ( RowSchedulerIn(..), RowSchedulerOut(..)
+  ( RowSchedulerIn(..)
+  , RowSchedulerOut(..)
   , rowScheduler
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension)
-import qualified Prelude as P
-import Clash.Debug (trace)
+import LLaMa2.Types.ModelConfig
 
--- | Trace row index changes
-traceRowIndexChange :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension) -> Signal dom (Index HeadDimension)
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-traceRowIndexChange layerIdx headIdx current prev done ovl dsr = traced
-  where
-    traced = go <$> current <*> prev <*> done <*> ovl <*> dsr
-    go curr p d o ds
-      | curr /= p = trace (prefix P.++ "RI_CHANGE " P.++ show p P.++ "->" P.++ show curr 
-                          P.++ " done=" P.++ show d P.++ " ovl=" P.++ show o P.++ " dsr=" P.++ show ds) curr
-      | otherwise = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
+--------------------------------------------------------------------------------
+-- RowScheduler
+-- Computes next row index value (COMBINATORIAL - no internal state)
+--------------------------------------------------------------------------------
 data RowSchedulerIn dom = RowSchedulerIn
-  { rsRowDone      :: Signal dom Bool  -- Row computation complete
-  , rsOutputValid  :: Signal dom Bool  -- All rows complete
-  , rsConsumeSignal :: Signal dom Bool  -- Coordinated consume from parent
+  { rsRowDone       :: Signal dom Bool                     -- Row computation complete
+  , rsOutputValid   :: Signal dom Bool                     -- All rows complete
+  , rsConsumeSignal :: Signal dom Bool                     -- Coordinated consume from parent
+  , rsCurrentIndex  :: Signal dom (Index HeadDimension)    -- Current row index (REGISTERED at top level)
   } deriving (Generic)
 
 data RowSchedulerOut dom = RowSchedulerOut
-  { rsRowIndex :: Signal dom (Index HeadDimension)  -- Current row being processed
+  { rsNextRowIndex :: Signal dom (Index HeadDimension)  -- Next row index (COMBINATORIAL)
   } deriving (Generic)
 
---------------------------------------------------------------------------------
--- COMPONENT: RowScheduler
--- Manages row index counter - increments on rowDone, resets on consume
---------------------------------------------------------------------------------
 rowScheduler :: forall dom.
-  HiddenClockResetEnable dom
-  => Index NumLayers
-  -> Index NumQueryHeads
-  -> Signal dom Bool  -- downStreamReady for tracing
-  -> RowSchedulerIn dom
+  RowSchedulerIn dom
   -> RowSchedulerOut dom
-rowScheduler layerIdx headIdx downStreamReady inputs =
-  RowSchedulerOut { rsRowIndex = rowIndexTraced }
+rowScheduler inputs =
+  RowSchedulerOut { rsNextRowIndex = nextRowIndex }
   where
-    rowIndex = register 0 nextRowIndex
+    rowIndex = rsCurrentIndex inputs  -- Use registered value from top level
 
-    -- Increment on rowDone (unless at max), reset on consume
+    -- Compute next index (COMBINATORIAL)
     nextRowIndex = 
-      mux (rsRowDone inputs .&&. (rowIndex ./=. pure maxBound)) (rowIndex + 1)
-      $ mux (rsOutputValid inputs .&&. rsConsumeSignal inputs) (pure 0)
-        rowIndex
-
-    rowIndexTraced = traceRowIndexChange layerIdx headIdx 
-                       rowIndex (register 0 rowIndex)
-                       (rsRowDone inputs) (rsOutputValid inputs) downStreamReady
+      mux (rsRowDone inputs .&&. (rowIndex ./=. pure maxBound)) (rowIndex + 1)  -- Increment
+      $ mux (rsOutputValid inputs .&&. rsConsumeSignal inputs) (pure 0)          -- Reset
+        rowIndex                                                                  -- Hold

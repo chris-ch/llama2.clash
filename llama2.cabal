@@ -114,7 +114,6 @@ library
       LLaMa2.Layer.Attention.OutputAccumulator
       LLaMa2.Layer.Attention.OutputTransactionController
       LLaMa2.Layer.Attention.RotaryEncoding
-      LLaMa2.Layer.Attention.RowMultiplier
       LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
