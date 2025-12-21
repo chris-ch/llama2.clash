@@ -19,7 +19,7 @@ traceOutputLatchEdges layerIdx headIdx current prev ri dsr = traced
       | curr && not p = trace (prefix P.++ "OVL_RISE ri=" P.++ show ridx) curr
       | not curr && p = trace (prefix P.++ "OVL_FALL ri=" P.++ show ridx P.++ " dsr=" P.++ show downReady) curr
       | otherwise     = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[OutputTransactionController] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputTransactionController

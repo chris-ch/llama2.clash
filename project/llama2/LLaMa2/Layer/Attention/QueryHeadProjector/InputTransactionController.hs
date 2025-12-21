@@ -56,4 +56,4 @@ traceLatchEdges layerIdx headIdx name current prev ri = traced
       | curr && not p = trace (prefix P.++ name P.++ "_RISE ri=" P.++ show ridx) curr
       | not curr && p = trace (prefix P.++ name P.++ "_FALL ri=" P.++ show ridx) curr
       | otherwise     = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[InputTransactionController] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "

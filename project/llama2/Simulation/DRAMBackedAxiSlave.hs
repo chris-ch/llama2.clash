@@ -349,7 +349,7 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
       go <$> rvalidSig <*> currentAddress <*> readAddrIdx <*> rdataIn
         where
           go True addr idx r = 
-            trace ("DRAM READ: addr=" P.++ show addr 
+            trace ("[DRAMBackedAxisSlave] addr=" P.++ show addr 
                     P.++ " wordIdx=" P.++ show idx
                     P.++ " data[0..3]=" P.++ show (P.take 4 $ toList $ unpack (rdata r) :: [BitVector 8]))
             r

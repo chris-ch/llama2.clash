@@ -515,9 +515,9 @@ traceRowIndices start rise lRow txnRow headIdx' rowIn =
   go <$> start <*> rise <*> lRow <*> txnRow <*> rowIn
  where
   go True _ lr _ row = 
-    trace ("CAPTURE H" P.++ show headIdx' P.++ ": liveRow=" P.++ show lr) row
+    trace ("[WeightLoader] CAPTURE H" P.++ show headIdx' P.++ ": liveRow=" P.++ show lr) row
   go _ True _ tr row = 
-    let msg = "COMMIT H" P.++ show headIdx' P.++ ": txnReg.tRow=" P.++ show tr
+    let msg = "[WeightLoader] COMMIT H" P.++ show headIdx' P.++ ": txnReg.tRow=" P.++ show tr
         finalMsg = if tr == maxBound 
                    then msg P.++ " *** FINAL ROW ***"
                    else msg

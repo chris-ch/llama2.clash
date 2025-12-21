@@ -102,7 +102,7 @@ traceInputValidSignal layerIdx headIdx sig inputValid weightValid ri = traced
     go req iv wv ridx
       | iv        = trace (prefix P.++ "INPUT_VALID wv=" P.++ show wv P.++ " ri=" P.++ show ridx) req
       | otherwise = req
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[WeightFetchUnit] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 weightMismatchTracer :: Index NumLayers
   -> Signal dom Bool
@@ -114,6 +114,6 @@ weightMismatchTracer layerIdx valid dram hc = result
     result = check <$> valid <*> dram <*> hc
     check v d h
       | v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h) =
-          trace ("L" P.++ show layerIdx P.++ " WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d)
+          trace ("[WeightFetchUnit] L" P.++ show layerIdx P.++ " WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d)
                 P.++ " exp_h=" P.++ show (rowExponent h)) d
       | otherwise = d

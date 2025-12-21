@@ -18,7 +18,7 @@ traceAccumUpdate layerIdx headIdx done ri value current = traced
     go d ridx val curr
       | d         = trace (prefix P.++ "QOUT_ACCUM ri=" P.++ show ridx P.++ " val=" P.++ show val) curr
       | otherwise = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    prefix = "[OutputAccumulator] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputAccumulator

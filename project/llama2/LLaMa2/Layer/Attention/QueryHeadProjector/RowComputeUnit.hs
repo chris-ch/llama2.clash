@@ -57,7 +57,7 @@ rowMultiplier column row colValid rowValid downReady rowIndex =
 
     colValidTraced = go <$> rowValidRise <*> colValid
       where
-        go True cv = trace ("MULT: rowValid ROSE, colValid=" P.++ show cv) cv
+        go True cv = trace ("[RowComputeUnit] MULT: rowValid ROSE, colValid=" P.++ show cv) cv
         go False cv = cv
 
     -- Core computation
