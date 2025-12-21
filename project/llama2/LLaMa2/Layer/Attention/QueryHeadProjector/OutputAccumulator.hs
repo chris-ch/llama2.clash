@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.OutputAccumulator
+module LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
   ( outputAccumulator, OutputAccumIn(..), OutputAccumOut(..)
   ) where
 

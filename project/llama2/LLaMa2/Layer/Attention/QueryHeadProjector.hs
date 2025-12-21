@@ -5,6 +5,9 @@ module LLaMa2.Layer.Attention.QueryHeadProjector
 
 import Clash.Prelude
 
+import qualified Prelude as P
+import Clash.Debug (trace)
+
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
@@ -14,14 +17,12 @@ import qualified Simulation.Parameters as PARAM
 import qualified LLaMa2.Numeric.Operations as OPS
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified Prelude as P
-import Clash.Debug (trace)
-import qualified LLaMa2.Layer.Attention.OutputTransactionController as OutputTransactionController
-import qualified LLaMa2.Layer.Attention.OutputAccumulator as OutputAccumulator
-import qualified LLaMa2.Layer.Attention.InputTransactionController as InputTransactionController
-import qualified LLaMa2.Layer.Attention.RowComputeUnit as RowComputeUnit
-import qualified LLaMa2.Layer.Attention.RowScheduler as RowScheduler
-import qualified LLaMa2.Layer.Attention.WeightFetchUnit as WeightFetchUnit
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OutputTransactionController
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as OutputAccumulator
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
 --------------------------------------------------------------------------------
 -- Debug Info Record

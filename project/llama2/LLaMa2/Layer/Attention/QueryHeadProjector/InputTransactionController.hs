@@ -1,7 +1,4 @@
--- STEP 3: InputTransactionController Module
--- Simple input valid latch - no feedback to itself
-
-module LLaMa2.Layer.Attention.InputTransactionController
+module LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
   ( InputTransactionIn(..)
   , InputTransactionOut(..)
   , inputTransactionController

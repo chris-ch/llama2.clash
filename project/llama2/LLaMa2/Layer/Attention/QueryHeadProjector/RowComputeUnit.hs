@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.RowComputeUnit
+module LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit
   ( RowComputeIn(..)
   , RowComputeOut(..)
   , rowComputeUnit

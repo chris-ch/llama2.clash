@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.RowScheduler
+module LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler
   ( RowSchedulerIn(..)
   , RowSchedulerOut(..)
   , rowScheduler

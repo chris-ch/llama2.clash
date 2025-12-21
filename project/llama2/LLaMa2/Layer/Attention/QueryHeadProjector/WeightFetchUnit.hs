@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.WeightFetchUnit
+module LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
   ( WeightFetchIn(..)
   , WeightFetchOut(..)
   , weightFetchUnit
