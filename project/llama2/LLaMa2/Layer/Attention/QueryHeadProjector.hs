@@ -19,6 +19,7 @@ import qualified Prelude as P
 import Clash.Debug (trace)
 import qualified LLaMa2.Layer.Attention.OutputTransactionController as OutputTransactionController
 import qualified LLaMa2.Layer.Attention.OutputAccumulator as OutputAccumulator
+import qualified LLaMa2.Layer.Attention.InputTransactionController as InputTransactionController
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -113,19 +114,6 @@ rowMultiplier column row colValid rowValid downReady rowIndex =
 -- BLOCK: Tracing Utilities
 -- Debug trace functions for signal monitoring
 --------------------------------------------------------------------------------
-
--- | Trace latch state changes (rise/fall edges)
-traceLatchEdges :: Index NumLayers -> Index NumQueryHeads -> P.String
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) 
-  -> Signal dom Bool
-traceLatchEdges layerIdx headIdx name current prev ri = traced
-  where
-    traced = go <$> current <*> prev <*> ri
-    go curr p ridx
-      | curr && not p = trace (prefix P.++ name P.++ "_RISE ri=" P.++ show ridx) curr
-      | not curr && p = trace (prefix P.++ name P.++ "_FALL ri=" P.++ show ridx) curr
-      | otherwise     = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 -- | Trace row index changes
 traceRowIndexChange :: Index NumLayers -> Index NumQueryHeads
@@ -314,21 +302,14 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
                        rowIndex (register 0 rowIndex)
                        (rmoRowDone mult) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
 
-    ----------------------------------------------------------------------------
-    -- Input Valid Latch
-    -- SET on inputValid when not already latched
-    -- CLR when this head finishes AND downstream ready
-    ----------------------------------------------------------------------------
-    inputValidLatched :: Signal dom Bool
-    inputValidLatched = register False nextInputValidLatched
+    inputTxn = InputTransactionController.inputTransactionController layerIdx headIdx rowIndex
+                 InputTransactionController.InputTransactionIn
+                   { itcInputValid      = inputValid
+                   , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
+                   , itcDownStreamReady = downStreamReady
+                   }
 
-    nextInputValidLatched =
-      mux (inputValid .&&. (not <$> inputValidLatched)) (pure True)
-      $ mux (OutputTransactionController.otcOutputValid outputTxn .&&. downStreamReady) (pure False)
-        inputValidLatched
-
-    inputValidLatchedTraced = traceLatchEdges layerIdx headIdx "IVL"
-                                inputValidLatched (register False inputValidLatched) rowIndex
+    inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
 
     ----------------------------------------------------------------------------
     -- Output Valid Latch
@@ -362,7 +343,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
     ----------------------------------------------------------------------------
-    mult = rowMultiplier xHat currentRowHC inputValidLatchedTraced weightValid downStreamReady rowIndexTraced
+    mult = rowMultiplier xHat currentRowHC inputValidLatched weightValid downStreamReady rowIndexTraced
 
     rowReqValidGated = rmoFetchReq mult .&&. weightReady
     rowReqValidTraced = traceInputValidSignal layerIdx headIdx 

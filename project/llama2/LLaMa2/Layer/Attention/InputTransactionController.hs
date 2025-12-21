@@ -1,28 +1,19 @@
+-- STEP 3: InputTransactionController Module
+-- Simple input valid latch - no feedback to itself
+
 module LLaMa2.Layer.Attention.InputTransactionController
-  ( InputTransactionIn(..), InputTransactionOut(..)
+  ( InputTransactionIn(..)
+  , InputTransactionOut(..)
   , inputTransactionController
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension)
+import LLaMa2.Types.ModelConfig
 import qualified Prelude as P
 import Clash.Debug (trace)
 
--- | Trace latch state changes (rise/fall edges)
-traceLatchEdges :: Index NumLayers -> Index NumQueryHeads -> P.String
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) 
-  -> Signal dom Bool
-traceLatchEdges layerIdx headIdx name current prev ri = traced
-  where
-    traced = go <$> current <*> prev <*> ri
-    go curr p ridx
-      | curr && not p = trace (prefix P.++ name P.++ "_RISE ri=" P.++ show ridx) curr
-      | not curr && p = trace (prefix P.++ name P.++ "_FALL ri=" P.++ show ridx) curr
-      | otherwise     = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
 --------------------------------------------------------------------------------
--- COMPONENT: InputTransactionController
+-- InputTransactionController
 -- Manages input valid latch - captures inputValid and holds until completion
 --------------------------------------------------------------------------------
 data InputTransactionIn dom = InputTransactionIn
@@ -53,5 +44,19 @@ inputTransactionController layerIdx headIdx rowIndex inputs =
       $ mux (itcOutputValid inputs .&&. itcDownStreamReady inputs) (pure False)
         latchedValid
 
+    -- Tracing
     latchedValidTraced = traceLatchEdges layerIdx headIdx "IVL"
                            latchedValid (register False latchedValid) rowIndex
+
+-- | Trace latch state changes (rise/fall edges)
+traceLatchEdges :: Index NumLayers -> Index NumQueryHeads -> P.String
+  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) 
+  -> Signal dom Bool
+traceLatchEdges layerIdx headIdx name current prev ri = traced
+  where
+    traced = go <$> current <*> prev <*> ri
+    go curr p ridx
+      | curr && not p = trace (prefix P.++ name P.++ "_RISE ri=" P.++ show ridx) curr
+      | not curr && p = trace (prefix P.++ name P.++ "_FALL ri=" P.++ show ridx) curr
+      | otherwise     = curr
+    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
