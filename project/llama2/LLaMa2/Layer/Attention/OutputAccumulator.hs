@@ -23,11 +23,12 @@ traceAccumUpdate layerIdx headIdx done ri value current = traced
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputAccumulator
 -- Accumulates row results into output vector
+-- NO FEEDBACK LOOPS - safe to extract
 --------------------------------------------------------------------------------
 data OutputAccumIn dom = OutputAccumIn
-  { oaRowDone   :: Signal dom Bool
-  , oaRowIndex  :: Signal dom (Index HeadDimension)
-  , oaRowResult :: Signal dom FixedPoint
+  { oaRowDone     :: Signal dom Bool
+  , oaRowIndex    :: Signal dom (Index HeadDimension)
+  , oaRowResult   :: Signal dom FixedPoint
   , oaRowResultHC :: Signal dom FixedPoint
   } deriving (Generic)
 

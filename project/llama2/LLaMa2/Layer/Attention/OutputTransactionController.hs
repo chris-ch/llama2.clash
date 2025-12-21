@@ -22,12 +22,12 @@ traceOutputLatchEdges layerIdx headIdx current prev ri dsr = traced
     prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 --------------------------------------------------------------------------------
--- COMPONENT 6: OutputTransactionController
+-- COMPONENT: OutputTransactionController
 -- Manages output valid latch and downstream handshaking
 --------------------------------------------------------------------------------
 data OutputTransactionIn dom = OutputTransactionIn
-  { otcAllDone        :: Signal dom Bool  -- All rows computed
-  , otcConsumeSignal  :: Signal dom Bool  -- Coordinated consume signal
+  { otcAllDone       :: Signal dom Bool  -- All rows computed
+  , otcConsumeSignal :: Signal dom Bool  -- Coordinated consume signal
   } deriving (Generic)
 
 data OutputTransactionOut dom = OutputTransactionOut

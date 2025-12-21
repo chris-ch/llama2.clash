@@ -17,6 +17,8 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified Prelude as P
 import Clash.Debug (trace)
+import qualified LLaMa2.Layer.Attention.OutputTransactionController as OutputTransactionController
+import qualified LLaMa2.Layer.Attention.OutputAccumulator as OutputAccumulator
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -125,19 +127,6 @@ traceLatchEdges layerIdx headIdx name current prev ri = traced
       | otherwise     = curr
     prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
--- | Trace output valid latch with downstream ready status
-traceOutputLatchEdges :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom Bool
-  -> Signal dom Bool
-traceOutputLatchEdges layerIdx headIdx current prev ri dsr = traced
-  where
-    traced = go <$> current <*> prev <*> ri <*> dsr
-    go curr p ridx downReady
-      | curr && not p = trace (prefix P.++ "OVL_RISE ri=" P.++ show ridx) curr
-      | not curr && p = trace (prefix P.++ "OVL_FALL ri=" P.++ show ridx P.++ " dsr=" P.++ show downReady) curr
-      | otherwise     = curr
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
 -- | Trace row index changes
 traceRowIndexChange :: Index NumLayers -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension) -> Signal dom (Index HeadDimension)
@@ -162,18 +151,6 @@ traceRowDone layerIdx headIdx rowDone ri result = traced
     go rd ridx res
       | rd        = trace (prefix P.++ "row=" P.++ show ridx P.++ " result=" P.++ show res) rd
       | otherwise = rd
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
--- | Trace accumulator updates
-traceAccumUpdate :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom FixedPoint
-  -> Signal dom a -> Signal dom a
-traceAccumUpdate layerIdx headIdx done ri value current = traced
-  where
-    traced = go <$> done <*> ri <*> value <*> current
-    go d ridx val curr
-      | d         = trace (prefix P.++ "QOUT_ACCUM ri=" P.++ show ridx P.++ " val=" P.++ show val) curr
-      | otherwise = curr
     prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 -- | Trace INPUT_VALID signal
@@ -317,7 +294,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
   QueryHeadCoreOut
     { qhcAxiMaster   = axiMaster
     , qhcResult      = qOutFinal
-    , qhcOutputValid = outputValidTraced
+    , qhcOutputValid = OutputTransactionController.otcOutputValid outputTxn
     , qhcReady       = readyForInput
     , qhcDebug       = debugInfo
     }
@@ -330,12 +307,12 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     rowIndex = register 0 nextRowIndex
 
     nextRowIndex = mux (rowDoneTraced .&&. (rowIndex ./=. pure maxBound)) (rowIndex + 1)
-                 $ mux (outputValidLatch .&&. consumeSignal) (pure 0)
+                 $ mux (OutputTransactionController.otcOutputValid outputTxn .&&. consumeSignal) (pure 0)
                    rowIndex
 
     rowIndexTraced = traceRowIndexChange layerIdx headIdx 
                        rowIndex (register 0 rowIndex)
-                       (rmoRowDone mult) outputValidLatchTraced downStreamReady
+                       (rmoRowDone mult) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
 
     ----------------------------------------------------------------------------
     -- Input Valid Latch
@@ -347,7 +324,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
 
     nextInputValidLatched =
       mux (inputValid .&&. (not <$> inputValidLatched)) (pure True)
-      $ mux (outputValidLatch .&&. downStreamReady) (pure False)
+      $ mux (OutputTransactionController.otcOutputValid outputTxn .&&. downStreamReady) (pure False)
         inputValidLatched
 
     inputValidLatchedTraced = traceLatchEdges layerIdx headIdx "IVL"
@@ -358,20 +335,11 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     -- CLR has priority over SET (critical for correct handshake)
     -- Uses consumeSignal for coordinated multi-head clearing
     ----------------------------------------------------------------------------
-    outputValidLatch :: Signal dom Bool
-    outputValidLatch = register False nextOutputValidLatch
-
-    nextOutputValidLatch =
-      mux (outputValidLatch .&&. consumeSignal) (pure False)   -- CLR first (priority)
-      $ mux (rmoAllDone mult) (pure True)                       -- SET second
-        outputValidLatch                                        -- HOLD
-
-    outputValidLatchTraced = traceOutputLatchEdges layerIdx headIdx
-                               outputValidLatch (register False outputValidLatch)
-                               rowIndex downStreamReady
-
-    -- Exported output valid (traced version)
-    outputValidTraced = outputValidLatchTraced
+    outputTxn = OutputTransactionController.outputTransactionController layerIdx headIdx rowIndex downStreamReady
+                  OutputTransactionController.OutputTransactionIn
+                    { otcAllDone       = rmoAllDone mult
+                    , otcConsumeSignal = consumeSignal
+                    }
 
     ----------------------------------------------------------------------------
     -- Weight Loader
@@ -428,28 +396,21 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     -- Result Accumulator
     -- Stores row results into output vector
     ----------------------------------------------------------------------------
-    qOut :: Signal dom (Vec HeadDimension FixedPoint)
-    qOut = register (repeat 0) nextOutput
+    outputAccum = OutputAccumulator.outputAccumulator layerIdx headIdx
+                    OutputAccumulator.OutputAccumIn
+                      { oaRowDone     = rmoRowDone mult
+                      , oaRowIndex    = rowIndex
+                      , oaRowResult   = dramRowResultChecked
+                      , oaRowResultHC = hcRowResult
+                      }
 
-    qOutTraced = traceAccumUpdate layerIdx headIdx 
-                   (rmoRowDone mult) rowIndex dramRowResultChecked qOut
+    qOut   = OutputAccumulator.oaOutput outputAccum
+    qOutHC = OutputAccumulator.oaOutputHC outputAccum
+    ----------------------------------------------------------------------------
 
-    nextOutput = mux (rmoRowDone mult)
-                     (replace <$> rowIndex <*> dramRowResultChecked <*> qOutTraced)
-                     qOut
-
-    -- HC reference accumulator
-    qOutHC :: Signal dom (Vec HeadDimension FixedPoint)
-    qOutHC = register (repeat 0) nextOutputHC
-
-    nextOutputHC = mux (rmoRowDone mult)
-                       (replace <$> rowIndex <*> hcRowResult <*> qOutHC)
-                       qOutHC
-
-    qOutChecked = qOutputChecker outputValidTraced qOut qOutHC
-
+    qOutChecked = qOutputChecker (OutputTransactionController.otcOutputValid outputTxn) qOut qOutHC
     qOutFinal = traceMultiplierState layerIdx headIdx
-                  (rmoState mult) outputValidTraced rowIndex (rmoRowDone mult) downStreamReady
+                  (rmoState mult) (OutputTransactionController.otcOutputValid outputTxn) rowIndex (rmoRowDone mult) downStreamReady
                   qOutChecked
 
     ----------------------------------------------------------------------------
