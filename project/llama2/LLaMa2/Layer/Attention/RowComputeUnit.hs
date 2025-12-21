@@ -1,48 +1,76 @@
 module LLaMa2.Layer.Attention.RowComputeUnit
-  ( RowComputeIn(..), RowComputeOut(..)
+  ( RowComputeIn(..)
+  , RowComputeOut(..)
   , rowComputeUnit
+  , RowMultiplierDebug(..)
   ) where
 
 import Clash.Prelude
-import qualified LLaMa2.Layer.Attention.RowMultiplier as RM
-import LLaMa2.Numeric.Types
-import LLaMa2.Numeric.Quantization
 import LLaMa2.Types.ModelConfig
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Numeric.Operations as OPS
 import qualified Prelude as P
 import Clash.Debug (trace)
 
--- | Trace row computation results
-traceRowDone :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom FixedPoint
+--------------------------------------------------------------------------------
+-- RowMultiplier types (kept here since RowComputeUnit wraps it)
+--------------------------------------------------------------------------------
+data RowMultiplierDebug dom = RowMultiplierDebug
+  { rmdAccValue  :: Signal dom FixedPoint
+  , rmdRowReset  :: Signal dom Bool
+  , rmdRowEnable :: Signal dom Bool
+  } deriving (Generic)
+
+data RowMultiplierOut dom = RowMultiplierOut
+  { rmoResult     :: Signal dom FixedPoint
+  , rmoRowDone    :: Signal dom Bool
+  , rmoState      :: Signal dom OPS.MultiplierState
+  , rmoFetchReq   :: Signal dom Bool
+  , rmoAllDone    :: Signal dom Bool
+  , rmoIdleReady  :: Signal dom Bool
+  , rmoDebug      :: RowMultiplierDebug dom
+  } deriving (Generic)
+
+rowMultiplier :: forall dom.
+  HiddenClockResetEnable dom
+  => Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom (RowI8E ModelDimension)
   -> Signal dom Bool
-traceRowDone layerIdx headIdx rowDone ri result = traced
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Index HeadDimension)
+  -> RowMultiplierOut dom
+rowMultiplier column row colValid rowValid downReady rowIndex =
+  RowMultiplierOut
+    { rmoResult     = rowResult
+    , rmoRowDone    = rowDone
+    , rmoState      = state
+    , rmoFetchReq   = fetchReq
+    , rmoAllDone    = allDone
+    , rmoIdleReady  = idleReady
+    , rmoDebug      = RowMultiplierDebug accValue rowReset rowEnable
+    }
   where
-    traced = go <$> rowDone <*> ri <*> result
-    go rd ridx res
-      | rd        = trace (prefix P.++ "row=" P.++ show ridx P.++ " result=" P.++ show res) rd
-      | otherwise = rd
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    -- Detect rowValid rising edge for debug
+    rowValidRise = rowValid .&&. (not <$> register False rowValid)
+
+    colValidTraced = go <$> rowValidRise <*> colValid
+      where
+        go True cv = trace ("MULT: rowValid ROSE, colValid=" P.++ show cv) cv
+        go False cv = cv
+
+    -- Core computation
+    (rowResult, rowDone, accValue) =
+      OPS.parallel64RowProcessor rowReset rowEnable row column
+
+    -- FSM control
+    (state, fetchReq, rowReset, rowEnable, allDone, idleReady) =
+      OPS.matrixMultiplierStateMachine colValidTraced rowValid downReady rowDone rowIndex
 
 --------------------------------------------------------------------------------
--- BLOCK: RowMultiplier
--- Bundles FSM controller with parallel64RowProcessor
---
--- Inputs:
---   column      - input vector to multiply
---   row         - current row weights
---   colValid    - start signal (latched externally)
---   rowValid    - weights ready signal
---   downReady   - downstream ready
---   rowIndex    - current row (0..HeadDimension-1)
---
--- Outputs:
---   result, rowDone, state, fetchReq, allDone, idleReady, debug signals
---------------------------------------------------------------------------------
-
---------------------------------------------------------------------------------
--- COMPONENT: RowComputeUnit
--- Executes row-vector multiplication using rowMultiplier
+-- RowComputeUnit
+-- Executes row-vector multiplication with DRAM and HC validation paths
 --------------------------------------------------------------------------------
 data RowComputeIn dom = RowComputeIn
   { rcInputValid      :: Signal dom Bool
@@ -61,40 +89,34 @@ data RowComputeOut dom = RowComputeOut
   , rcIdleReady    :: Signal dom Bool
   , rcFetchReq     :: Signal dom Bool
   , rcMultState    :: Signal dom OPS.MultiplierState
-  , rcDebug        :: RM.RowMultiplierDebug dom
+  , rcDebug        :: RowMultiplierDebug dom
   } deriving (Generic)
 
 rowComputeUnit :: forall dom.
   HiddenClockResetEnable dom
-  => Index NumLayers
-  -> Index NumQueryHeads
-  -> RowComputeIn dom
+  => RowComputeIn dom
   -> RowComputeOut dom
-rowComputeUnit layerIdx headIdx inputs =
+rowComputeUnit inputs =
   RowComputeOut
-    { rcResult       = rowDoneTraced `seq` RM.rmoResult mult
+    { rcResult       = rmoResult mult
     , rcResultHC     = hcRowResult
-    , rcRowDone      = RM.rmoRowDone mult
-    , rcAllDone      = RM.rmoAllDone mult
-    , rcIdleReady    = RM.rmoIdleReady mult
-    , rcFetchReq     = RM.rmoFetchReq mult
-    , rcMultState    = RM.rmoState mult
-    , rcDebug        = RM.rmoDebug mult
+    , rcRowDone      = rmoRowDone mult
+    , rcAllDone      = rmoAllDone mult
+    , rcIdleReady    = rmoIdleReady mult
+    , rcFetchReq     = rmoFetchReq mult
+    , rcMultState    = rmoState mult
+    , rcDebug        = rmoDebug mult
     }
   where
     -- Main multiplier for DRAM weights
-    mult = RM.rowMultiplier (rcColumn inputs) (rcWeight inputs) 
+    mult = rowMultiplier (rcColumn inputs) (rcWeight inputs) 
                          (rcInputValid inputs) (rcWeightValid inputs) 
                          (rcDownStreamReady inputs) (rcRowIndex inputs)
 
     -- HC reference path (for validation)
     (hcRowResult, _, _) =
       OPS.parallel64RowProcessor
-        (RM.rmdRowReset (RM.rmoDebug mult))
-        (RM.rmdRowEnable (RM.rmoDebug mult))
-        (rcWeight inputs)  -- Use HC weights when available
+        (rmdRowReset (rmoDebug mult))
+        (rmdRowEnable (rmoDebug mult))
+        (rcWeight inputs)  -- Use same weights (HC for now)
         (rcColumn inputs)
-
-    -- Row done tracing
-    rowDoneTraced = traceRowDone layerIdx headIdx 
-                      (RM.rmoRowDone mult) (rcRowIndex inputs) (RM.rmoResult mult)

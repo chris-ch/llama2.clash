@@ -20,6 +20,7 @@ import Clash.Debug (trace)
 import qualified LLaMa2.Layer.Attention.OutputTransactionController as OutputTransactionController
 import qualified LLaMa2.Layer.Attention.OutputAccumulator as OutputAccumulator
 import qualified LLaMa2.Layer.Attention.InputTransactionController as InputTransactionController
+import qualified LLaMa2.Layer.Attention.RowComputeUnit as RowComputeUnit
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -42,73 +43,6 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightReady     :: Signal dom Bool
   , qhWeightValid     :: Signal dom Bool
   } deriving (Generic)
-
---------------------------------------------------------------------------------
--- BLOCK: RowMultiplier
--- Bundles FSM controller with parallel64RowProcessor
---
--- Inputs:
---   column      - input vector to multiply
---   row         - current row weights
---   colValid    - start signal (latched externally)
---   rowValid    - weights ready signal
---   downReady   - downstream ready
---   rowIndex    - current row (0..HeadDimension-1)
---
--- Outputs:
---   result, rowDone, state, fetchReq, allDone, idleReady, debug signals
---------------------------------------------------------------------------------
-data RowMultiplierDebug dom = RowMultiplierDebug
-  { rmdAccValue  :: Signal dom FixedPoint
-  , rmdRowReset  :: Signal dom Bool
-  , rmdRowEnable :: Signal dom Bool
-  } deriving (Generic)
-
-data RowMultiplierOut dom = RowMultiplierOut
-  { rmoResult     :: Signal dom FixedPoint
-  , rmoRowDone    :: Signal dom Bool
-  , rmoState      :: Signal dom OPS.MultiplierState
-  , rmoFetchReq   :: Signal dom Bool
-  , rmoAllDone    :: Signal dom Bool
-  , rmoIdleReady  :: Signal dom Bool
-  , rmoDebug      :: RowMultiplierDebug dom
-  } deriving (Generic)
-
-rowMultiplier :: forall dom.
-  HiddenClockResetEnable dom
-  => Signal dom (Vec ModelDimension FixedPoint)
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> RowMultiplierOut dom
-rowMultiplier column row colValid rowValid downReady rowIndex =
-  RowMultiplierOut
-    { rmoResult     = rowResult
-    , rmoRowDone    = rowDone
-    , rmoState      = state
-    , rmoFetchReq   = fetchReq
-    , rmoAllDone    = allDone
-    , rmoIdleReady  = idleReady
-    , rmoDebug      = RowMultiplierDebug accValue rowReset rowEnable
-    }
-  where
-    -- Detect rowValid rising edge for debug
-    rowValidRise = rowValid .&&. (not <$> register False rowValid)
-
-    colValidTraced = go <$> rowValidRise <*> colValid
-      where
-        go True cv = trace ("MULT: rowValid ROSE, colValid=" P.++ show cv) cv
-        go False cv = cv
-
-    -- Core computation
-    (rowResult, rowDone, accValue) =
-      OPS.parallel64RowProcessor rowReset rowEnable row column
-
-    -- FSM control
-    (state, fetchReq, rowReset, rowEnable, allDone, idleReady) =
-      OPS.matrixMultiplierStateMachine colValidTraced rowValid downReady rowDone rowIndex
 
 --------------------------------------------------------------------------------
 -- BLOCK: Tracing Utilities
@@ -300,7 +234,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
 
     rowIndexTraced = traceRowIndexChange layerIdx headIdx 
                        rowIndex (register 0 rowIndex)
-                       (rmoRowDone mult) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
+                       (RowComputeUnit.rcRowDone compute) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
 
     inputTxn = InputTransactionController.inputTransactionController layerIdx headIdx rowIndex
                  InputTransactionController.InputTransactionIn
@@ -318,7 +252,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     outputTxn = OutputTransactionController.outputTransactionController layerIdx headIdx rowIndex downStreamReady
                   OutputTransactionController.OutputTransactionIn
-                    { otcAllDone       = rmoAllDone mult
+                    { otcAllDone       = RowComputeUnit.rcAllDone compute
                     , otcConsumeSignal = consumeSignal
                     }
 
@@ -328,7 +262,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     (axiMaster, weightLoaderOut, weightValid, weightReady) =
       LOADER.weightLoader dramSlaveIn layerIdx headIdx
                           rowIndex rowReqValidTraced consumeSignal
-                          (rmoRowDone mult)
+                          (RowComputeUnit.rcRowDone compute)
                           params
 
     currentRowDramRaw = LOADER.dramRowOut weightLoaderOut
@@ -343,34 +277,32 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
     ----------------------------------------------------------------------------
-    mult = rowMultiplier xHat currentRowHC inputValidLatched weightValid downStreamReady rowIndexTraced
+    compute = RowComputeUnit.rowComputeUnit
+                RowComputeUnit.RowComputeIn
+                  { rcInputValid      = inputValidLatched  -- FIX: use directly (already traced)
+                  , rcWeightValid     = weightValid
+                  , rcDownStreamReady = downStreamReady
+                  , rcRowIndex        = rowIndexTraced
+                  , rcWeight          = currentRowHC  -- Use HC for now
+                  , rcColumn          = xHat
+                  }
 
-    rowReqValidGated = rmoFetchReq mult .&&. weightReady
+    rowReqValidGated = RowComputeUnit.rcFetchReq compute .&&. weightReady
     rowReqValidTraced = traceInputValidSignal layerIdx headIdx 
                           rowReqValidGated inputValid weightValid rowIndex
 
-    readyForInput = rmoIdleReady mult .&&. weightReady
-
-    ----------------------------------------------------------------------------
-    -- HC Reference Path (for validation)
-    ----------------------------------------------------------------------------
-    (hcRowResult, _, _) =
-      OPS.parallel64RowProcessor
-        (rmdRowReset (rmoDebug mult))
-        (rmdRowEnable (rmoDebug mult))
-        currentRowHC
-        xHat
+    readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
     ----------------------------------------------------------------------------
     -- Row Done Tracing
     ----------------------------------------------------------------------------
-    rowDoneTraced = traceRowDone layerIdx headIdx (rmoRowDone mult) rowIndex (rmoResult mult)
+    rowDoneTraced = traceRowDone layerIdx headIdx (RowComputeUnit.rcRowDone compute) rowIndex (RowComputeUnit.rcResult compute)
 
     ----------------------------------------------------------------------------
     -- Row Result Checker
     ----------------------------------------------------------------------------
     dramRowResultChecked = rowResultChecker
-      (rmoRowDone mult) rowIndex (rmoResult mult) hcRowResult
+      (RowComputeUnit.rcRowDone compute) rowIndex (RowComputeUnit.rcResult compute) (RowComputeUnit.rcResultHC compute)
       currentRowHC currentRowHC  -- TODO: use currentRowDram when enabled
 
     ----------------------------------------------------------------------------
@@ -379,10 +311,10 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     outputAccum = OutputAccumulator.outputAccumulator layerIdx headIdx
                     OutputAccumulator.OutputAccumIn
-                      { oaRowDone     = rmoRowDone mult
+                      { oaRowDone     = RowComputeUnit.rcRowDone compute
                       , oaRowIndex    = rowIndex
                       , oaRowResult   = dramRowResultChecked
-                      , oaRowResultHC = hcRowResult
+                      , oaRowResultHC = RowComputeUnit.rcResultHC compute
                       }
 
     qOut   = OutputAccumulator.oaOutput outputAccum
@@ -391,7 +323,7 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
 
     qOutChecked = qOutputChecker (OutputTransactionController.otcOutputValid outputTxn) qOut qOutHC
     qOutFinal = traceMultiplierState layerIdx headIdx
-                  (rmoState mult) (OutputTransactionController.otcOutputValid outputTxn) rowIndex (rmoRowDone mult) downStreamReady
+                  (RowComputeUnit.rcMultState compute) (OutputTransactionController.otcOutputValid outputTxn) rowIndex (RowComputeUnit.rcRowDone compute) downStreamReady
                   qOutChecked
 
     ----------------------------------------------------------------------------
@@ -399,19 +331,19 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     debugInfo = QHeadDebugInfo
       { qhRowIndex        = rowIndex
-      , qhState           = rmoState mult
+      , qhState           = RowComputeUnit.rcMultState compute
       , qhFirstMant       = register 0 (head . rowMantissas <$> currentRowHC)
-      , qhRowResult       = register 0 (rmoResult mult)
-      , qhRowDone         = rmoRowDone mult
+      , qhRowResult       = register 0 (RowComputeUnit.rcResult compute)
+      , qhRowDone         = RowComputeUnit.rcRowDone compute
       , qhFetchValid      = weightValid
       , qhFetchedWord     = pure 0
-      , qhRowReset        = rmdRowReset (rmoDebug mult)
-      , qhRowEnable       = rmdRowEnable (rmoDebug mult)
-      , qhAccumValue      = rmdAccValue (rmoDebug mult)
+      , qhRowReset        = RowComputeUnit.rmdRowReset (RowComputeUnit.rcDebug compute)
+      , qhRowEnable       = RowComputeUnit.rmdRowEnable (RowComputeUnit.rcDebug compute)
+      , qhAccumValue      = RowComputeUnit.rmdAccValue (RowComputeUnit.rcDebug compute)
       , qhQOut            = qOut
       , qhCurrentRowExp   = register 0 (rowExponent <$> currentRowDramTraced)
       , qhCurrentRowMant0 = register 0 (head . rowMantissas <$> currentRowDramTraced)
-      , qhRowReqValid     = rmoFetchReq mult
+      , qhRowReqValid     = RowComputeUnit.rcFetchReq compute
       , qhWeightReady     = weightReady
       , qhWeightValid     = weightValid
       }
