@@ -107,7 +107,14 @@ library
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.QueryHeadProjector
       LLaMa2.Layer.Attention.KeyValueHeadProjector
+      LLaMa2.Layer.Attention.InputTransactionController
+      LLaMa2.Layer.Attention.RowScheduler
+      LLaMa2.Layer.Attention.WeightFetchUnit
+      LLaMa2.Layer.Attention.RowComputeUnit
+      LLaMa2.Layer.Attention.OutputAccumulator
+      LLaMa2.Layer.Attention.OutputTransactionController
       LLaMa2.Layer.Attention.RotaryEncoding
+      LLaMa2.Layer.Attention.RowMultiplier
       LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
