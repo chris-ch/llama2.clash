@@ -257,11 +257,11 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     ----------------------------------------------------------------------------
     compute = RowComputeUnit.rowComputeUnit
                 RowComputeUnit.RowComputeIn
-                  { rcInputValid      = inputValidLatched  -- FIX: use directly (already traced)
+                  { rcInputValid      = inputValidLatched
                   , rcWeightValid     = weightValid
                   , rcDownStreamReady = downStreamReady
                   , rcRowIndex        = rowIndexTraced
-                  , rcWeight          = currentRowHC  -- Use HC for now
+                  , rcWeight          = currentRowHC  -- Use HC for working constant weights
                   , rcColumn          = xHat
                   }
 

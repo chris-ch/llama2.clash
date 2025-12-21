@@ -54,31 +54,30 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
     , wfIdleReady    = weightReady  -- Expose as "idleReady" for ready calculation
     }
   where
-    ----------------------------------------------------------------------------
-    -- CRITICAL: Gating happens INSIDE this component
-    -- This avoids circular dependency through component boundary
-    --
-    -- The loop would be:
-    --   compute → rowReqValid (ungated) → WeightFetchUnit
-    --   WeightFetchUnit → (internal: gate with weightReady) → WeightLoader
-    --   WeightLoader → weightReady (internal) → (back to internal gating)
-    --
-    -- Since weightReady never crosses the component boundary, there's no
-    -- circular dependency from Clash's perspective at the top level.
-    ----------------------------------------------------------------------------
     (axiMaster, weightLoaderOut, weightValid, weightReady) =
       LOADER.weightLoader dramSlaveIn layerIdx headIdx
-                          (wfRowIndex inputs) 
-                          rowReqValidTraced        -- Use GATED request
-                          (wfConsumeSignal inputs) 
+                          (wfRowIndex inputs)
+                          rowReqPulseTraced             -- Use EDGE-DETECTED request
+                          (wfConsumeSignal inputs)
                           (wfRowDone inputs)
                           params
 
     -- Gate the request INTERNALLY (this is the key!)
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
-    
-    rowReqValidTraced = traceInputValidSignal layerIdx headIdx 
-                          rowReqValidGated (wfInputValid inputs) weightValid 
+
+    prevRowReqValid = register False rowReqValidGated
+    rowReqRise = rowReqValidGated .&&. (not <$> prevRowReqValid)
+
+    -- Also detect row index changes while request is high (for multi-row sequences)
+    prevRowIndex = register 0 (wfRowIndex inputs)
+    rowIndexChanged = wfRowIndex inputs ./=. prevRowIndex
+
+    -- Pulse on: rising edge of request OR row index change while request high
+    rowReqPulse = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
+
+    -- Trace only on the actual pulse (the real event)
+    rowReqPulseTraced = traceRequestPulse layerIdx headIdx
+                          rowReqPulse (wfInputValid inputs) weightValid
                           (wfRowIndex inputs)
     ----------------------------------------------------------------------------
 
@@ -89,21 +88,27 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
     currentRowDram = LOADER.assertRowStable weightValid currentRowDramRaw
     currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
-    currentRowDramTraced = weightMismatchTracer layerIdx weightValid 
+    currentRowDramTraced = weightMismatchTracer layerIdx weightValid
                              currentRowDram currentRowHC
 
--- Tracing utilities (copied from main module)
-traceInputValidSignal :: Index NumLayers -> Index NumQueryHeads
+--------------------------------------------------------------------------------
+-- Tracing utilities - EDGE TRIGGERED
+--------------------------------------------------------------------------------
+
+-- | Trace only on actual request pulses (not every cycle)
+traceRequestPulse :: Index NumLayers -> Index NumQueryHeads
   -> Signal dom Bool -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension)
   -> Signal dom Bool
-traceInputValidSignal layerIdx headIdx sig inputValid weightValid ri = traced
+traceRequestPulse layerIdx headIdx pulse inputValid weightValid ri = traced
   where
-    traced = go <$> sig <*> inputValid <*> weightValid <*> ri
-    go req iv wv ridx
-      | iv        = trace (prefix P.++ "INPUT_VALID wv=" P.++ show wv P.++ " ri=" P.++ show ridx) req
-      | otherwise = req
+    traced = go <$> pulse <*> inputValid <*> weightValid <*> ri
+    go p iv wv ridx
+      | p         = trace (prefix P.++ "REQ_PULSE iv=" P.++ show iv
+                          P.++ " wv=" P.++ show wv P.++ " ri=" P.++ show ridx) p
+      | otherwise = p
     prefix = "[WeightFetchUnit] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
+-- | Trace weight mismatches
 weightMismatchTracer :: Index NumLayers
   -> Signal dom Bool
   -> Signal dom (RowI8E ModelDimension)
