@@ -30,9 +30,9 @@ data OutputTransactionIn dom = OutputTransactionIn
   , otcConsumeSignal :: Signal dom Bool  -- Coordinated consume signal
   } deriving (Generic)
 
-data OutputTransactionOut dom = OutputTransactionOut
-  { otcOutputValid :: Signal dom Bool  -- Output valid latch
-  } deriving (Generic)
+newtype OutputTransactionOut dom
+  = OutputTransactionOut {otcOutputValid :: Signal dom Bool}
+  deriving (Generic)
 
 outputTransactionController :: forall dom.
   HiddenClockResetEnable dom

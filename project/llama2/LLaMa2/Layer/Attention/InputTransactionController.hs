@@ -22,9 +22,9 @@ data InputTransactionIn dom = InputTransactionIn
   , itcDownStreamReady :: Signal dom Bool  -- Downstream consumer ready
   } deriving (Generic)
 
-data InputTransactionOut dom = InputTransactionOut
-  { itcLatchedValid :: Signal dom Bool  -- Latched input valid (holds until cleared)
-  } deriving (Generic)
+newtype InputTransactionOut dom
+  = InputTransactionOut {itcLatchedValid :: Signal dom Bool} -- Latched input valid (holds until cleared)
+  deriving (Generic)
 
 inputTransactionController :: forall dom.
   HiddenClockResetEnable dom

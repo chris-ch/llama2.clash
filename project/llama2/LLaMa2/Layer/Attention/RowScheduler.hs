@@ -18,9 +18,9 @@ data RowSchedulerIn dom = RowSchedulerIn
   , rsCurrentIndex  :: Signal dom (Index HeadDimension)    -- Current row index (REGISTERED at top level)
   } deriving (Generic)
 
-data RowSchedulerOut dom = RowSchedulerOut
-  { rsNextRowIndex :: Signal dom (Index HeadDimension)  -- Next row index (COMBINATORIAL)
-  } deriving (Generic)
+newtype RowSchedulerOut dom
+  = RowSchedulerOut {rsNextRowIndex :: Signal dom (Index HeadDimension)} -- Next row index (COMBINATORIAL)
+  deriving (Generic)
 
 rowScheduler :: forall dom.
   RowSchedulerIn dom
