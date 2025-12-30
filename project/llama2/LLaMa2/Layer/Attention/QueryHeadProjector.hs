@@ -6,7 +6,6 @@ module LLaMa2.Layer.Attention.QueryHeadProjector
 import Clash.Prelude
 
 import qualified Prelude as P
-import Clash.Debug (trace)
 
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
@@ -23,6 +22,8 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionContr
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
+
+import TraceUtils (traceChange, traceEdge, traceWhen)
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -45,52 +46,6 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightReady     :: Signal dom Bool
   , qhWeightValid     :: Signal dom Bool
   } deriving (Generic)
-
---------------------------------------------------------------------------------
--- BLOCK: Tracing Utilities
--- Debug trace functions for signal monitoring
---------------------------------------------------------------------------------
-
--- | Trace row index changes
-traceRowIndexChange :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension) -> Signal dom (Index HeadDimension)
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-traceRowIndexChange layerIdx headIdx current prev done ovl dsr = traced
-  where
-    traced = go <$> current <*> prev <*> done <*> ovl <*> dsr
-    go curr p d o ds
-      | curr /= p = trace (prefix P.++ "RI_CHANGE " P.++ show p P.++ "->" P.++ show curr 
-                          P.++ " done=" P.++ show d P.++ " ovl=" P.++ show o P.++ " dsr=" P.++ show ds) curr
-      | otherwise = curr
-    prefix = "[QueryHeadProjector] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
--- | Trace row computation results
-traceRowDone :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom FixedPoint
-  -> Signal dom Bool
-traceRowDone layerIdx headIdx rowDone ri result = traced
-  where
-    traced = go <$> rowDone <*> ri <*> result
-    go rd ridx res
-      | rd        = trace (prefix P.++ "row=" P.++ show ridx P.++ " result=" P.++ show res) rd
-      | otherwise = rd
-    prefix = "[QueryHeadProjector] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
-
--- | Trace multiplier state on rowDone
-traceMultiplierState :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom OPS.MultiplierState -> Signal dom Bool -> Signal dom (Index HeadDimension)
-  -> Signal dom Bool -> Signal dom Bool
-  -> Signal dom a -> Signal dom a
-traceMultiplierState layerIdx headIdx state ov ri rd dsr out = traced
-  where
-    traced = go <$> state <*> ov <*> ri <*> rd <*> dsr <*> out
-    go st outputValid ridx rowDone downReady val
-      | rowDone   = trace (prefix P.++ "st=" P.++ show st P.++ " ov=" P.++ show outputValid
-                          P.++ " ri=" P.++ show ridx P.++ " rd=" P.++ show rowDone
-                          P.++ " dsr=" P.++ show downReady) val
-      | otherwise = val
-    prefix = "L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
 
 --------------------------------------------------------------------------------
 -- BLOCK: RowResultChecker
@@ -159,11 +114,7 @@ qOutputChecker outputValid dramOut hcOut = result
                         P.++ " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
 
 --------------------------------------------------------------------------------
--- BLOCK: QueryHeadCore
--- Complete query head matrix multiplier with input/output latching
---
--- Coordinates: InputValidLatch, OutputValidLatch, RowIndex, 
---              WeightLoader, RowMultiplier, ResultAccumulator
+-- QueryHeadCore
 --------------------------------------------------------------------------------
 data QueryHeadCoreOut dom = QueryHeadCoreOut
   { qhcAxiMaster   :: Master.AxiMasterOut dom
@@ -171,11 +122,12 @@ data QueryHeadCoreOut dom = QueryHeadCoreOut
   , qhcOutputValid :: Signal dom Bool
   , qhcReady       :: Signal dom Bool
   , qhcDebug       :: QHeadDebugInfo dom
-  } deriving (Generic)
+  }
 
 queryHeadCore :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom Bool                              -- inputValid
@@ -184,7 +136,7 @@ queryHeadCore :: forall dom.
   -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
   -> PARAM.DecoderParameters
   -> QueryHeadCoreOut dom
-queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params =
+queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params =
   QueryHeadCoreOut
     { qhcAxiMaster   = WeightFetchUnit.wfAxiMaster weightFetch
     , qhcResult      = qOutFinal
@@ -193,27 +145,25 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     , qhcDebug       = debugInfo
     }
   where
+    -- Trace tag for this instance
+    tag = "[QHP L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+
     ----------------------------------------------------------------------------
-    -- Row Index Counter
-    -- Increments on rowDone (except at max), resets on consume
+    -- Row Index Register
     ----------------------------------------------------------------------------
     rowIndex :: Signal dom (Index HeadDimension)
-    rowIndex = register 0 nextRowIndex
-
-    rowIndexTraced = traceRowIndexChange layerIdx headIdx 
-                       rowIndex (register 0 rowIndex)
-                       (RowComputeUnit.rcRowDone compute) (OutputTransactionController.otcOutputValid outputTxn) downStreamReady
+    rowIndex = traceChange (tag P.++ "rowIndex") $ register 0 nextRowIndex
 
     -- RowScheduler computes next index (combinatorial)
     rowSched = RowScheduler.rowScheduler
                  RowScheduler.RowSchedulerIn
-                   { rsRowDone       = rowDoneTraced
+                   { rsRowDone       = rowDone
                    , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
                    , rsConsumeSignal = consumeSignal
-                   , rsCurrentIndex  = rowIndexTraced  -- Feed current registered value
+                   , rsCurrentIndex  = rowIndex
                    }
     
-    nextRowIndex = RowScheduler.rsNextRowIndex rowSched  -- Get next combinatorial value
+    nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
     inputTxn = InputTransactionController.inputTransactionController layerIdx headIdx rowIndex
                  InputTransactionController.InputTransactionIn
@@ -241,16 +191,16 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
     weightFetch = WeightFetchUnit.weightFetchUnit dramSlaveIn layerIdx headIdx params
                     WeightFetchUnit.WeightFetchIn
                       { wfRowIndex      = rowIndex
-                      , wfRowReqValid   = RowComputeUnit.rcFetchReq compute  -- UNGATED request
+                      , wfRowReqValid   = RowComputeUnit.rcFetchReq compute
                       , wfConsumeSignal = consumeSignal
                       , wfRowDone       = RowComputeUnit.rcRowDone compute
-                      , wfInputValid    = inputValid              -- For tracing
+                      , wfInputValid    = inputValid
                       }
 
     currentRowDram = WeightFetchUnit.wfWeightDram weightFetch
     currentRowHC   = WeightFetchUnit.wfWeightHC weightFetch
     weightValid    = WeightFetchUnit.wfWeightValid weightFetch
-    weightReady    = WeightFetchUnit.wfIdleReady weightFetch  -- For ready calculation
+    weightReady    = WeightFetchUnit.wfIdleReady weightFetch
 
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
@@ -260,28 +210,27 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
                   { rcInputValid      = inputValidLatched
                   , rcWeightValid     = weightValid
                   , rcDownStreamReady = downStreamReady
-                  , rcRowIndex        = rowIndexTraced
-                  , rcWeight          = currentRowHC  -- Use HC for working constant weights
+                  , rcRowIndex        = rowIndex
+                  , rcWeight          = currentRowHC
                   , rcColumn          = xHat
                   }
 
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
     ----------------------------------------------------------------------------
-    -- Row Done Tracing
+    -- Row Done - simple edge trace
     ----------------------------------------------------------------------------
-    rowDoneTraced = traceRowDone layerIdx headIdx (RowComputeUnit.rcRowDone compute) rowIndex (RowComputeUnit.rcResult compute)
+    rowDone = traceEdge (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
     ----------------------------------------------------------------------------
     -- Row Result Checker
     ----------------------------------------------------------------------------
     dramRowResultChecked = rowResultChecker
       (RowComputeUnit.rcRowDone compute) rowIndex (RowComputeUnit.rcResult compute) (RowComputeUnit.rcResultHC compute)
-      currentRowHC currentRowHC  -- TODO: use currentRowDram when enabled
+      currentRowHC currentRowHC
 
     ----------------------------------------------------------------------------
     -- Result Accumulator
-    -- Stores row results into output vector
     ----------------------------------------------------------------------------
     outputAccum = OutputAccumulator.outputAccumulator layerIdx headIdx
                     OutputAccumulator.OutputAccumIn
@@ -293,12 +242,8 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
 
     qOut   = OutputAccumulator.oaOutput outputAccum
     qOutHC = OutputAccumulator.oaOutputHC outputAccum
-    ----------------------------------------------------------------------------
 
-    qOutChecked = qOutputChecker (OutputTransactionController.otcOutputValid outputTxn) qOut qOutHC
-    qOutFinal = traceMultiplierState layerIdx headIdx
-                  (RowComputeUnit.rcMultState compute) (OutputTransactionController.otcOutputValid outputTxn) rowIndex (RowComputeUnit.rcRowDone compute) downStreamReady
-                  qOutChecked
+    qOutFinal = qOutputChecker (OutputTransactionController.otcOutputValid outputTxn) qOut qOutHC
 
     ----------------------------------------------------------------------------
     -- Debug Info
@@ -328,7 +273,8 @@ queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSig
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom Bool                              -- inputValid
@@ -343,7 +289,7 @@ queryHeadProjector :: forall dom.
      , Signal dom Bool
      , QHeadDebugInfo dom
      )
-queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal stepCount xHat params =
+queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal stepCount xHat params =
   ( qhcAxiMaster core
   , qWithRotary
   , qhcOutputValid core
@@ -351,8 +297,7 @@ queryHeadProjector dramSlaveIn layerIdx headIdx inputValid downStreamReady consu
   , qhcDebug core
   )
   where
-    core = queryHeadCore dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params
+    core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params
 
     -- Apply rotary encoding to output
     qWithRotary = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> qhcResult core
-    

@@ -6,20 +6,8 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension)
 import qualified Prelude as P
-import Clash.Debug (trace)
 
--- | Trace output valid latch with downstream ready status
-traceOutputLatchEdges :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom Bool
-  -> Signal dom Bool
-traceOutputLatchEdges layerIdx headIdx current prev ri dsr = traced
-  where
-    traced = go <$> current <*> prev <*> ri <*> dsr
-    go curr p ridx downReady
-      | curr && not p = trace (prefix P.++ "OVL_RISE ri=" P.++ show ridx) curr
-      | not curr && p = trace (prefix P.++ "OVL_FALL ri=" P.++ show ridx P.++ " dsr=" P.++ show downReady) curr
-      | otherwise     = curr
-    prefix = "[OutputTransactionController] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+import TraceUtils (traceEdge)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputTransactionController
@@ -38,13 +26,15 @@ outputTransactionController :: forall dom.
   HiddenClockResetEnable dom
   => Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension)     -- For tracing
-  -> Signal dom Bool                       -- downStreamReady for tracing
+  -> Signal dom (Index HeadDimension)     -- rowIndex (unused, API compat)
+  -> Signal dom Bool                       -- downStreamReady (unused, API compat)
   -> OutputTransactionIn dom
   -> OutputTransactionOut dom
-outputTransactionController layerIdx headIdx rowIndex downStreamReady inputs =
+outputTransactionController layerIdx headIdx _rowIndex _downStreamReady inputs =
   OutputTransactionOut { otcOutputValid = outputValidTraced }
   where
+    tag = "[OTC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+
     -- Output valid latch: CLR has priority over SET (critical for handshake)
     outputValidLatch = register False nextOutputValidLatch
 
@@ -53,6 +43,4 @@ outputTransactionController layerIdx headIdx rowIndex downStreamReady inputs =
       $ mux (otcAllDone inputs) (pure True)                              -- SET second
         outputValidLatch                                                 -- HOLD
 
-    outputValidTraced = traceOutputLatchEdges layerIdx headIdx
-                          outputValidLatch (register False outputValidLatch)
-                          rowIndex downStreamReady
+    outputValidTraced = traceEdge (tag P.++ "outputValid") outputValidLatch

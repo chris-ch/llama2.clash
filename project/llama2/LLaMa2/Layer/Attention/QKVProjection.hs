@@ -164,7 +164,8 @@ import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
 --
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Signal dom Bool
   -> Signal dom Bool
@@ -179,7 +180,7 @@ qkvProjector :: forall dom.
      , Signal dom Bool
      , QHP.QHeadDebugInfo dom
      )
-qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
+qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
   (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
  where
   layerParams = modelLayers params !! layerIdx
@@ -199,7 +200,7 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
   -- and consumeSignal for latch clearing
   qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
   qResults = imap (\headIdx _ ->
-      QHP.queryHeadProjector dramSlaveIn layerIdx headIdx
+      QHP.queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
                         inputValid 
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         downStreamReady    -- consumeSignal for latch clearing
@@ -232,7 +233,8 @@ qkvProjector dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params 
 --------------------------------------------------------------------------------
 qkvProjectionController ::
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Signal dom Bool
   -> Signal dom Bool
@@ -247,14 +249,14 @@ qkvProjectionController ::
      , Signal dom Bool
      , QHP.QHeadDebugInfo dom
      )
-qkvProjectionController dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
+qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
   (axiMasterOut, result, outputValid, readyForInput, debugInfo)
  where
   (enable, outputValid, inReadyRaw) =
     FSM.processingControllerFSM inputValid downStreamReady matVecValid
 
   (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
-    qkvProjector dramSlaveIn layerIdx enable downStreamReady
+    qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
                  seqPos input params
 
   projReadyOut_d = register True projReadyOut

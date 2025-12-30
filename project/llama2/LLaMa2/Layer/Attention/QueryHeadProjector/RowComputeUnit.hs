@@ -10,11 +10,11 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Numeric.Operations as OPS
-import qualified Prelude as P
-import Clash.Debug (trace)
+
+import TraceUtils (traceEdge)
 
 --------------------------------------------------------------------------------
--- RowMultiplier types (kept here since RowComputeUnit wraps it)
+-- RowMultiplier types
 --------------------------------------------------------------------------------
 data RowMultiplierDebug dom = RowMultiplierDebug
   { rmdAccValue  :: Signal dom FixedPoint
@@ -52,13 +52,8 @@ rowMultiplier column row colValid rowValid downReady rowIndex =
     , rmoDebug      = RowMultiplierDebug accValue rowReset rowEnable
     }
   where
-    -- Detect rowValid rising edge for debug
-    rowValidRise = rowValid .&&. (not <$> register False rowValid)
-
-    colValidTraced = go <$> rowValidRise <*> colValid
-      where
-        go True cv = trace ("[RowComputeUnit] MULT: rowValid ROSE, colValid=" P.++ show cv) cv
-        go False cv = cv
+    -- Trace rowValid edges
+    rowValidTraced = traceEdge "[RCU] rowValid" rowValid
 
     -- Core computation
     (rowResult, rowDone, accValue) =
@@ -66,7 +61,7 @@ rowMultiplier column row colValid rowValid downReady rowIndex =
 
     -- FSM control
     (state, fetchReq, rowReset, rowEnable, allDone, idleReady) =
-      OPS.matrixMultiplierStateMachine colValidTraced rowValid downReady rowDone rowIndex
+      OPS.matrixMultiplierStateMachine colValid rowValidTraced downReady rowDone rowIndex
 
 --------------------------------------------------------------------------------
 -- RowComputeUnit
@@ -83,7 +78,7 @@ data RowComputeIn dom = RowComputeIn
 
 data RowComputeOut dom = RowComputeOut
   { rcResult       :: Signal dom FixedPoint
-  , rcResultHC     :: Signal dom FixedPoint  -- HC reference result
+  , rcResultHC     :: Signal dom FixedPoint
   , rcRowDone      :: Signal dom Bool
   , rcAllDone      :: Signal dom Bool
   , rcIdleReady    :: Signal dom Bool
@@ -118,5 +113,5 @@ rowComputeUnit inputs =
       OPS.parallel64RowProcessor
         (rmdRowReset (rmoDebug mult))
         (rmdRowEnable (rmoDebug mult))
-        (rcWeight inputs)  -- Use same weights (HC for now)
+        (rcWeight inputs)
         (rcColumn inputs)

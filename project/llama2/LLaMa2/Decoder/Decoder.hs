@@ -1,4 +1,3 @@
--- File: LLaMa2/Decoder/Decoder.hs (minimal AXI additions)
 module LLaMa2.Decoder.Decoder (
     decoder, DecoderIntrospection(..)
 ) where
@@ -20,6 +19,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
 import LLaMa2.Numeric.Operations (MultiplierState)
 import LLaMa2.Numeric.Quantization (RowI8E(..))
+import TraceUtils (makeCycleCounter)
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -56,6 +56,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , dbgFetchValid       :: Signal dom Bool
   , dbgFetchedWord       :: Signal dom (BitVector 512)
   , seqPos       :: Signal dom (Index SequenceLength)
+  , cycleCount :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
 
 -- | Layer AXI arbiter: select active layer's AXI request
@@ -129,7 +130,7 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
     embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
     layerInput :: Signal dom LayerData
-    layerInput = LayerStack.prepareLayerInput
+    layerInput = LayerStack.layerInputStage
       <$> layerIdx
       <*> layerDataReg  -- Use the explicitly named register
       <*> embeddedVector
@@ -152,17 +153,14 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
         nextLayerValidLatched = mux setLatch (pure True)
                               (mux clearLatch (pure False) layerValidLatched)
 
-    -- Only assert to layer when BOTH latched signal and weights are ready
-    actualLayerValid :: Signal dom Bool
-    actualLayerValid = layerValidLatched
-
     -- Layer processing with AXI
-    layerOutputs = LayerStack.processActiveLayer
+    layerOutputs = LayerStack.activeLayerProcessor
+      cycleCounter
       dramSlaveIn
       layerIdx
       seqPosition
       layerInput
-      actualLayerValid
+      layerValidLatched
       params
 
     -- AXI arbitration
@@ -203,6 +201,10 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
     -- TOKEN EMBEDDING AND FEEDBACK
     -- =======================================================================
     outputToken = mux forceInputToken inputToken feedbackToken
+    
+    -- Create THE cycle counter for the entire design
+    cycleCounter :: Signal dom (Unsigned 32)
+    cycleCounter = TraceUtils.makeCycleCounter
 
     -- =======================================================================
     -- INTROSPECTION
@@ -234,4 +236,5 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
       , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
       , dbgFetchedWord       = LayerStack.dbgFetchedWord layerOutputs
       , seqPos = seqPosition
+      , cycleCount = cycleCounter
       }

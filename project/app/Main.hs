@@ -230,38 +230,40 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
-  let printCycle (cycleIdx, token') = do
+  let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
+  let printCycle (ioIdx, token') = do
+        let hwCycle = fromIntegral $ cycleCountSampled !! ioIdx
         let
 
           attnOut :: C.Vec ModelDimension FixedPoint
-          attnOut = attentionOutput (layerDataSampled !! cycleIdx)
+          attnOut = attentionOutput (layerDataSampled !! hwCycle)
 
-          li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
-          rdy    = readiesSampled !! cycleIdx
-          qkv    = qkvDonesSampled !! cycleIdx
-          attn    = attnDonesSampled !! cycleIdx
-          ffn    = ffnDonesSampled !! cycleIdx
-          layChg = layerChangeSampled !! cycleIdx
-          layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
+          li     = fromIntegral (layerIndicesSampled !! hwCycle) :: Int
+          rdy    = readiesSampled !! hwCycle
+          qkv    = qkvDonesSampled !! hwCycle
+          attn    = attnDonesSampled !! hwCycle
+          ffn    = ffnDonesSampled !! hwCycle
+          layChg = layerChangeSampled !! hwCycle
+          layerOutputNorm = normVec $ layerOutputSampled !! hwCycle
           attnOutNorm = normVec attnOut
-          token  = coreOutputs !! cycleIdx
-          layerValidIn = layerValidInsSampled !! cycleIdx
-          loadTriggerActive = loadTriggerActiveSampled !! cycleIdx
-          paramQ0Row0 = paramQ0Row0Sampled !! cycleIdx
+          token  = coreOutputs !! hwCycle
+          layerValidIn = layerValidInsSampled !! hwCycle
+          loadTriggerActive = loadTriggerActiveSampled !! hwCycle
+          paramQ0Row0 = paramQ0Row0Sampled !! hwCycle
 
-          dbgRowIdx      = dbgRowIndexSampled !! cycleIdx
-          dbgSt          = dbgStateSampled !! cycleIdx
-          dbgFirstMant   = dbgFirstMantSampled !! cycleIdx
-          dbgRowRes      = dbgRowResultSampled !! cycleIdx
-          dbgRowDone     = dbgRowDoneSampled !! cycleIdx
-          dbgFetchValid  = dbgFetchValidSampled !! cycleIdx
-          dbgFetchedWord  = dbgFetchedWordSampled !! cycleIdx
-          seqPosition  = seqPosSampled !! cycleIdx
+          dbgRowIdx      = dbgRowIndexSampled !! hwCycle
+          dbgSt          = dbgStateSampled !! hwCycle
+          dbgFirstMant   = dbgFirstMantSampled !! hwCycle
+          dbgRowRes      = dbgRowResultSampled !! hwCycle
+          dbgRowDone     = dbgRowDoneSampled !! hwCycle
+          dbgFetchValid  = dbgFetchValidSampled !! hwCycle
+          dbgFetchedWord  = dbgFetchedWordSampled !! hwCycle
+          seqPosition  = seqPosSampled !! hwCycle
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone) $
+        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone) $
           putStrLn $
             printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %14s| %10s | %16s"
-              cycleIdx
+              hwCycle
               li
               (show rdy)
               (show qkv)

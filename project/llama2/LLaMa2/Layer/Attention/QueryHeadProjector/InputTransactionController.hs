@@ -7,7 +7,8 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import qualified Prelude as P
-import Clash.Debug (trace)
+
+import TraceUtils (traceEdge)
 
 --------------------------------------------------------------------------------
 -- InputTransactionController
@@ -20,19 +21,21 @@ data InputTransactionIn dom = InputTransactionIn
   } deriving (Generic)
 
 newtype InputTransactionOut dom
-  = InputTransactionOut {itcLatchedValid :: Signal dom Bool} -- Latched input valid (holds until cleared)
+  = InputTransactionOut {itcLatchedValid :: Signal dom Bool}
   deriving (Generic)
 
 inputTransactionController :: forall dom.
   HiddenClockResetEnable dom
   => Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension)  -- For tracing only
+  -> Signal dom (Index HeadDimension)  -- rowIndex (unused now, kept for API compat)
   -> InputTransactionIn dom
   -> InputTransactionOut dom
-inputTransactionController layerIdx headIdx rowIndex inputs =
+inputTransactionController layerIdx headIdx _rowIndex inputs =
   InputTransactionOut { itcLatchedValid = latchedValidTraced }
   where
+    tag = "[ITC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+
     -- Input valid latch: SET on inputValid, CLR when complete and downstream ready
     latchedValid = register False nextLatchedValid
     
@@ -41,19 +44,4 @@ inputTransactionController layerIdx headIdx rowIndex inputs =
       $ mux (itcOutputValid inputs .&&. itcDownStreamReady inputs) (pure False)
         latchedValid
 
-    -- Tracing
-    latchedValidTraced = traceLatchEdges layerIdx headIdx "IVL"
-                           latchedValid (register False latchedValid) rowIndex
-
--- | Trace latch state changes (rise/fall edges)
-traceLatchEdges :: Index NumLayers -> Index NumQueryHeads -> P.String
-  -> Signal dom Bool -> Signal dom Bool -> Signal dom (Index HeadDimension) 
-  -> Signal dom Bool
-traceLatchEdges layerIdx headIdx name current prev ri = traced
-  where
-    traced = go <$> current <*> prev <*> ri
-    go curr p ridx
-      | curr && not p = trace (prefix P.++ name P.++ "_RISE ri=" P.++ show ridx) curr
-      | not curr && p = trace (prefix P.++ name P.++ "_FALL ri=" P.++ show ridx) curr
-      | otherwise     = curr
-    prefix = "[InputTransactionController] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+    latchedValidTraced = traceEdge (tag P.++ "latchedValid") latchedValid

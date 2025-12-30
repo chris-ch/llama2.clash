@@ -6,24 +6,12 @@ import Clash.Prelude
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.ModelConfig
 import qualified Prelude as P
-import Clash.Debug (trace)
 
--- | Trace accumulator updates
-traceAccumUpdate :: Index NumLayers -> Index NumQueryHeads
-  -> Signal dom Bool -> Signal dom (Index HeadDimension) -> Signal dom FixedPoint
-  -> Signal dom a -> Signal dom a
-traceAccumUpdate layerIdx headIdx done ri value current = traced
-  where
-    traced = go <$> done <*> ri <*> value <*> current
-    go d ridx val curr
-      | d         = trace (prefix P.++ "QOUT_ACCUM ri=" P.++ show ridx P.++ " val=" P.++ show val) curr
-      | otherwise = curr
-    prefix = "[OutputAccumulator] L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ " "
+import TraceUtils (traceWhen)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputAccumulator
 -- Accumulates row results into output vector
--- NO FEEDBACK LOOPS - safe to extract
 --------------------------------------------------------------------------------
 data OutputAccumIn dom = OutputAccumIn
   { oaRowDone     :: Signal dom Bool
@@ -49,15 +37,16 @@ outputAccumulator layerIdx headIdx inputs =
     , oaOutputHC = qOutHC
     }
   where
+    tag = "[OA L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+
     -- DRAM result accumulator
     qOut = register (repeat 0) nextOutput
-    
-    qOutTraced = traceAccumUpdate layerIdx headIdx 
-                   (oaRowDone inputs) (oaRowIndex inputs) 
-                   (oaRowResult inputs) qOut
+
+    -- Trace result value when rowDone fires
+    resultTraced = traceWhen (tag P.++ "result") (oaRowDone inputs) (oaRowResult inputs)
 
     nextOutput = mux (oaRowDone inputs)
-                     (replace <$> oaRowIndex inputs <*> oaRowResult inputs <*> qOutTraced)
+                     (replace <$> oaRowIndex inputs <*> resultTraced <*> qOut)
                      qOut
 
     -- HC reference accumulator

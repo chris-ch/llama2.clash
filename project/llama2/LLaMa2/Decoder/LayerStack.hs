@@ -1,6 +1,6 @@
 -- File: LLaMa2/Decoder/LayerStack.hs (add AXI collection)
 module LLaMa2.Decoder.LayerStack (
-  processActiveLayer, prepareLayerInput, LayerOutputs(..)
+  activeLayerProcessor, layerInputStage, LayerOutputs(..)
 ) where
 
 import Clash.Prelude
@@ -13,6 +13,7 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
 import LLaMa2.Numeric.Operations (MultiplierState)
+import Clash.Netlist.Types (HWType(Unsigned))
 
 data LayerOutputs dom = LayerOutputs
   { axiMasterOuts  :: Vec NumLayers (Master.AxiMasterOut dom)
@@ -33,16 +34,17 @@ data LayerOutputs dom = LayerOutputs
   , dbgFetchedWord :: Signal dom (BitVector 512)
   }
 
-processActiveLayer :: forall dom.
+activeLayerProcessor :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom                     -- DRAM interface
+  =>  Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom                     -- DRAM interface
   -> Signal dom (Index NumLayers)
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
   -> Signal dom Bool
   -> PARAM.DecoderParameters
   -> LayerOutputs dom
-processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params =
+activeLayerProcessor cycleCounter dramSlaveIn activeLayerIdx seqPos inputData inputValid params =
   LayerOutputs
     { axiMasterOuts  = layerAxiMasters
     , qkvOutput      = selectedQkvOutput
@@ -193,6 +195,7 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
         ( axiMaster, qProj, kProj, vProj, attnOut, ffnOut
           , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo, _, _ ,_ ) =
           TransformerLayer.transformerLayer
+            cycleCounter
             dramSlaveIn
             layerIdx
             params'
@@ -209,10 +212,10 @@ processActiveLayer dramSlaveIn activeLayerIdx seqPos inputData inputValid params
     selectActive :: Signal dom (Index NumLayers) -> Vec NumLayers (Signal dom a) -> Signal dom a
     selectActive idx vec = (!!) <$> sequenceA vec <*> idx
 
-prepareLayerInput :: Index NumLayers
+layerInputStage :: Index NumLayers
                   -> LayerData
                   -> Vec ModelDimension FixedPoint
                   -> LayerData
-prepareLayerInput idx currentData embedding
+layerInputStage idx currentData embedding
   | idx == 0  = currentData { inputVector = embedding }
   | otherwise = currentData { inputVector = feedForwardOutput currentData }

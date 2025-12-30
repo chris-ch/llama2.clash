@@ -20,6 +20,7 @@ import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
+  Signal dom (Unsigned 32) ->                     -- cycle counter  
   Slave.AxiSlaveIn dom ->                     -- DRAM interface
   Index NumLayers ->                          -- layer index
   PARAM.DecoderParameters ->
@@ -38,7 +39,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool     
     , QHeadDebugInfo dom
   )
-multiHeadAttentionStage dramSlaveIn layerIdx params seqPos layerData validIn =
+multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
   (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
   where
     layerParams = modelLayers params !! layerIdx
@@ -76,6 +77,7 @@ multiHeadAttentionStage dramSlaveIn layerIdx params seqPos layerData validIn =
     -- QKV projection with AXI
     (axiMasterOut, qkvProjected, qkvDone, qkvReady, debugInfo) =
       qkvProjectionController
+        cycleCounter
         dramSlaveIn
         layerIdx
         validIn

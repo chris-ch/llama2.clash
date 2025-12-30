@@ -36,7 +36,8 @@ ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
 transformerLayer ::
   forall dom.
   (HiddenClockResetEnable dom)
-   => Slave.AxiSlaveIn dom                   -- DRAM interface
+   => Signal dom (Unsigned 32)
+   -> Slave.AxiSlaveIn dom                   -- DRAM interface
    -> Index NumLayers                        -- layer index
    -> PARAM.DecoderParameters
    -> Signal dom (Index SequenceLength)
@@ -58,7 +59,7 @@ transformerLayer ::
       , Signal dom Bool
       , Signal dom Bool
       )
-transformerLayer dramSlaveIn layerIdx params seqPos layerData validIn =
+transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
   ( axiMasterOut
   , qProj
   , kProj
@@ -90,7 +91,7 @@ transformerLayer dramSlaveIn layerIdx params seqPos layerData validIn =
 
     -- Use validInGated everywhere instead of validIn
     (axiMasterOut, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
-      multiHeadAttentionStage dramSlaveIn layerIdx params seqPos layerData validInGated
+      multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validInGated
 
     ffnArmed :: Signal dom Bool
     ffnArmed = register False nextFfnArmed

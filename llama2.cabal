@@ -142,6 +142,7 @@ library
       Simulation.Parameters
       Simulation.ParametersQuantization
       Tokenizer
+      TraceUtils
   hs-source-dirs:
       project/llama2
   if flag(model-260k)
