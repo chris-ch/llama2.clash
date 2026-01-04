@@ -1,10 +1,5 @@
 module TraceUtils
-  ( -- Basic (no cycle)
-    traceChange
-  , traceEdge
-  , traceWhen
-    -- Cycle-aware variants
-  , traceChangeC
+  ( traceChangeC
   , traceEdgeC
   , traceWhenC
   , makeCycleCounter

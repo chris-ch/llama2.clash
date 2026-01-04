@@ -8,7 +8,7 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig
 import qualified Prelude as P
 
-import TraceUtils (traceEdge)
+import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- InputTransactionController
@@ -26,12 +26,13 @@ newtype InputTransactionOut dom
 
 inputTransactionController :: forall dom.
   HiddenClockResetEnable dom
-  => Index NumLayers
+  => Signal dom (Unsigned 32)
+  -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension)  -- rowIndex (unused now, kept for API compat)
   -> InputTransactionIn dom
   -> InputTransactionOut dom
-inputTransactionController layerIdx headIdx _rowIndex inputs =
+inputTransactionController cycleCounter layerIdx headIdx _rowIndex inputs =
   InputTransactionOut { itcLatchedValid = latchedValidTraced }
   where
     tag = "[ITC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
@@ -44,4 +45,4 @@ inputTransactionController layerIdx headIdx _rowIndex inputs =
       $ mux (itcOutputValid inputs .&&. itcDownStreamReady inputs) (pure False)
         latchedValid
 
-    latchedValidTraced = traceEdge (tag P.++ "latchedValid") latchedValid
+    latchedValidTraced = traceEdgeC cycleCounter (tag P.++ "latchedValid") latchedValid

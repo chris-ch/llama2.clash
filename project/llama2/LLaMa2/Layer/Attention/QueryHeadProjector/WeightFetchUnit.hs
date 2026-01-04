@@ -14,7 +14,7 @@ import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
 import Clash.Debug (trace)
 
-import TraceUtils (traceEdge)
+import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- WeightFetchUnit
@@ -38,13 +38,14 @@ data WeightFetchOut dom = WeightFetchOut
 
 weightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)
+  ->  Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
   -> PARAM.DecoderParameters
   -> WeightFetchIn dom
   -> WeightFetchOut dom
-weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
+weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
   WeightFetchOut
     { wfAxiMaster    = axiMaster
     , wfWeightDram   = currentRowDramChecked
@@ -55,7 +56,7 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
   where
     tag = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
-    (axiMaster, weightLoaderOut, weightValid, weightReady) =
+    (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
       LOADER.weightLoader dramSlaveIn layerIdx headIdx
                           (wfRowIndex inputs)
                           rowReqPulseTraced
@@ -63,6 +64,10 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
                           (wfRowDone inputs)
                           params
 
+    -- Trace weight valid and weight ready edges
+    weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
+    weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+    
     -- Gate the request INTERNALLY
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
 
@@ -77,7 +82,7 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
     rowReqPulse = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
 
     -- Simple edge trace
-    rowReqPulseTraced = traceEdge (tag P.++ "reqPulse") rowReqPulse
+    rowReqPulseTraced = traceEdgeC cycleCounter (tag P.++ "reqPulse") rowReqPulse
 
     ----------------------------------------------------------------------------
     currentRowDramRaw = LOADER.dramRowOut weightLoaderOut
@@ -88,18 +93,19 @@ weightFetchUnit dramSlaveIn layerIdx headIdx params inputs =
     currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
     -- Weight mismatch checker (assertion, not a trace)
-    currentRowDramChecked = weightMismatchChecker layerIdx weightValid
+    currentRowDramChecked = weightMismatchChecker cycleCounter layerIdx weightValid
                               currentRowDram currentRowHC
 
 --------------------------------------------------------------------------------
 -- Weight mismatch checker (assertion - kept as explicit check)
 --------------------------------------------------------------------------------
-weightMismatchChecker :: Index NumLayers
+weightMismatchChecker :: Signal dom (Unsigned 32)
+  -> Index NumLayers
   -> Signal dom Bool
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
-weightMismatchChecker layerIdx valid dram hc = result
+weightMismatchChecker cycleCounter layerIdx valid dram hc = result
   where
     result = check <$> valid <*> dram <*> hc
     check v d h

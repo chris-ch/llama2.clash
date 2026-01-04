@@ -23,7 +23,7 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as Row
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
-import TraceUtils (traceChange, traceEdge, traceWhen)
+import TraceUtils (traceChangeC, traceEdgeC, traceChangeC)
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -152,7 +152,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     -- Row Index Register
     ----------------------------------------------------------------------------
     rowIndex :: Signal dom (Index HeadDimension)
-    rowIndex = traceChange (tag P.++ "rowIndex") $ register 0 nextRowIndex
+    rowIndex = traceChangeC cycleCounter (tag P.++ "rowIndex") $ register 0 nextRowIndex
 
     -- RowScheduler computes next index (combinatorial)
     rowSched = RowScheduler.rowScheduler
@@ -165,7 +165,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     
     nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
-    inputTxn = InputTransactionController.inputTransactionController layerIdx headIdx rowIndex
+    inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx rowIndex
                  InputTransactionController.InputTransactionIn
                    { itcInputValid      = inputValid
                    , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
@@ -179,7 +179,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     -- CLR has priority over SET (critical for correct handshake)
     -- Uses consumeSignal for coordinated multi-head clearing
     ----------------------------------------------------------------------------
-    outputTxn = OutputTransactionController.outputTransactionController layerIdx headIdx rowIndex downStreamReady
+    outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx headIdx rowIndex downStreamReady
                   OutputTransactionController.OutputTransactionIn
                     { otcAllDone       = RowComputeUnit.rcAllDone compute
                     , otcConsumeSignal = consumeSignal
@@ -188,7 +188,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Weight Loader
     ----------------------------------------------------------------------------
-    weightFetch = WeightFetchUnit.weightFetchUnit dramSlaveIn layerIdx headIdx params
+    weightFetch = WeightFetchUnit.weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params
                     WeightFetchUnit.WeightFetchIn
                       { wfRowIndex      = rowIndex
                       , wfRowReqValid   = RowComputeUnit.rcFetchReq compute
@@ -205,7 +205,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
     ----------------------------------------------------------------------------
-    compute = RowComputeUnit.rowComputeUnit
+    compute = RowComputeUnit.rowComputeUnit cycleCounter
                 RowComputeUnit.RowComputeIn
                   { rcInputValid      = inputValidLatched
                   , rcWeightValid     = weightValid
@@ -220,7 +220,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Row Done - simple edge trace
     ----------------------------------------------------------------------------
-    rowDone = traceEdge (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
+    rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
     ----------------------------------------------------------------------------
     -- Row Result Checker
@@ -232,7 +232,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Result Accumulator
     ----------------------------------------------------------------------------
-    outputAccum = OutputAccumulator.outputAccumulator layerIdx headIdx
+    outputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx headIdx
                     OutputAccumulator.OutputAccumIn
                       { oaRowDone     = RowComputeUnit.rcRowDone compute
                       , oaRowIndex    = rowIndex

@@ -7,7 +7,7 @@ import LLaMa2.Numeric.Types
 import LLaMa2.Types.ModelConfig
 import qualified Prelude as P
 
-import TraceUtils (traceWhen)
+import TraceUtils (traceWhenC)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputAccumulator
@@ -27,11 +27,12 @@ data OutputAccumOut dom = OutputAccumOut
 
 outputAccumulator :: forall dom.
   HiddenClockResetEnable dom
-  => Index NumLayers
+  => Signal dom (Unsigned 32)
+  -> Index NumLayers
   -> Index NumQueryHeads
   -> OutputAccumIn dom
   -> OutputAccumOut dom
-outputAccumulator layerIdx headIdx inputs =
+outputAccumulator cycleCounter layerIdx headIdx inputs =
   OutputAccumOut
     { oaOutput   = qOut
     , oaOutputHC = qOutHC
@@ -43,7 +44,7 @@ outputAccumulator layerIdx headIdx inputs =
     qOut = register (repeat 0) nextOutput
 
     -- Trace result value when rowDone fires
-    resultTraced = traceWhen (tag P.++ "result") (oaRowDone inputs) (oaRowResult inputs)
+    resultTraced = traceWhenC cycleCounter (tag P.++ "result") (oaRowDone inputs) (oaRowResult inputs)
 
     nextOutput = mux (oaRowDone inputs)
                      (replace <$> oaRowIndex inputs <*> resultTraced <*> qOut)

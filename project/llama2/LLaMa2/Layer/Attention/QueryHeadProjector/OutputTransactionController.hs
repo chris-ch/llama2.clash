@@ -7,7 +7,7 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension)
 import qualified Prelude as P
 
-import TraceUtils (traceEdge)
+import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputTransactionController
@@ -24,13 +24,14 @@ newtype OutputTransactionOut dom
 
 outputTransactionController :: forall dom.
   HiddenClockResetEnable dom
-  => Index NumLayers
+  => Signal dom (Unsigned 32)
+  -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension)     -- rowIndex (unused, API compat)
   -> Signal dom Bool                       -- downStreamReady (unused, API compat)
   -> OutputTransactionIn dom
   -> OutputTransactionOut dom
-outputTransactionController layerIdx headIdx _rowIndex _downStreamReady inputs =
+outputTransactionController cycleCounter layerIdx headIdx _rowIndex _downStreamReady inputs =
   OutputTransactionOut { otcOutputValid = outputValidTraced }
   where
     tag = "[OTC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
@@ -43,4 +44,4 @@ outputTransactionController layerIdx headIdx _rowIndex _downStreamReady inputs =
       $ mux (otcAllDone inputs) (pure True)                              -- SET second
         outputValidLatch                                                 -- HOLD
 
-    outputValidTraced = traceEdge (tag P.++ "outputValid") outputValidLatch
+    outputValidTraced = traceEdgeC cycleCounter (tag P.++ "outputValid") outputValidLatch

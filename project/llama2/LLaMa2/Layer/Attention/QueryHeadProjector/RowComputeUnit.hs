@@ -11,7 +11,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Numeric.Operations as OPS
 
-import TraceUtils (traceEdge)
+import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- RowMultiplier types
@@ -34,14 +34,15 @@ data RowMultiplierOut dom = RowMultiplierOut
 
 rowMultiplier :: forall dom.
   HiddenClockResetEnable dom
-  => Signal dom (Vec ModelDimension FixedPoint)
+  => Signal dom (Unsigned 32)
+  -> Signal dom (Vec ModelDimension FixedPoint)
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index HeadDimension)
   -> RowMultiplierOut dom
-rowMultiplier column row colValid rowValid downReady rowIndex =
+rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
   RowMultiplierOut
     { rmoResult     = rowResult
     , rmoRowDone    = rowDone
@@ -53,7 +54,7 @@ rowMultiplier column row colValid rowValid downReady rowIndex =
     }
   where
     -- Trace rowValid edges
-    rowValidTraced = traceEdge "[RCU] rowValid" rowValid
+    rowValidTraced = traceEdgeC cycleCounter "[RCU] rowValid" rowValid
 
     -- Core computation
     (rowResult, rowDone, accValue) =
@@ -89,9 +90,10 @@ data RowComputeOut dom = RowComputeOut
 
 rowComputeUnit :: forall dom.
   HiddenClockResetEnable dom
-  => RowComputeIn dom
+  => Signal dom (Unsigned 32)
+  -> RowComputeIn dom
   -> RowComputeOut dom
-rowComputeUnit inputs =
+rowComputeUnit cycleCounter inputs =
   RowComputeOut
     { rcResult       = rmoResult mult
     , rcResultHC     = hcRowResult
@@ -104,7 +106,7 @@ rowComputeUnit inputs =
     }
   where
     -- Main multiplier for DRAM weights
-    mult = rowMultiplier (rcColumn inputs) (rcWeight inputs) 
+    mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeight inputs)
                          (rcInputValid inputs) (rcWeightValid inputs) 
                          (rcDownStreamReady inputs) (rcRowIndex inputs)
 
