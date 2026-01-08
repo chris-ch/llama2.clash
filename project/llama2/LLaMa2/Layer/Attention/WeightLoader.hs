@@ -47,273 +47,11 @@ assertRowStable validSig rowSig = checked
 
 -- | Weight loader with DRAM fetching and hardcoded (HC) reference path.
 --
--- == Overview
---
--- This component manages weight loading for a single query head. It provides
--- two parallel paths:
--- 1. __DRAM path__: Fetches weights from external memory via AXI
--- 2. __HC path__: Provides hardcoded reference weights from parameters
---
--- The dual-path design enables verification: DRAM results can be compared
--- against HC results to detect memory or timing errors.
---
--- == Architecture
---
--- @
---                    ┌─────────────────────────────────────────────────────────┐
---                    │                   weightLoader                          │
---                    │                                                         │
---                    │  ┌─────────────────────────────────────────────────┐    │
---                    │  │                 DRAM Path                       │    │
---                    │  │                                                 │    │
---   dramSlaveIn ────►│  │  ┌──────────────┐    ┌──────────────┐           │    │
---     .arready       │  │  │  AXI Master  │    │   Row        │           │    │
---     .rvalid        │  │  │  Controller  │───►│   Assembly   │           │───►│ dramRowOut
---     .rdata         │  │  │              │    │  (2 words→   │           │    │
---                    │  │  │ Issues AR,   │    │   1 row)     │           │    │
---   rowReqValid ────►│  │  │ tracks resp  │    │              │           │    │
---                    │  │  └──────────────┘    └──────────────┘           │    │
---   rowIndex ───────►│  │         │                   │                   │    │
---                    │  │         │                   ▼                   │    │
---   layerIdx ───────►│  │         │           ┌──────────────┐            │    │
---   headIdx ────────►│  │         │           │  DRAM Valid  │────────────│───►│ weightValid
---                    │  │         │           │    Latch     │            │    │
---                    │  │         ▼           └──────────────┘            │    │
---                    │  │  ┌──────────────┐                               │    │
---                    │  │  │  axiMaster   │───────────────────────────────│───►│ axiMaster
---                    │  │  │    Out       │                               │    │
---                    │  │  └──────────────┘                               │    │
---                    │  │                                                 │    │
---                    │  └─────────────────────────────────────────────────┘    │
---                    │                                                         │
---                    │  ┌─────────────────────────────────────────────────┐    │
---                    │  │                  HC Path                        │    │
---                    │  │                                                 │    │
---   params ─────────►│  │  ┌──────────────┐                               │    │
---                    │  │  │   Direct     │                               │───►│ hcRowOut
---                    │  │  │   Lookup     │                               │    │
---                    │  │  │              │                               │    │
---                    │  │  │ qMatrix[head]│                               │    │
---                    │  │  │   [row]      │                               │    │
---                    │  │  └──────────────┘                               │    │
---                    │  │                                                 │    │
---                    │  └─────────────────────────────────────────────────┘    │
---                    │                                                         │
---                    │  ┌─────────────────────────────────────────────────┐    │
---                    │  │              Ready Logic                        │    │
---                    │  │                                                 │    │
---   downStreamReady─►│  │  weightReady = (loaderState == LIdle)           │───►│ weightReady
---                    │  │              || (loaderState == LDone)          │    │
---   rowDone ────────►│  │                                                 │    │
---                    │  │                                                 │    │
---                    │  └─────────────────────────────────────────────────┘    │
---                    │                                                         │
---                    └─────────────────────────────────────────────────────────┘
--- @
---
--- == Input Signals
---
--- [@dramSlaveIn@] AXI slave interface from arbiter (routed per-head response).
---                 - arready: Arbiter accepted our address request
---                 - rvalid: Data is available on rdata
---                 - rdata: 512-bit data word from DRAM
---
--- [@layerIdx@] Current transformer layer (0 to NumLayers-1).
---              Used to compute DRAM address offset.
---
--- [@headIdx@] Query head index (0 to NumQueryHeads-1).
---             Used to compute DRAM address offset and HC lookup.
---
--- [@rowIndex@] Current row being processed (0 to HeadDimension-1).
---              Used for both DRAM address and HC lookup.
---
--- [@rowReqValid@] Request signal from multiplier FSM (state == MFetching).
---                 Triggers a new DRAM fetch when loader is idle.
---
--- [@downStreamReady@] Downstream acknowledgment (for state transitions).
---
--- [@rowDone@] Row computation complete signal from multiplier.
---             Used to hold LDone state until row is actually consumed.
---
--- [@params@] Model parameters containing hardcoded weights.
---
--- == Output Signals
---
--- [@axiMaster@] AXI master interface to arbiter.
---               - arvalid: Request to read from DRAM
---               - ardata: Address and burst parameters
---               - rready: Ready to accept read data
---
--- [@weightLoaderOut@] Bundled row outputs.
---                     - dramRowOut: Row assembled from DRAM data
---                     - hcRowOut: Row from hardcoded parameters
---
--- [@weightValid@] __Level signal__. True when DRAM row is valid and stable.
---                 The multiplier should only process when this is True.
---
--- [@weightReady@] __Level signal__. True when loader can accept new request.
---                 Used to gate rowReqValid from the multiplier.
---
--- == Loader State Machine
---
--- @
---     ┌─────────┐  rowReqValid    ┌───────────────┐
---     │  LIdle  │────────────────►│ LFetchingWord1│
---     │         │                 │               │
---     │ ready=T │                 │ Issue AR for  │
---     │ valid=F │                 │ first 512-bit │
---     └────┬────┘                 │ word          │
---          ▲                      └───────┬───────┘
---          │                              │ rvalid (word 1 arrives)
---          │                              ▼
---          │                      ┌───────────────┐
---          │                      │ LFetchingWord2│
---          │                      │               │
---          │                      │ Issue AR for  │
---          │                      │ second 512-bit│
---          │                      │ word          │
---          │                      └───────┬───────┘
---          │                              │ rvalid (word 2 arrives)
---          │                              ▼
---          │                      ┌───────────────┐
---          │  downStreamReady     │    LDone      │
---          │  && rowDone          │               │
---          └──────────────────────│ ready=T       │
---                                 │ valid=T       │
---                                 │               │
---                                 │ (holds until  │
---                                 │  consumed)    │
---                                 └───────────────┘
--- @
---
--- == Memory Layout
---
--- Each row requires 2 DRAM words (2 × 512 bits = 128 bytes):
--- - Word 1: mantissas[0..63] (64 × 8-bit = 512 bits)
--- - Word 2: mantissas[0] (8-bit) + exponent (8-bit) + padding
---
--- Note: For ModelDimension=64, one row fits in ~65 bytes, but aligned to 128.
---
--- Address calculation:
--- @
--- baseAddr = weightsBaseOffset 
---          + layerIdx * layerStride
---          + qWeightsOffset
---          + headIdx * headStride
---          + rowIndex * rowStride
---
--- word1Addr = baseAddr
--- word2Addr = baseAddr + 64  -- Next 512-bit word
--- @
---
--- == Row Assembly
---
--- @
--- ┌─────────────────────────────────────────────────────────────────┐
--- │                        DRAM Word 1 (512 bits)                   │
--- │  ┌──────┬──────┬──────┬─────────────────────────────┬──────┐    │
--- │  │mant0 │mant1 │mant2 │  ...                        │mant63│    │
--- │  │ 8b   │ 8b   │ 8b   │                             │ 8b   │    │
--- │  └──────┴──────┴──────┴─────────────────────────────┴──────┘    │
--- └─────────────────────────────────────────────────────────────────┘
---
--- ┌─────────────────────────────────────────────────────────────────┐
--- │                        DRAM Word 2 (512 bits)                   │
--- │  ┌──────┬──────┬──────────────────────────────────────────────┐ │
--- │  │ exp  │ pad  │              (unused)                        │ │
--- │  │ 8b   │      │                                              │ │
--- │  └──────┴──────┴──────────────────────────────────────────────┘ │
--- └─────────────────────────────────────────────────────────────────┘
---
---                              │
---                              ▼ Assembly
---
--- ┌─────────────────────────────────────────────────────────────────┐
--- │                      RowI8E ModelDimension                      │
--- │  rowMantissas: Vec 64 (Signed 8) = [mant0, mant1, ..., mant63]  │
--- │  rowExponent:  Signed 16         = sign-extended exp            │
--- └─────────────────────────────────────────────────────────────────┘
--- @
---
--- == Timing Diagram
---
--- @
--- Cycle:         0    1    2    3    4    5    6    7    8
---
--- rowReqValid:   ─────┐___________________________________________
--- loaderState:   Idle Idle Ftch1 Ftch1 Ftch2 Ftch2 Done Done Idle
--- 
--- axiMaster.arv: ___________┐_____┐_____┐_________________________
--- slaveIn.ardy:  ___________┐_____┐___________________________________
--- slaveIn.rvalid:______________┐________┐____________________________
--- 
--- word1Latched:  _______________┐────────────────────────────────────
--- word2Latched:  ______________________┐─────────────────────────────
--- 
--- weightValid:   ______________________┐────────────────┐____________
--- weightReady:   ───────────┐________________________┐_______________
---
--- rowDone:       ____________________________________┐________________
--- downStreamRdy: ____________________________________┐________________
--- @
---
--- == HC Path Operation
---
--- The hardcoded path is purely combinational:
---
--- @
--- hcRowOut = qMatrix params !! layerIdx !! headIdx !! rowIndex
--- @
---
--- This provides a reference value that tracks rowIndex changes immediately,
--- while DRAM path has multi-cycle latency. The comparison between paths
--- happens in queryHeadMatrixMultiplier after both paths have valid data.
---
--- == Stability Assertion
---
--- The loader includes an assertion helper:
---
--- @
--- assertRowStable :: Signal dom Bool -> Signal dom (RowI8E n) -> Signal dom (RowI8E n)
--- assertRowStable valid row = ...
--- @
---
--- This checks that committed row data doesn't change while valid=True,
--- catching bugs where DRAM data might shift unexpectedly.
---
--- == Integration with Multiplier
---
--- @
--- -- In queryHeadMatrixMultiplier:
--- 
--- (axiMaster, weightLoaderOut, weightValid, weightReady) =
---     LOADER.weightLoader dramSlaveIn layerIdx headIdx
---                         rowIndex rowReqValidGated downStreamReady
---                         (moRowDone multOut)
---                         params
---
--- -- Gate request by ready to prevent spurious requests
--- rowReqValidGated = moRowReqValid multOut .&&. weightReady
---
--- -- Pass valid to multiplier FSM (rowValid input)
--- multOut = multiplier xHat currentRowHC inputValidLatched' weightValid ...
--- @
---
--- == Usage Notes
---
--- 1. Always gate rowReqValid with weightReady to prevent requests while busy.
---
--- 2. The loader holds LDone until rowDone fires, ensuring data stability
---    throughout the row computation.
---
--- 3. For HC-only operation, weightValid can be driven by (loaderState == LDone)
---    or simply pure True if no DRAM latency simulation is needed.
---
--- 4. The DRAM and HC paths should produce identical results; any mismatch
---    indicates a bug in address calculation, data assembly, or timing.
+-- Now takes cycleCounter for cycle-stamped tracing.
 --
 weightLoader :: forall dom. HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
+  => Signal dom (Unsigned 32)  -- ^ cycleCounter for tracing
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension)
@@ -326,8 +64,8 @@ weightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool     -- ^ weightValid (level)
      , Signal dom Bool     -- ^ weightReady (level)
      )
-weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
-  (axiMaster, out, weightValid, weightReady)
+weightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
+  (axiMaster, out, weightValidTraced, weightReadyTraced)
  where
   -- Hardcoded (HC) weights for this layer/head
   hcWeights :: MatI8E HeadDimension ModelDimension
@@ -345,6 +83,10 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
 
   weightValid :: Signal dom Bool
   weightValid = loadState .==. pure LDone
+
+  -- Trace weightReady and weightValid edges
+  weightReadyTraced = traceWeightReady cycleCounter layerIdx headIdx weightReady
+  weightValidTraced = traceWeightValid cycleCounter layerIdx headIdx weightValid
 
   -- Rising edge when a new row becomes valid to the downstream
   prevValid = register False weightValid
@@ -378,6 +120,7 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
   -- Verify that when AR is accepted, the fetcher's latched address matches our txnReg
   dramRowWithArCheck :: Signal dom (RowI8E ModelDimension)
   dramRowWithArCheck = assertArAddrMatch
+      cycleCounter
       (Layout.dbgArAccepted fetcherDebug)
       (Layout.dbgLatchedAddr fetcherDebug)
       (tAddr <$> txnReg)
@@ -423,22 +166,25 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
 
   dramRowWithTrace :: Signal dom (RowI8E ModelDimension)
   dramRowWithTrace = traceRowIndices
+      cycleCounter
       actualFetchStart
       dvRise
       liveRow
       (tRow <$> txnReg)
-      headIdx              -- add this parameter
+      layerIdx
+      headIdx
       dramRowWithArCheck
 
   -- COMMIT-TIME CHECK
   dramRowAfterEqCheck :: Signal dom (RowI8E ModelDimension)
   dramRowAfterEqCheck =
     assertRowsMatchOnCommitEnhanced
+      cycleCounter
       dvRiseD1
       (tRow  <$> txnReg)
       (tAddr <$> txnReg)
       expectedAddrFromRow
-      dramRowWithTrace    -- changed
+      dramRowWithTrace
       hcRowCommitted
       hcRowFromCapture
       fetchedWordsCommitted
@@ -468,6 +214,41 @@ weightLoader dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsum
     , dbgCapturedRowReq = tRow  <$> txnReg
     , dbgLoadState      = loadState
     }
+
+-- | Trace weightReady edges
+traceWeightReady
+  :: forall dom. HiddenClockResetEnable dom => Signal dom (Unsigned 32)
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Signal dom Bool
+  -> Signal dom Bool
+traceWeightReady cyc layerIdx' headIdx' sig = result
+  where
+    prev :: Signal dom Bool
+    prev = register False sig
+    result = emit <$> cyc <*> sig <*> prev
+    emit c True False = trace ("@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' 
+                               P.++ " H" P.++ show headIdx' P.++ "] weightReady RISE") True
+    emit c False True = trace ("@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' 
+                               P.++ " H" P.++ show headIdx' P.++ "] weightReady FALL") False
+    emit _ curr _ = curr
+
+-- | Trace weightValid edges
+traceWeightValid
+  :: forall dom. HiddenClockResetEnable dom => Signal dom (Unsigned 32)
+  -> Index NumLayers
+  -> Index NumQueryHeads
+  -> Signal dom Bool
+  -> Signal dom Bool
+traceWeightValid cyc layerIdx' headIdx' sig = result
+  where
+    prev = register False sig
+    result = emit <$> cyc <*> sig <*> prev
+    emit c True False = trace ("@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' 
+                               P.++ " H" P.++ show headIdx' P.++ "] weightValid RISE") True
+    emit c False True = trace ("@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' 
+                               P.++ " H" P.++ show headIdx' P.++ "] weightValid FALL") False
+    emit _ curr _ = curr
 
 staticDramCheck
   :: PARAM.DecoderParameters
@@ -504,30 +285,34 @@ staticDramCheck params layerIdx' headIdx' hcW sig =
      else sig
 
 traceRowIndices
-  :: Signal dom Bool                   -- actualFetchStart
+  :: Signal dom (Unsigned 32)          -- cycleCounter
+  -> Signal dom Bool                   -- actualFetchStart
   -> Signal dom Bool                   -- dvRise
   -> Signal dom (Index HeadDimension)  -- liveRow
   -> Signal dom (Index HeadDimension)  -- txnReg.tRow
+  -> Index NumLayers                   -- layerIdx (static)
   -> Index NumQueryHeads               -- headIdx (static)
   -> Signal dom (RowI8E ModelDimension)  -- pass-through signal
   -> Signal dom (RowI8E ModelDimension)
-traceRowIndices start rise lRow txnRow headIdx' rowIn =
-  go <$> start <*> rise <*> lRow <*> txnRow <*> rowIn
+traceRowIndices cyc start rise lRow txnRow layerIdx' headIdx' rowIn =
+  go <$> cyc <*> start <*> rise <*> lRow <*> txnRow <*> rowIn
  where
-  go True _ lr _ row = 
-    trace ("[WeightLoader] CAPTURE H" P.++ show headIdx' P.++ ": liveRow=" P.++ show lr) row
-  go _ True _ tr row = 
-    let msg = "[WeightLoader] COMMIT H" P.++ show headIdx' P.++ ": txnReg.tRow=" P.++ show tr
+  go c True _ lr _ row = 
+    trace ("@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' P.++ " H" P.++ show headIdx' 
+           P.++ "] reqPulse RISE liveRow=" P.++ show lr) row
+  go c _ True _ tr row = 
+    let msg = "@" P.++ show c P.++ " [WFU L" P.++ show layerIdx' P.++ " H" P.++ show headIdx' 
+              P.++ "] COMMIT txnRow=" P.++ show tr
         finalMsg = if tr == maxBound 
                    then msg P.++ " *** FINAL ROW ***"
                    else msg
     in trace finalMsg row
-  go _ _ _ _ row = row
+  go _ _ _ _ _ row = row
 
 -- | ARADDR assertion: fires when AR is accepted if addresses don't match
--- Change assertArAddrMatch to return the row unchanged (passthrough) but check on the way
 assertArAddrMatch
-  :: Signal dom Bool                   -- ^ arAccepted (from fetcher)
+  :: Signal dom (Unsigned 32)          -- ^ cycleCounter
+  -> Signal dom Bool                   -- ^ arAccepted (from fetcher)
   -> Signal dom (Unsigned 32)          -- ^ fetcher's latched address
   -> Signal dom (Unsigned 32)          -- ^ loader's txnReg address
   -> Signal dom (Index HeadDimension)  -- ^ row index for diagnostics
@@ -535,12 +320,12 @@ assertArAddrMatch
   -> Index NumQueryHeads
   -> Signal dom (RowI8E ModelDimension)  -- ^ row to pass through
   -> Signal dom (RowI8E ModelDimension)  -- ^ same row, but assertion checked
-assertArAddrMatch arAccepted fetcherAddr loaderAddr rowIdx layerIdx' headIdx' rowIn =
-  check <$> arAccepted <*> fetcherAddr <*> loaderAddr <*> rowIdx <*> rowIn
+assertArAddrMatch cyc arAccepted fetcherAddr loaderAddr rowIdx layerIdx' headIdx' rowIn =
+  check <$> cyc <*> arAccepted <*> fetcherAddr <*> loaderAddr <*> rowIdx <*> rowIn
  where
-  check True fAddr lAddr ri row
+  check c True fAddr lAddr ri row
     | fAddr /= lAddr = P.error $
-        "ARADDR MISMATCH at AR accept!"
+        "@" P.++ show c P.++ " ARADDR MISMATCH at AR accept!"
         P.++ "\n  *** LOCATION: layer=" P.++ show layerIdx'
         P.++ " head=" P.++ show headIdx'
         P.++ " row=" P.++ show ri P.++ " ***"
@@ -550,11 +335,12 @@ assertArAddrMatch arAccepted fetcherAddr loaderAddr rowIdx layerIdx' headIdx' ro
                                        then fAddr - lAddr 
                                        else lAddr - fAddr)
     | otherwise = row
-  check False _ _ _ row = row
+  check _ False _ _ _ row = row
 
 assertRowsMatchOnCommitEnhanced 
   :: forall dom n. (KnownNat n, KnownNat (If (OrdCond (CmpNat n 63) 'True 'True 'False) 1 (1 + Div n 64) T.* 64))
-  => Signal dom Bool
+  => Signal dom (Unsigned 32)  -- cycleCounter
+  -> Signal dom Bool
   -> Signal dom (Index HeadDimension)
   -> Signal dom (Unsigned 32)
   -> Signal dom (Unsigned 32)
@@ -565,15 +351,15 @@ assertRowsMatchOnCommitEnhanced
   -> Index NumLayers
   -> Index NumQueryHeads
   -> Signal dom (RowI8E n)
-assertRowsMatchOnCommitEnhanced commitEdge capIdx capAddr expectedAddr 
+assertRowsMatchOnCommitEnhanced cyc commitEdge capIdx capAddr expectedAddr 
                                  dramRow hcRow hcRowCapture fetchedWords' 
                                  layerIdx' headIdx' =
   mux commitEdge 
-      (check <$> capIdx <*> capAddr <*> expectedAddr 
+      (check <$> cyc <*> capIdx <*> capAddr <*> expectedAddr 
              <*> dramRow <*> hcRow <*> hcRowCapture <*> fetchedWords') 
       dramRow
  where
-  check ri ad expAd dr hr hrc words' =
+  check c ri ad expAd dr hr hrc words' =
     let de = rowExponent dr
         he = rowExponent hr
         dm = rowMantissas dr
@@ -598,7 +384,7 @@ assertRowsMatchOnCommitEnhanced commitEdge capIdx capAddr expectedAddr
                              (w:_) -> show w
                              _     -> "no words"
            in P.error $
-                "DRAM/HC mismatch at commit!"
+                "@" P.++ show c P.++ " DRAM/HC mismatch at commit!"
              P.++ "\n  *** LOCATION: layerIdx=" P.++ show layerIdx' 
              P.++ " headIdx=" P.++ show headIdx' 
              P.++ " row=" P.++ show ri P.++ " ***"

@@ -57,7 +57,7 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
     tag = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
-      LOADER.weightLoader dramSlaveIn layerIdx headIdx
+        LOADER.weightLoader cycleCounter dramSlaveIn layerIdx headIdx
                           (wfRowIndex inputs)
                           rowReqPulseTraced
                           (wfConsumeSignal inputs)
