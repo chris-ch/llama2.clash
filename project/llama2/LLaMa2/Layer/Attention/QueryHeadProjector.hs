@@ -24,7 +24,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowSc
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
 import TraceUtils (traceChangeC, traceEdgeC, traceChangeC)
-import LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit (RowComputeIn(rcWeightDram))
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -216,7 +215,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                   , rcWeightDram      = currentRowDram
                   , rcColumn          = xHat
                   }
-
+    
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
     ----------------------------------------------------------------------------
@@ -226,9 +225,12 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
     ----------------------------------------------------------------------------
     -- Row Result Checker
+    -- Compares DRAM-computed vs HC-computed results for live verification
     ----------------------------------------------------------------------------
     dramRowResultChecked = rowResultChecker
-      (RowComputeUnit.rcRowDone compute) rowIndex (RowComputeUnit.rcResult compute) (RowComputeUnit.rcResultHC compute)
+      (RowComputeUnit.rcRowDone compute) rowIndex 
+      (RowComputeUnit.rcResult compute)    -- DRAM result
+      (RowComputeUnit.rcResultHC compute)  -- HC result
       currentRowHC currentRowHC
 
     ----------------------------------------------------------------------------
@@ -238,7 +240,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                     OutputAccumulator.OutputAccumIn
                       { oaRowDone     = RowComputeUnit.rcRowDone compute
                       , oaRowIndex    = rowIndex
-                      , oaRowResult   = dramRowResultChecked
+                      , oaRowResult   = dramRowResultChecked   -- Checked DRAM result
                       , oaRowResultHC = RowComputeUnit.rcResultHC compute
                       }
 
@@ -253,7 +255,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     debugInfo = QHeadDebugInfo
       { qhRowIndex        = rowIndex
       , qhState           = RowComputeUnit.rcMultState compute
-      , qhFirstMant       = register 0 (head . rowMantissas <$> currentRowHC)
+      , qhFirstMant       = register 0 (head . rowMantissas <$> currentRowDram)
       , qhRowResult       = register 0 (RowComputeUnit.rcResult compute)
       , qhRowDone         = RowComputeUnit.rcRowDone compute
       , qhFetchValid      = weightValid
