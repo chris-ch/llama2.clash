@@ -1,4 +1,3 @@
--- File: LLaMa2/Decoder/LayerStack.hs (add AXI collection)
 module LLaMa2.Decoder.LayerStack (
   activeLayerProcessor, layerInputStage, LayerOutputs(..)
 ) where
@@ -13,7 +12,6 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
 import LLaMa2.Numeric.Operations (MultiplierState)
-import Clash.Netlist.Types (HWType(Unsigned))
 
 data LayerOutputs dom = LayerOutputs
   { axiMasterOuts  :: Vec NumLayers (Master.AxiMasterOut dom)

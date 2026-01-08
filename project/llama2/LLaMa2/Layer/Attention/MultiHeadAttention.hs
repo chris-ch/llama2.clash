@@ -1,4 +1,3 @@
--- File: LLaMa2/Layer/Attention/MultiHeadAttention.hs (add AXI parameters)
 module LLaMa2.Layer.Attention.MultiHeadAttention (
     multiHeadAttentionStage, singleHeadController
 ) where
@@ -95,10 +94,10 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
 
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
-        ( kvBankController seqPos layerData
-                           qkvDoneLatchedForWrite
-                           writeEnableForBanks
-                           attendActive )
+        ( kvBankController cycleCounter seqPos layerData
+                          qkvDoneLatchedForWrite
+                          writeEnableForBanks
+                          attendActive )
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
 
