@@ -19,7 +19,6 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
 import LLaMa2.Numeric.Operations (MultiplierState)
 import LLaMa2.Numeric.Quantization (RowI8E(..))
-import TraceUtils (makeCycleCounter)
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -89,7 +88,8 @@ layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
 
 -- | Main decoder with AXI interface
 decoder :: forall dom. HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom                     -- DRAM interface
+  => Signal dom (Unsigned 32)  -- Cycle counter
+  -> Slave.AxiSlaveIn dom     -- DRAM interface
   -> PARAM.DecoderParameters
   -> Signal dom Token
   -> Signal dom Bool
@@ -99,13 +99,14 @@ decoder :: forall dom. HiddenClockResetEnable dom
      , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
-decoder dramSlaveIn params inputToken forceInputToken temperature seed =
+decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature seed =
   (axiMasterOut, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
     controller = Controller.dataFlowController
+      cycleCounter
       layerFfnDone     -- Layer processing complete
       logitsValid      -- Classifier/token complete
 
@@ -202,10 +203,6 @@ decoder dramSlaveIn params inputToken forceInputToken temperature seed =
     -- =======================================================================
     outputToken = mux forceInputToken inputToken feedbackToken
     
-    -- Create THE cycle counter for the entire design
-    cycleCounter :: Signal dom (Unsigned 32)
-    cycleCounter = TraceUtils.makeCycleCounter
-
     -- =======================================================================
     -- INTROSPECTION
     -- =======================================================================

@@ -24,6 +24,7 @@ import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import Numeric (showHex)
+import qualified TraceUtils
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -286,13 +287,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn ""
   pure (length sampledTokens)
 
-bv512ToHex :: C.BitVector 512 -> String
-bv512ToHex bv = case C.maybeIsX bv of
-    Just _  -> "<undefined>"
-    Nothing -> "0x" ++ padTo128 '0' (showHex bv "")
-  where
-    padTo128 c s = replicate (128 - length s) c ++ s
-    
 -- | DDR simulation overview
 bundledOutputs
   :: C.Signal C.System (Token, Bool, Temperature, Seed)
@@ -306,10 +300,19 @@ bundledOutputs bundledInputs =
 
   params :: DecoderParameters
   params = PARAM.decoderConst
+  
+-- Instantiate cycle counter with explicit clock/reset/enable
+  cycleCounter :: C.Signal C.System (C.Unsigned 32)
+  cycleCounter =
+    C.exposeClockResetEnable
+      TraceUtils.makeCycleCounter
+      C.systemClockGen
+      C.resetGen
+      C.enableGen
 
   -- Create DDR simulator
   dramSlaveIn = C.exposeClockResetEnable
-    (DRAMSlave.createDRAMBackedAxiSlave params ddrMaster)
+    (DRAMSlave.createDRAMBackedAxiSlave cycleCounter params ddrMaster)
     C.systemClockGen
     C.resetGen
     C.enableGen
@@ -317,8 +320,7 @@ bundledOutputs bundledInputs =
   -- Decoder with AXI feedback loop
   (ddrMaster, tokenOut, validOut, introspection) =
     C.exposeClockResetEnable
-      (Decoder.decoder dramSlaveIn params token isValid temperature seed)
+      (Decoder.decoder cycleCounter dramSlaveIn params token isValid temperature seed)
       C.systemClockGen
       C.resetGen
       C.enableGen
-

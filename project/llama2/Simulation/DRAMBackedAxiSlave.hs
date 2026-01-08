@@ -43,11 +43,12 @@ type WordData = BitVector 512  -- 64 bytes per beat
 createDRAMBackedAxiSlave ::
   forall dom.
   HiddenClockResetEnable dom =>
+  Signal dom (Unsigned 32) ->  -- ^ cycleCounter for tracing
   PARAM.DecoderParameters ->
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlave params =
-  createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
+createDRAMBackedAxiSlave cycleCounter params =
+  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
 
 -- ============================================================================
 -- Build a DRAM image (generic depth)
@@ -126,13 +127,14 @@ data WriteState = WIdle | WProcessing (Index 256) (Index 256)
 -- | Generic-depth DRAM-backed AXI slave (read+write for tests; writes optional in HW).
 createDRAMBackedAxiSlaveFromVec :: forall dom n.
   (HiddenClockResetEnable dom, KnownNat n)
-  => DRAMConfig
+  => Signal dom (Unsigned 32)  -- ^ cycleCounter for tracing
+  -> DRAMConfig
   -> Vec n WordData
   -> Master.AxiMasterOut dom
   -> Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlaveFromVec config initVec masterIn =
+createDRAMBackedAxiSlaveFromVec cycleCounter config initVec masterIn =
   Slave.AxiSlaveIn
-    { arready = arreadySig
+    { arready = arreadySigTraced
     , rvalid  = rvalidSig
     , rdata   = rdataSigTraced
     , awready = awreadySig
@@ -180,6 +182,15 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
 
     arAccepted :: Signal dom Bool
     arAccepted = Master.arvalid masterIn .&&. arreadySig
+
+    -- Trace AR accepted with cycle counter
+    arreadySigTraced :: Signal dom Bool
+    arreadySigTraced = traceArAccept <$> cycleCounter <*> arAccepted <*> Master.ardata masterIn <*> arreadySig
+      where
+        traceArAccept cyc True ar ardy = 
+          trace ("@" P.++ show cyc P.++ " [DRAM] AR_ACCEPT addr=" P.++ show (araddr ar) 
+                 P.++ " len=" P.++ show (arlen ar)) ardy
+        traceArAccept _ False _ ardy = ardy
 
     currentBeat :: Signal dom (Index 256)
     currentBeat = (\case RProcessing b _ -> b; _ -> 0) <$> readState
@@ -344,16 +355,20 @@ createDRAMBackedAxiSlaveFromVec config initVec masterIn =
     bdataSig :: Signal dom AxiB
     bdataSig = AxiB 0 . awid <$> capturedAW
 
+    -- Trace R data with cycle counter
     traceRead :: Signal dom AxiR -> Signal dom AxiR
     traceRead rdataIn = 
-      go <$> rvalidSig <*> currentAddress <*> readAddrIdx <*> rdataIn
+      go <$> cycleCounter <*> rvalidSig <*> currentAddress <*> readAddrIdx <*> currentBeat <*> rdataIn
         where
-          go True addr idx r = 
-            trace ("[DRAMBackedAxisSlave] addr=" P.++ show addr 
+          go cyc True addr idx beat r = 
+            trace ("@" P.++ show cyc P.++ " [DRAM] R_DATA addr=" P.++ show addr 
                     P.++ " wordIdx=" P.++ show idx
+                    P.++ " beat=" P.++ show beat
+                    P.++ " rlast=" P.++ show (rlast r)
                     P.++ " data[0..3]=" P.++ show (P.take 4 $ toList $ unpack (rdata r) :: [BitVector 8]))
             r
-          go False _ _ r = r
+          go _ False _ _ _ r = r
 
     rdataSigTraced :: Signal dom AxiR
     rdataSigTraced = traceRead rdataSig
+  
