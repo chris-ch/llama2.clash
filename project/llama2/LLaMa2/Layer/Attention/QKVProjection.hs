@@ -194,7 +194,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
   perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
   
-  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting dramSlaveIn qAxiMasters
+  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn qAxiMasters
 
   -- Working version: direct connection, each head gets downStreamReady for FSM
   -- and consumeSignal for latch clearing
