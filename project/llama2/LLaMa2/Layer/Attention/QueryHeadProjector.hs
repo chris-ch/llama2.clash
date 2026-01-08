@@ -24,6 +24,7 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowSc
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
 import TraceUtils (traceChangeC, traceEdgeC, traceChangeC)
+import LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit (RowComputeIn(rcWeightDram))
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -211,7 +212,8 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                   , rcWeightValid     = weightValid
                   , rcDownStreamReady = downStreamReady
                   , rcRowIndex        = rowIndex
-                  , rcWeight          = currentRowHC
+                  , rcWeightHC        = currentRowHC
+                  , rcWeightDram      = currentRowDram
                   , rcColumn          = xHat
                   }
 

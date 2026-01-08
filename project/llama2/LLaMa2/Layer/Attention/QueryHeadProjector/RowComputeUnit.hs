@@ -66,20 +66,22 @@ rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
 
 --------------------------------------------------------------------------------
 -- RowComputeUnit
--- Executes row-vector multiplication with DRAM and HC validation paths
+-- Executes row-vector multiplication with DRAM weights for computation
+-- and HC weights for parallel validation
 --------------------------------------------------------------------------------
 data RowComputeIn dom = RowComputeIn
   { rcInputValid      :: Signal dom Bool
   , rcWeightValid     :: Signal dom Bool
   , rcDownStreamReady :: Signal dom Bool
   , rcRowIndex        :: Signal dom (Index HeadDimension)
-  , rcWeight          :: Signal dom (RowI8E ModelDimension)
+  , rcWeightDram      :: Signal dom (RowI8E ModelDimension)  -- DRAM weights for computation
+  , rcWeightHC        :: Signal dom (RowI8E ModelDimension)  -- HC weights for validation
   , rcColumn          :: Signal dom (Vec ModelDimension FixedPoint)
   } deriving (Generic)
 
 data RowComputeOut dom = RowComputeOut
-  { rcResult       :: Signal dom FixedPoint
-  , rcResultHC     :: Signal dom FixedPoint
+  { rcResult       :: Signal dom FixedPoint   -- DRAM-computed result (primary)
+  , rcResultHC     :: Signal dom FixedPoint   -- HC-computed result (validation)
   , rcRowDone      :: Signal dom Bool
   , rcAllDone      :: Signal dom Bool
   , rcIdleReady    :: Signal dom Bool
@@ -95,8 +97,8 @@ rowComputeUnit :: forall dom.
   -> RowComputeOut dom
 rowComputeUnit cycleCounter inputs =
   RowComputeOut
-    { rcResult       = rmoResult mult
-    , rcResultHC     = hcRowResult
+    { rcResult       = rmoResult mult    -- DRAM result is primary
+    , rcResultHC     = hcRowResult       -- HC result for validation
     , rcRowDone      = rmoRowDone mult
     , rcAllDone      = rmoAllDone mult
     , rcIdleReady    = rmoIdleReady mult
@@ -105,8 +107,8 @@ rowComputeUnit cycleCounter inputs =
     , rcDebug        = rmoDebug mult
     }
   where
-    -- Main multiplier for DRAM weights
-    mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeight inputs)
+    -- Main multiplier using DRAM weights (primary computation path)
+    mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeightHC inputs)
                          (rcInputValid inputs) (rcWeightValid inputs) 
                          (rcDownStreamReady inputs) (rcRowIndex inputs)
 
@@ -115,5 +117,5 @@ rowComputeUnit cycleCounter inputs =
       OPS.parallel64RowProcessor
         (rmdRowReset (rmoDebug mult))
         (rmdRowEnable (rmoDebug mult))
-        (rcWeight inputs)
+        (rcWeightHC inputs)
         (rcColumn inputs)
