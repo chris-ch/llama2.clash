@@ -25,3 +25,4 @@ runq
 *.log
 .DS_Store
 core
+.history
