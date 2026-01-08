@@ -65,7 +65,7 @@ weightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool     -- ^ weightReady (level)
      )
 weightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
-  (axiMaster, out, weightValidTraced, weightReadyTraced)
+  (axiMaster, out, weightValid, weightReady)
  where
   -- Hardcoded (HC) weights for this layer/head
   hcWeights :: MatI8E HeadDimension ModelDimension
@@ -83,10 +83,6 @@ weightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamRea
 
   weightValid :: Signal dom Bool
   weightValid = loadState .==. pure LDone
-
-  -- Trace weightReady and weightValid edges
-  weightReadyTraced = traceWeightReady cycleCounter layerIdx headIdx weightReady
-  weightValidTraced = traceWeightValid cycleCounter layerIdx headIdx weightValid
 
   -- Rising edge when a new row becomes valid to the downstream
   prevValid = register False weightValid
