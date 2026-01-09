@@ -171,6 +171,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                    { itcInputValid      = inputValid
                    , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
                    , itcDownStreamReady = downStreamReady
+                   , itcConsumeSignal   = consumeSignal
                    }
 
     inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
@@ -212,9 +213,15 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
     ----------------------------------------------------------------------------
-    -- Don't allow compute to restart while outputValid is high
+
+    -- Track if we just consumed (to prevent immediate restart)
+    justConsumed :: Signal dom Bool
+    justConsumed = register False consumeSignal
+
+    -- Don't allow compute to restart while outputValid is high OR just after consume
     effectiveInputValid = inputValidLatched .&&. 
-                          (not <$> OutputTransactionController.otcOutputValid outputTxn)
+                          (not <$> OutputTransactionController.otcOutputValid outputTxn) .&&.
+                          (not <$> justConsumed)
 
     compute = RowComputeUnit.rowComputeUnit cycleCounter
             RowComputeUnit.RowComputeIn

@@ -18,6 +18,7 @@ data InputTransactionIn dom = InputTransactionIn
   { itcInputValid      :: Signal dom Bool  -- External input valid strobe
   , itcOutputValid     :: Signal dom Bool  -- Computation complete signal
   , itcDownStreamReady :: Signal dom Bool  -- Downstream consumer ready
+  , itcConsumeSignal   :: Signal dom Bool
   } deriving (Generic)
 
 newtype InputTransactionOut dom
@@ -39,10 +40,10 @@ inputTransactionController cycleCounter layerIdx headIdx _rowIndex inputs =
 
     -- Input valid latch: SET on inputValid, CLR when complete and downstream ready
     latchedValid = register False nextLatchedValid
-    
+    clearCondition = itcConsumeSignal inputs
     nextLatchedValid =
       mux (itcInputValid inputs .&&. (not <$> latchedValid)) (pure True)
-      $ mux (itcOutputValid inputs .&&. itcDownStreamReady inputs) (pure False)
+      $ mux clearCondition (pure False)
         latchedValid
 
     latchedValidTraced = traceEdgeC cycleCounter (tag P.++ "latchedValid") latchedValid
