@@ -60,7 +60,7 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
         LOADER.weightLoader cycleCounter dramSlaveIn layerIdx headIdx
                           (wfRowIndex inputs)
                           rowReqPulseTraced
-                          (wfConsumeSignal inputs)
+                          (pure True)           -- ← Always ready for next row
                           (wfRowDone inputs)
                           params
 
@@ -68,17 +68,24 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
     weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
     weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
     
-    -- Gate the request INTERNALLY
+    -- Reset edge detection when loader transitions back to idle
+    loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
+
+    -- Gate the request INTERNALLY  
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
 
-    prevRowReqValid = register False rowReqValidGated
+    -- Track previous state, but RESET when loader becomes idle
+    prevRowReqValid = register False $ 
+        mux loaderBecameIdle (pure False) rowReqValidGated
+
     rowReqRise = rowReqValidGated .&&. (not <$> prevRowReqValid)
 
-    -- Detect row index changes while request is high
-    prevRowIndex = register 0 (wfRowIndex inputs)
+    -- Also reset prevRowIndex tracking
+    prevRowIndex = register 0 $ 
+        mux loaderBecameIdle (wfRowIndex inputs) (wfRowIndex inputs)
+        
     rowIndexChanged = wfRowIndex inputs ./=. prevRowIndex
 
-    -- Pulse on: rising edge of request OR row index change while request high
     rowReqPulse = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
 
     -- Simple edge trace

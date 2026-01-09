@@ -155,14 +155,15 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     rowIndex = traceChangeC cycleCounter (tag P.++ "rowIndex") $ register 0 nextRowIndex
 
     -- RowScheduler computes next index (combinatorial)
-    rowSched = RowScheduler.rowScheduler
-                 RowScheduler.RowSchedulerIn
+    rsIn = RowScheduler.RowSchedulerIn
                    { rsRowDone       = rowDone
                    , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
                    , rsConsumeSignal = consumeSignal
                    , rsCurrentIndex  = rowIndex
                    }
     
+    rowSched = RowScheduler.rowScheduler rsIn
+                 
     nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
     inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx rowIndex
@@ -185,12 +186,18 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                     , otcConsumeSignal = consumeSignal
                     }
 
+    -- Compute effective row index that resets combinationally
+    effectiveRowIndex :: Signal dom (Index HeadDimension)
+    effectiveRowIndex = mux (RowScheduler.rsOutputValid rsIn .&&. RowScheduler.rsConsumeSignal rsIn) 
+                            (pure 0) 
+                            rowIndex
+
     ----------------------------------------------------------------------------
     -- Weight Loader
     ----------------------------------------------------------------------------
     weightFetch = WeightFetchUnit.weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params
                     WeightFetchUnit.WeightFetchIn
-                      { wfRowIndex      = rowIndex
+                      { wfRowIndex      = effectiveRowIndex
                       , wfRowReqValid   = RowComputeUnit.rcFetchReq compute
                       , wfConsumeSignal = consumeSignal
                       , wfRowDone       = RowComputeUnit.rcRowDone compute
@@ -205,16 +212,20 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     ----------------------------------------------------------------------------
     -- Row Multiplier (FSM + parallel processor)
     ----------------------------------------------------------------------------
+    -- Don't allow compute to restart while outputValid is high
+    effectiveInputValid = inputValidLatched .&&. 
+                          (not <$> OutputTransactionController.otcOutputValid outputTxn)
+
     compute = RowComputeUnit.rowComputeUnit cycleCounter
-                RowComputeUnit.RowComputeIn
-                  { rcInputValid      = inputValidLatched
-                  , rcWeightValid     = weightValid
-                  , rcDownStreamReady = downStreamReady
-                  , rcRowIndex        = rowIndex
-                  , rcWeightHC        = currentRowHC
-                  , rcWeightDram      = currentRowDram
-                  , rcColumn          = xHat
-                  }
+            RowComputeUnit.RowComputeIn
+              { rcInputValid      = effectiveInputValid  -- ← Changed from inputValidLatched
+              , rcWeightValid     = weightValid
+              , rcDownStreamReady = downStreamReady
+              , rcRowIndex        = rowIndex
+              , rcWeightHC        = currentRowHC
+              , rcWeightDram      = currentRowDram
+              , rcColumn          = xHat
+              }
     
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 

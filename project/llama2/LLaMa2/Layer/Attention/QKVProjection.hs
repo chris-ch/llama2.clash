@@ -196,14 +196,17 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   
   (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn qAxiMasters
 
+  -- Define coordinated consume signal AFTER outputValid is computed
+  consumeSignal = outputValid .&&. downStreamReady
+
   -- Working version: direct connection, each head gets downStreamReady for FSM
   -- and consumeSignal for latch clearing
   qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
   qResults = imap (\headIdx _ ->
-      QHP.queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
+      QHP.queryHeadProjector cycleCounter (perHeadSlaves !! headIdx) layerIdx headIdx
                         inputValid 
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
-                        downStreamReady    -- consumeSignal for latch clearing
+                        consumeSignal    -- consumeSignal for latch clearing
                         seqPos xNorm params
     ) (repeat () :: Vec NumQueryHeads ())
 

@@ -108,7 +108,7 @@ rowComputeUnit cycleCounter inputs =
     }
   where
     -- Main multiplier using DRAM weights (primary computation path)
-    mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeightHC inputs)
+    mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeightDram inputs)
                          (rcInputValid inputs) (rcWeightValid inputs) 
                          (rcDownStreamReady inputs) (rcRowIndex inputs)
 
