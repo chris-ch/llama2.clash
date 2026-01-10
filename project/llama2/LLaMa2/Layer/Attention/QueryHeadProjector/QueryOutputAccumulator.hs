@@ -1,10 +1,11 @@
-module LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
+module LLaMa2.Layer.Attention.QueryHeadProjector.QueryOutputAccumulator
   ( outputAccumulator, OutputAccumIn(..), OutputAccumOut(..)
   ) where
 
 import Clash.Prelude
-import LLaMa2.Numeric.Types
+import LLaMa2.Numeric.Types ( FixedPoint )
 import LLaMa2.Types.ModelConfig
+    ( HeadDimension, NumLayers, NumQueryHeads )
 import qualified Prelude as P
 
 import TraceUtils (traceWhenC)

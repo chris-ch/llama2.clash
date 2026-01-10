@@ -22,8 +22,9 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector)
 import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.QueryHeadCore as QHC
 
 --------------------------------------------------------------------------------
 -- QKV projector
@@ -178,7 +179,7 @@ qkvProjector :: forall dom.
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
-     , QHP.QHeadDebugInfo dom
+     , QHC.QHeadDebugInfo dom
      )
 qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
   (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
@@ -201,7 +202,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
 
   -- Working version: direct connection, each head gets downStreamReady for FSM
   -- and consumeSignal for latch clearing
-  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
+  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHC.QHeadDebugInfo dom)
   qResults = imap (\headIdx _ ->
       QHP.queryHeadProjector cycleCounter (perHeadSlaves !! headIdx) layerIdx headIdx
                         inputValid 
@@ -250,7 +251,7 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
-     , QHP.QHeadDebugInfo dom
+     , QHC.QHeadDebugInfo dom
      )
 qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
   (axiMasterOut, result, outputValid, readyForInput, debugInfo)

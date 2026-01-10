@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputAccumulator
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueOutputAccumulator
   ( kvOutputAccumulator
   , KVOutputAccumIn(..)
   , KVOutputAccumOut(..)

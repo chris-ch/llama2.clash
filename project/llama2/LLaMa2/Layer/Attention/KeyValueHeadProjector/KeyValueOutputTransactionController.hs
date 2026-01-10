@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputTransactionController
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueOutputTransactionController
   ( KVOutputTransactionIn(..)
   , KVOutputTransactionOut(..)
   , kvOutputTransactionController

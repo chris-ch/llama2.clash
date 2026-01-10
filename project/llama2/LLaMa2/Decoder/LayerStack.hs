@@ -10,7 +10,7 @@ import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.QueryHeadCore as QueryHeadCore (QHeadDebugInfo (..))
 import LLaMa2.Numeric.Operations (MultiplierState)
 
 data LayerOutputs dom = LayerOutputs
@@ -65,7 +65,7 @@ activeLayerProcessor cycleCounter dramSlaveIn activeLayerIdx seqPos inputData in
     -- Run all layers in parallel
     layerOutputs :: Vec NumLayers (Master.AxiMasterOut dom, Signal dom LayerData, Signal dom LayerData,
       Signal dom LayerData, Signal dom Bool, Signal dom Bool,
-      Signal dom Bool, Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
+      Signal dom Bool, Signal dom Bool, Signal dom Bool, QueryHeadCore.QHeadDebugInfo dom)
     layerOutputs = map (layerPipeline inputData params) indicesI
 
     -- Extract AXI masters and other outputs
@@ -97,30 +97,30 @@ activeLayerProcessor cycleCounter dramSlaveIn activeLayerIdx seqPos inputData in
     qkvReadys :: Vec NumLayers (Signal dom Bool)
     qkvReadys = map (\(_, _, _, _, _, _, _, _, qkvR, _) -> qkvR) layerOutputs
 
-    dbgInfos :: Vec NumLayers (QHeadDebugInfo dom)
+    dbgInfos :: Vec NumLayers (QueryHeadCore.QHeadDebugInfo dom)
     dbgInfos = map (\(_, _, _, _, _, _, _, _, _, dbg) -> dbg) layerOutputs
 
     -- Extract debug info fields into separate vectors
     dbgRowIndexes :: Vec NumLayers (Signal dom (Index HeadDimension))
-    dbgRowIndexes = map qhRowIndex dbgInfos
+    dbgRowIndexes = map QueryHeadCore.qhRowIndex dbgInfos
 
     dbgStates :: Vec NumLayers (Signal dom MultiplierState)
-    dbgStates = map qhState dbgInfos
+    dbgStates = map QueryHeadCore.qhState dbgInfos
 
     dbgFirstMants :: Vec NumLayers (Signal dom Mantissa)
-    dbgFirstMants = map qhFirstMant dbgInfos
+    dbgFirstMants = map QueryHeadCore.qhFirstMant dbgInfos
 
     dbgRowResults :: Vec NumLayers (Signal dom FixedPoint)
-    dbgRowResults = map qhRowResult dbgInfos
+    dbgRowResults = map QueryHeadCore.qhRowResult dbgInfos
 
     dbgRowDones :: Vec NumLayers (Signal dom Bool)
-    dbgRowDones = map qhRowDone dbgInfos
+    dbgRowDones = map QueryHeadCore.qhRowDone dbgInfos
 
     dbgFetchValids :: Vec NumLayers (Signal dom Bool)
-    dbgFetchValids = map qhFetchValid dbgInfos
+    dbgFetchValids = map QueryHeadCore.qhFetchValid dbgInfos
 
     dbgFetchedWords :: Vec NumLayers (Signal dom (BitVector 512))
-    dbgFetchedWords = map qhFetchedWord dbgInfos
+    dbgFetchedWords = map QueryHeadCore.qhFetchedWord dbgInfos
 
     -- Select outputs for the active layer
     selectedQkvOutput :: Signal dom LayerData
@@ -181,7 +181,7 @@ activeLayerProcessor cycleCounter dramSlaveIn activeLayerIdx seqPos inputData in
                      , Signal dom Bool
                      , Signal dom Bool
                      , Signal dom Bool
-                     , QHeadDebugInfo dom
+                     , QueryHeadCore.QHeadDebugInfo dom
                      )
     layerPipeline inputData' params' layerIdx =
       ( axiMaster, qkvData, attnData, ffnData

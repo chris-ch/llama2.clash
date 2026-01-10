@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.KeyValueHeadProjector.KVWeightFetchUnit
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueWeightFetchUnit
   ( KVWeightFetchIn(..)
   , KVWeightFetchOut(..)
   , kvWeightFetchUnit

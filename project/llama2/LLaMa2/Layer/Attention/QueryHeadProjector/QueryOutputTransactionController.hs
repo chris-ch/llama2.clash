@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
+module LLaMa2.Layer.Attention.QueryHeadProjector.QueryOutputTransactionController
   ( OutputTransactionIn(..), OutputTransactionOut(..)
   , outputTransactionController
   ) where

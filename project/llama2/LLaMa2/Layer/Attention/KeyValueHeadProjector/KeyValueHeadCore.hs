@@ -7,6 +7,7 @@ import Clash.Prelude
 import qualified Prelude as P
 
 import LLaMa2.Types.ModelConfig
+    ( HeadDimension, NumKeyValueHeads, NumLayers, ModelDimension )
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.Parameters as PARAM
 
@@ -14,12 +15,12 @@ import qualified LLaMa2.Numeric.Operations as OPS
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputTransactionController as KVOutputTxn
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputAccumulator as KVOutputAccum
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVInputTransactionController as KVInputTxn
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowComputeUnit as KVRowCompute
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowScheduler as KVRowSched
-import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KVWeightFetchUnit as KVWeightFetch
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueOutputTransactionController as KVOutputTxn
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueOutputAccumulator as KVOutputAccum
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueInputTransactionController as KVInputTxn
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueRowComputeUnit as KVRowCompute
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueRowScheduler as KVRowSched
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueWeightFetchUnit as KVWeightFetch
 
 import TraceUtils (traceChangeC, traceEdgeC)
 

@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
+module LLaMa2.Layer.Attention.QueryHeadProjector.QueryInputTransactionController
   ( InputTransactionIn(..)
   , InputTransactionOut(..)
   , inputTransactionController

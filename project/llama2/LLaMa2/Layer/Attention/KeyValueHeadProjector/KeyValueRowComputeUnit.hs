@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowComputeUnit
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueRowComputeUnit
   ( KVRowComputeIn(..)
   , KVRowComputeOut(..)
   , kvRowComputeUnit

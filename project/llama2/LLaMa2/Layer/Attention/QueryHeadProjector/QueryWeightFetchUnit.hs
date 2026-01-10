@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
+module LLaMa2.Layer.Attention.QueryHeadProjector.QueryWeightFetchUnit
   ( WeightFetchIn(..)
   , WeightFetchOut(..)
   , weightFetchUnit
@@ -12,9 +12,8 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
-import Clash.Debug (trace)
 
-import TraceUtils (traceEdgeC)
+import TraceUtils (traceEdgeC, traceWhenC)
 
 --------------------------------------------------------------------------------
 -- WeightFetchUnit
@@ -106,17 +105,24 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
 --------------------------------------------------------------------------------
 -- Weight mismatch checker (assertion - kept as explicit check)
 --------------------------------------------------------------------------------
-weightMismatchChecker :: Signal dom (Unsigned 32)
+weightMismatchChecker
+  :: forall dom . ( KnownNat ModelDimension)
+  => Signal dom (Unsigned 32)
   -> Index NumLayers
   -> Signal dom Bool
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
-weightMismatchChecker cycleCounter layerIdx valid dram hc = result
+weightMismatchChecker cycleCounter layerIdx valid dram hc =
+  traceWhenC
+    cycleCounter
+    ("WFU L" P.++ show layerIdx P.++ " WEIGHT_MISMATCH")
+    mismatchCondition
+    dram
   where
-    result = check <$> valid <*> dram <*> hc
-    check v d h
-      | v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h) =
-          trace ("[WFU L" P.++ show layerIdx P.++ "] WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d)
-                P.++ " exp_h=" P.++ show (rowExponent h)) d
-      | otherwise = d
+    -- Version A – clearest and most common style
+    mismatchCondition :: Signal dom Bool
+    mismatchCondition =
+         valid
+      .&&. (   (rowExponent <$> dram) ./=. (rowExponent <$> hc)
+           .||. (rowMantissas <$> dram) ./=. (rowMantissas <$> hc) )

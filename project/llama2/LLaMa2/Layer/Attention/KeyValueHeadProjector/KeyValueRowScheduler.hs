@@ -1,4 +1,4 @@
-module LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowScheduler
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueRowScheduler
   ( KVRowSchedulerIn(..)
   , KVRowSchedulerOut(..)
   , kvRowScheduler

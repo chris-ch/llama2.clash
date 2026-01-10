@@ -15,7 +15,7 @@ import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
-import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector.QueryHeadCore as QHC (QHeadDebugInfo)
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
@@ -36,7 +36,7 @@ multiHeadAttentionStage :: forall dom.
     Signal dom Bool,
     Signal dom Bool,
     Signal dom Bool     
-    , QHeadDebugInfo dom
+    , QHC.QHeadDebugInfo dom
   )
 multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
   (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)

@@ -16,7 +16,7 @@ axiArbiterWithRouting :: forall dom n.
   -> ( Master.AxiMasterOut dom           -- ^ Combined master to DRAM
      , Vec n (Slave.AxiSlaveIn dom)      -- ^ Per-head slave interfaces
      )
-axiArbiterWithRouting cycleCounter slaveIn masters = (masterOut, perHeadSlaves)
+axiArbiterWithRouting _cycleCounter slaveIn masters = (masterOut, perHeadSlaves)
   where
     arRequests :: Vec n (Signal dom Bool)
     arRequests = map Master.arvalid masters
