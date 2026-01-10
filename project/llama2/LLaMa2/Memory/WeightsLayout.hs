@@ -2,6 +2,7 @@ module LLaMa2.Memory.WeightsLayout
   ( MatrixType(..)
   , WordsPerRow
   , rowAddressCalculator
+  , kvRowAddressCalculator    -- NEW: Type-safe K/V address calculator
   , axiRowFetcher
   , axiMultiWordRowFetcher
   , multiWordRowParser
@@ -79,19 +80,19 @@ rowStrideBytesI8E = wordsPerRowVal @n * 64
 align64 :: Int -> Int
 align64 n = ((n + 63) `div` 64) * 64
 
--- | Calculate DDR byte address for a specific matrix row
--- Enforces 64-byte alignment for all sections to match AXI word boundaries
---
--- CRITICAL: This must match the layout in buildMemoryFromParams exactly!
--- - RowI8E matrices use wordsPerRowVal (63 mantissas per word)
--- - FixedPoint vectors use wordsPerFixedPointVec (16 FP32 per word)
-rowAddressCalculator ::
+--------------------------------------------------------------------------------
+-- Address Calculation - Internal Implementation
+--------------------------------------------------------------------------------
+
+-- | Internal address calculation that works with raw Int for head index.
+-- This allows both Q-head and KV-head callers to use the same core logic.
+rowAddressCalculatorInternal ::
   MatrixType
   -> Index NumLayers
-  -> Index NumQueryHeads
+  -> Int                    -- ^ Head index as Int (caller responsible for bounds)
   -> Index HeadDimension
   -> Unsigned 32
-rowAddressCalculator matType layerIdx headIdx rowIdx =
+rowAddressCalculatorInternal matType layerIdx headIdxInt rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
   where
@@ -186,7 +187,7 @@ rowAddressCalculator matType layerIdx headIdx rowIdx =
       _        -> 0  -- W1/W2/W3 don't have per-head indexing
 
     headOffset :: Int
-    headOffset = fromIntegral headIdx * headBytes
+    headOffset = headIdxInt * headBytes
 
     -- Row offset within head/matrix
     rowBytesForMatrix = case matType of
@@ -196,6 +197,52 @@ rowAddressCalculator matType layerIdx headIdx rowIdx =
 
     rowOffset :: Int
     rowOffset = fromIntegral rowIdx * rowBytesForMatrix
+
+--------------------------------------------------------------------------------
+-- Public Address Calculators (Type-Safe Wrappers)
+--------------------------------------------------------------------------------
+
+-- | Calculate DDR byte address for Q, WO, W1, W2, W3 matrix rows.
+-- Uses Index NumQueryHeads for head indexing (appropriate for Q and WO).
+--
+-- For K/V matrices, use 'kvRowAddressCalculator' instead.
+--
+-- CRITICAL: This must match the layout in buildMemoryFromParams exactly!
+-- - RowI8E matrices use wordsPerRowVal (63 mantissas per word)
+-- - FixedPoint vectors use wordsPerFixedPointVec (16 FP32 per word)
+rowAddressCalculator ::
+  MatrixType
+  -> Index NumLayers
+  -> Index NumQueryHeads      -- ^ Q/WO head index
+  -> Index HeadDimension
+  -> Unsigned 32
+rowAddressCalculator matType layerIdx headIdx rowIdx =
+  rowAddressCalculatorInternal matType layerIdx (fromEnum headIdx) rowIdx
+
+-- | Calculate DDR byte address for K or V matrix rows.
+-- Uses Index NumKeyValueHeads for head indexing (appropriate for K and V).
+--
+-- == Usage
+--
+-- @
+-- kAddr = kvRowAddressCalculator KMatrix layerIdx kvHeadIdx rowIdx
+-- vAddr = kvRowAddressCalculator VMatrix layerIdx kvHeadIdx rowIdx
+-- @
+--
+-- == Type Safety
+--
+-- This function enforces that K/V matrices use the correct head index type,
+-- preventing accidental use of Q head indices for K/V lookups (which would
+-- cause address misalignment when NumQueryHeads /= NumKeyValueHeads).
+--
+kvRowAddressCalculator ::
+  MatrixType
+  -> Index NumLayers
+  -> Index NumKeyValueHeads   -- ^ K/V head index (NOT NumQueryHeads!)
+  -> Index HeadDimension
+  -> Unsigned 32
+kvRowAddressCalculator matType layerIdx kvHeadIdx rowIdx =
+  rowAddressCalculatorInternal matType layerIdx (fromEnum kvHeadIdx) rowIdx
 
 -- State machine for AXI read
 data RowFetcherState = Idle | WaitAR | WaitR
@@ -458,6 +505,11 @@ matrixMultiWordPacker m = P.concatMap multiWordRowPacker (toList m)
 data FetcherDebug dom = FetcherDebug
   { dbgLatchedAddr :: Signal dom (Unsigned 32)  -- Address actually latched by fetcher
   , dbgArAccepted  :: Signal dom Bool           -- AR handshake completed
+  , dbgRReceived   :: Signal dom Bool           -- R data beat received
+  , dbgBeat        :: Signal dom Int            -- Current beat counter as Int
+  , dbgStateIsWaitR :: Signal dom Bool          -- State is MWWaitR
+  , dbgStateIsDone :: Signal dom Bool           -- State is MWDone
+  , dbgDoneCondition :: Signal dom Bool         -- The done transition condition
   }
 
 -- Handshake-strict contract:
@@ -526,10 +578,13 @@ axiMultiWordRowFetcher slaveIn reqPulse addrIn =
     succWrap b = if b == maxBound then 0 else b + 1
 
   -- state transitions
+  -- DEBUG: Check if we ever reach the done condition
+  doneCondition = (state .==. pure (MWWaitR 0)) .&&. rReceived .&&. (beat .==. pure maxBound)
+  
   nextState =
     mux start (pure MWWaitAR) $
     mux (arAccepted .&&. (state .==. pure MWWaitAR)) (pure (MWWaitR 0)) $
-    mux ((state .==. pure (MWWaitR 0)) .&&. rReceived .&&. (beat .==. pure maxBound))
+    mux doneCondition
          (pure MWDone) $
     mux (((\case
         MWWaitR _ -> True
@@ -571,12 +626,20 @@ axiMultiWordRowFetcher slaveIn reqPulse addrIn =
     }
 
   -- Debug outputs for assertion checking
+  isWaitRState = (\case MWWaitR _ -> True; _ -> False) <$> state
+  isDoneState = (== MWDone) <$> state
+  beatAsInt = fromEnum <$> beat  -- Convert Index to Int for debugging
+  
   debugOut = FetcherDebug
     { dbgLatchedAddr = addrReg
     , dbgArAccepted  = arAccepted
+    , dbgRReceived   = rReceived
+    , dbgBeat        = beatAsInt
+    , dbgStateIsWaitR = isWaitRState
+    , dbgStateIsDone = isDoneState
+    , dbgDoneCondition = doneCondition
     }
 
 -- Single-beat version with the same strict handshake contract
 data SState = SIdle | SWaitAR | SWaitR
   deriving (Generic, NFDataX, Show, Eq)
-

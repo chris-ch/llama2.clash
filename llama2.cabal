@@ -102,8 +102,16 @@ library
       LLaMa2.Embedding.OutputProjection
       LLaMa2.Layer.Attention.AttentionHead
       LLaMa2.Layer.Attention.FSM
-      LLaMa2.Layer.Attention.KVCache
       LLaMa2.Layer.Attention.KeyValueHeadProjector
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KeyValueHeadCore
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVInputTransactionController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputAccumulator
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVOutputTransactionController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowComputeUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVRowScheduler
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.KVWeightFetchUnit
+      LLaMa2.Layer.Attention.KVCache
+      LLaMa2.Layer.Attention.KVWeightLoader
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.QueryHeadProjector
