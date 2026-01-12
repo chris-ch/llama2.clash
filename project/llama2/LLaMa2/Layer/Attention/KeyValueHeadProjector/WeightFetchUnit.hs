@@ -1,7 +1,8 @@
-module LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
+module LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit
   ( WeightFetchIn(..)
   , WeightFetchOut(..)
-  , weightFetchUnit
+  , kWeightFetchUnit
+  , vWeightFetchUnit
   ) where
 
 import Clash.Prelude
@@ -36,16 +37,17 @@ data WeightFetchOut dom = WeightFetchOut
   , wfIdleReady    :: Signal dom Bool
   } deriving (Generic)
 
-weightFetchUnit :: forall dom.
+-- K Weight Fetch Unit
+kWeightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
-  ->  Slave.AxiSlaveIn dom
+  -> Slave.AxiSlaveIn dom
   -> Index NumLayers
-  -> Index NumQueryHeads
+  -> Index NumKeyValueHeads
   -> PARAM.DecoderParameters
   -> WeightFetchIn dom
   -> WeightFetchOut dom
-weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
+kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
   WeightFetchOut
     { wfAxiMaster    = axiMaster
     , wfWeightDram   = currentRowDramChecked
@@ -54,10 +56,10 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+    tag = "[KWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
 
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
-        LOADER.qWeightLoader cycleCounter dramSlaveIn layerIdx headIdx
+        LOADER.kWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
                           (wfRowIndex inputs)
                           rowReqPulseTraced
                           (pure True)           -- ← Always ready for next row
@@ -100,7 +102,75 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
     currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
 
     -- Weight mismatch checker (assertion, not a trace)
-    currentRowDramChecked = weightMismatchChecker cycleCounter layerIdx weightValid
+    currentRowDramChecked = weightMismatchChecker cycleCounter layerIdx kvHeadIdx "K" weightValid
+                              currentRowDram currentRowHC
+
+-- V Weight Fetch Unit
+vWeightFetchUnit :: forall dom.
+  HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Index NumKeyValueHeads
+  -> PARAM.DecoderParameters
+  -> WeightFetchIn dom
+  -> WeightFetchOut dom
+vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
+  WeightFetchOut
+    { wfAxiMaster    = axiMaster
+    , wfWeightDram   = currentRowDramChecked
+    , wfWeightHC     = currentRowHC
+    , wfWeightValid  = weightValid
+    , wfIdleReady    = weightReady
+    }
+  where
+    tag = "[VWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+
+    (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
+        LOADER.vWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
+                          (wfRowIndex inputs)
+                          rowReqPulseTraced
+                          (pure True)           -- ← Always ready for next row
+                          (wfRowDone inputs)
+                          params
+
+    -- Trace weight valid and weight ready edges
+    weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
+    weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+    
+    -- Reset edge detection when loader transitions back to idle
+    loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
+
+    -- Gate the request INTERNALLY  
+    rowReqValidGated = wfRowReqValid inputs .&&. weightReady
+
+    -- Track previous state, but RESET when loader becomes idle
+    prevRowReqValid = register False $ 
+        mux loaderBecameIdle (pure False) rowReqValidGated
+
+    rowReqRise = rowReqValidGated .&&. (not <$> prevRowReqValid)
+
+    -- Also reset prevRowIndex tracking
+    prevRowIndex = register 0 $ 
+        mux loaderBecameIdle (wfRowIndex inputs) (wfRowIndex inputs)
+        
+    rowIndexChanged = wfRowIndex inputs ./=. prevRowIndex
+
+    rowReqPulse = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
+
+    -- Simple edge trace
+    rowReqPulseTraced = traceEdgeC cycleCounter (tag P.++ "reqPulse") rowReqPulse
+
+    ----------------------------------------------------------------------------
+    currentRowDramRaw = LOADER.dramRowOut weightLoaderOut
+    currentRowHCRaw   = LOADER.hcRowOut weightLoaderOut
+
+    -- Ensure rows don't change while valid
+    currentRowDram = LOADER.assertRowStable weightValid currentRowDramRaw
+    currentRowHC   = LOADER.assertRowStable weightValid currentRowHCRaw
+
+    -- Weight mismatch checker (assertion, not a trace)
+    currentRowDramChecked = weightMismatchChecker cycleCounter layerIdx kvHeadIdx "V" weightValid
                               currentRowDram currentRowHC
 
 --------------------------------------------------------------------------------
@@ -108,15 +178,18 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
 --------------------------------------------------------------------------------
 weightMismatchChecker :: Signal dom (Unsigned 32)
   -> Index NumLayers
+  -> Index NumKeyValueHeads
+  -> String  -- "K" or "V"
   -> Signal dom Bool
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
   -> Signal dom (RowI8E ModelDimension)
-weightMismatchChecker _cycleCounter layerIdx valid dram hc = result
+weightMismatchChecker _cycleCounter layerIdx kvHeadIdx matrixTag valid dram hc = result
   where
     result = check <$> valid <*> dram <*> hc
     check v d h
       | v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h) =
-          trace ("[WFU L" P.++ show layerIdx P.++ "] WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d)
+          trace ("[" P.++ matrixTag P.++ "WFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx 
+                P.++ "] WEIGHT_MISMATCH exp_d=" P.++ show (rowExponent d)
                 P.++ " exp_h=" P.++ show (rowExponent h)) d
       | otherwise = d

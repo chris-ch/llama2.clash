@@ -104,6 +104,12 @@ library
       LLaMa2.Layer.Attention.FSM
       LLaMa2.Layer.Attention.KVCache
       LLaMa2.Layer.Attention.KeyValueHeadProjector
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowComputeUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowScheduler
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController
       LLaMa2.Layer.Attention.MultiHeadAttention
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.QueryHeadProjector

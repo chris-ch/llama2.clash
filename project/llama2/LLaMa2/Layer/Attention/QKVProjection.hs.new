@@ -1,0 +1,251 @@
+module LLaMa2.Layer.Attention.QKVProjection
+  ( 
+    qkvProjectionController
+  ) where
+
+import Clash.Prelude
+
+
+import LLaMa2.Types.ModelConfig
+    ( HeadDimension,
+      ModelDimension,
+      NumKeyValueHeads,
+      NumLayers,
+      NumQueryHeads,
+      SequenceLength )
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
+import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
+import qualified Simulation.Parameters as PARAM
+
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import Simulation.Parameters (DecoderParameters(..))
+import qualified LLaMa2.Memory.AXI.Arbiter as ARB
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
+import qualified GHC.TypeNats as TN
+
+--------------------------------------------------------------------------------
+-- QKV projector
+--------------------------------------------------------------------------------
+-- Total masters: NumQueryHeads (for Q) + 2*NumKeyValueHeads (for K and V)
+type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
+
+-- | Coordinates all query heads and key-value heads for QKV projection.
+--
+-- == Overview
+--
+-- This component instantiates NumQueryHeads query projectors and NumKeyValueHeads
+-- KV projectors, combining their outputs. It provides a single interface for
+-- the complete QKV projection stage of the attention mechanism.
+--
+-- == Architecture
+--
+-- @
+--                    ┌─────────────────────────────────────────────────────────┐
+--                    │                    qkvProjector                         │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              Query Heads (×NumQueryHeads)       │    │
+--                    │  │              Each with DRAM weight access       │    │
+--   inputValid ─────►│  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
+--                    │  │  │ QHead 0 │ │ QHead 1 │ ... │ QHead N │        │    │
+--   downStreamReady─►│  │  │ +DRAM   │ │ +DRAM   │     │ +DRAM   │        │    │
+--                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
+--   xVec ───────────►│  │       │           │               │             │    │
+--                    │  │       ▼           ▼               ▼             │    │
+--   seqPos ─────────►│  │   qVecs[0]    qVecs[1]  ...   qVecs[N]          │    │
+--                    │  │   qValids[0]  qValids[1] ... qValids[N]         │    │
+--                    │  │                                                 │    │
+--                    │  └─────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  ┌─────────────────────────────────────────────────┐    │
+--                    │  │              KV Heads (×NumKeyValueHeads)       │    │
+--                    │  │              Each with DRAM weight access       │    │
+--                    │  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
+--                    │  │  │ KVHead0 │ │ KVHead1 │ ... │ KVHeadM │        │    │
+--                    │  │  │ K+V     │ │ K+V     │     │ K+V     │        │    │
+--                    │  │  │ +DRAM   │ │ +DRAM   │     │ +DRAM   │        │    │
+--                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
+--                    │  │       │           │               │             │    │
+--                    │  │       ▼           ▼               ▼             │    │
+--                    │  │   kVecs[0]    kVecs[1]  ...   kVecs[M]          │    │
+--                    │  │   vVecs[0]    vVecs[1]  ...   vVecs[M]          │    │
+--                    │  │   kvValids[0] kvValids[1]... kvValids[M]        │    │
+--                    │  │                                                 │    │
+--                    │  └────────────────────────────────────────────────┘    │
+--                    │                                                         │
+--                    │  outputValid = AND(all qValids) AND AND(all kvValids)   │
+--                    │  readyForInput = AND(all qReadys) AND AND(all kvReadys) │
+--                    │                                                         │
+--                    │  AXI Arbiter combines Q, K, V DRAM access             │
+--                    │                                                         │
+--                    └─────────────────────────────────────────────────────────┘
+-- @
+--
+-- == Input Signals
+--
+-- [@inputValid@] Start signal for all heads.
+--                Directly passed to each head's inputValid.
+--
+-- [@downStreamReady@] Acknowledgment from downstream.
+--
+-- [@seqPos@] Sequence position for rotary encoding.
+--
+-- [@xVec@] Input activations (Vec ModelDimension FixedPoint).
+--          Normalized internally using RMS norm before projection.
+--
+-- [@params@] Full model parameters.
+--
+-- == Output Signals
+--
+-- [@qkvOut@] Bundled output: (Vec NumQueryHeads qVec, Vec NumKVHeads kVec, Vec NumKVHeads vVec)
+--
+-- [@outputValid@] True when ALL heads have completed.
+--                 Computed as: AND of all individual head valids.
+--
+-- [@readyForInput@] True when ALL heads are ready for new input.
+--                   Computed as: AND of all individual head readys.
+--
+qkvProjector :: forall dom.
+  HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Index SequenceLength)
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
+     , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+     , Signal dom Bool
+     , Signal dom Bool
+     , QHP.QHeadDebugInfo dom
+     )
+qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
+  (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
+ where
+  layerParams = modelLayers params !! layerIdx
+  mhaParams = PARAM.multiHeadAttention layerParams
+  xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
+
+  -- =====================================================================
+  -- AXI Arbiter Setup for Q, K, V DRAM Access
+  -- =====================================================================
+
+  allAxiMasters :: Vec TotalMasters (Master.AxiMasterOut dom)
+  perHeadSlaves :: Vec TotalMasters (Slave.AxiSlaveIn dom)
+  
+  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
+
+  -- Split slaves into three groups: Q, K, V
+  (qSlaves, kvSlaves) = splitAtI @NumQueryHeads perHeadSlaves
+  (kSlaves, vSlaves) = splitAtI @NumKeyValueHeads kvSlaves
+
+  -- Define coordinated consume signal AFTER outputValid is computed
+  consumeSignal = outputValid .&&. downStreamReady
+
+  -- =====================================================================
+  -- Query Heads (with DRAM weight access)
+  -- =====================================================================
+  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
+  qResults = imap (\headIdx _ ->
+      QHP.queryHeadProjector cycleCounter (qSlaves !! headIdx) layerIdx headIdx
+                        inputValid 
+                        (pure True)      -- downStreamReady for FSM (always ready for next row)
+                        consumeSignal    -- consumeSignal for latch clearing
+                        seqPos xNorm params
+    ) (repeat () :: Vec NumQueryHeads ())
+
+  head0Debug = head qDebugInfos
+  qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
+  qVecs       = map (\(_, q, _, _, _) -> q) qResults
+  qValids     = map (\(_, _, v, _, _) -> v) qResults
+  qReadys     = map (\(_, _, _, r, _) -> r) qResults
+  qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
+
+  -- =====================================================================
+  -- KV Heads (with DRAM weight access for both K and V)
+  -- =====================================================================
+  -- Each KV head gets ONE K slave and ONE V slave (already split above)
+  kvResults :: Vec NumKeyValueHeads 
+               ( Master.AxiMasterOut dom   -- K AXI master
+               , Master.AxiMasterOut dom   -- V AXI master
+               , Signal dom (Vec HeadDimension FixedPoint)  -- K output
+               , Signal dom (Vec HeadDimension FixedPoint)  -- V output
+               , Signal dom Bool           -- outputValid
+               , Signal dom Bool           -- readyForInput
+               , KVHP.KVHeadDebugInfo dom
+               )
+  kvResults = imap kvHead (indicesI :: Vec NumKeyValueHeads (Index NumKeyValueHeads))
+   where
+    kvHead :: Index NumKeyValueHeads 
+           -> Index NumKeyValueHeads 
+           -> ( Master.AxiMasterOut dom
+              , Master.AxiMasterOut dom
+              , Signal dom (Vec HeadDimension FixedPoint)
+              , Signal dom (Vec HeadDimension FixedPoint)
+              , Signal dom Bool
+              , Signal dom Bool
+              , KVHP.KVHeadDebugInfo dom
+              )
+    kvHead _ kvIdx =
+      let kSlave = kSlaves !! kvIdx
+          vSlave = vSlaves !! kvIdx
+      in KVHP.keyValueHeadProjector cycleCounter kSlave vSlave layerIdx kvIdx
+                        inputValid 
+                        (pure True)      -- downStreamReady for FSM
+                        consumeSignal    -- consumeSignal for latch clearing
+                        seqPos xNorm params
+  
+  kvAxiMastersK = map (\(kAxi, _, _, _, _, _, _) -> kAxi) kvResults
+  kvAxiMastersV = map (\(_, vAxi, _, _, _, _, _) -> vAxi) kvResults
+  kVecs         = map (\(_, _, k, _, _, _, _) -> k) kvResults
+  vVecs         = map (\(_, _, _, v, _, _, _) -> v) kvResults
+  kvValids      = map (\(_, _, _, _, valid, _, _) -> valid) kvResults
+  kvReadys      = map (\(_, _, _, _, _, ready, _) -> ready) kvResults
+
+  -- Combine all AXI masters: Q heads, then K heads, then V heads
+  allAxiMasters = qAxiMasters ++ kvAxiMastersK ++ kvAxiMastersV
+
+  outputValid = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
+  readyForInput = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
+  qkvOut = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)
+
+--------------------------------------------------------------------------------
+-- QKV Projection Controller
+--------------------------------------------------------------------------------
+qkvProjectionController ::
+  HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> PARAM.DecoderParameters
+  -> Signal dom (Index SequenceLength)
+  -> ( Master.AxiMasterOut dom
+     , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
+                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+     , Signal dom Bool
+     , Signal dom Bool
+     , QHP.QHeadDebugInfo dom
+     )
+qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
+  (axiMasterOut, result, outputValid, readyForInput, debugInfo)
+ where
+  (enable, outputValid, inReadyRaw) =
+    FSM.processingControllerFSM inputValid downStreamReady matVecValid
+
+  (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
+    qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
+                 seqPos input params
+
+  projReadyOut_d = register True projReadyOut
+  readyForInput  = inReadyRaw .&&. projReadyOut_d

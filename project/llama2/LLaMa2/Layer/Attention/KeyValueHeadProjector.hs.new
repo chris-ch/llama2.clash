@@ -1,0 +1,415 @@
+module LLaMa2.Layer.Attention.KeyValueHeadProjector
+  ( keyValueHeadProjector
+  , KVHeadDebugInfo(..)
+  ) where
+
+import Clash.Prelude
+
+import qualified Prelude as P
+
+import LLaMa2.Types.ModelConfig
+    ( HeadDimension, ModelDimension, SequenceLength, NumLayers, NumKeyValueHeads )
+import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
+import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
+import qualified Simulation.Parameters as PARAM
+
+import qualified LLaMa2.Numeric.Operations as OPS
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController as OutputTransactionController
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator as OutputAccumulator
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController as InputTransactionController
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.RowComputeUnit as RowComputeUnit
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.RowScheduler as RowScheduler
+import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit as WeightFetchUnit
+
+import TraceUtils (traceChangeC, traceEdgeC)
+
+--------------------------------------------------------------------------------
+-- Debug Info Record
+--------------------------------------------------------------------------------
+data KVHeadDebugInfo dom = KVHeadDebugInfo
+  { kvhKRowIndex        :: Signal dom (Index HeadDimension)
+  , kvhVRowIndex        :: Signal dom (Index HeadDimension)
+  , kvhKState           :: Signal dom OPS.MultiplierState
+  , kvhVState           :: Signal dom OPS.MultiplierState
+  , kvhKRowResult       :: Signal dom FixedPoint
+  , kvhVRowResult       :: Signal dom FixedPoint
+  , kvhKRowDone         :: Signal dom Bool
+  , kvhVRowDone         :: Signal dom Bool
+  , kvhKFetchValid      :: Signal dom Bool
+  , kvhVFetchValid      :: Signal dom Bool
+  , kvhKWeightReady     :: Signal dom Bool
+  , kvhVWeightReady     :: Signal dom Bool
+  } deriving (Generic)
+
+--------------------------------------------------------------------------------
+-- BLOCK: RowResultChecker
+-- Asserts DRAM and HC row results match when rowDone fires
+--------------------------------------------------------------------------------
+rowResultChecker :: forall dom. HiddenClockResetEnable dom
+  => String  -- Tag for error messages (K or V)
+  -> Signal dom Bool
+  -> Signal dom (Index HeadDimension)
+  -> Signal dom FixedPoint
+  -> Signal dom FixedPoint
+  -> Signal dom (RowI8E ModelDimension)
+  -> Signal dom (RowI8E ModelDimension)
+  -> Signal dom FixedPoint
+rowResultChecker matrixTag rowDone rowIdx dramResult hcResult dramWeights hcWeights = result
+  where
+    tokenCnt :: Signal dom (Unsigned 32)
+    tokenCnt = register 0 nextTokenCnt
+    nextTokenCnt = mux (rowDone .&&. (rowIdx .==. pure maxBound)) (tokenCnt + 1) tokenCnt
+
+    result = mux rowDone
+                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult <*> dramWeights <*> hcWeights)
+                 dramResult
+
+    check tok ri dr hr dramW hcW
+      | dr P.== hr = dr
+      | otherwise  = P.error $ matrixTag P.++ " row result mismatch at token " P.++ show tok
+                    P.++ " row " P.++ show ri P.++ ": DRAM=" P.++ show dr P.++ " HC=" P.++ show hr
+                    P.++ "\n  DRAM weight exp=" P.++ show (rowExponent dramW)
+                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas dramW)))
+                    P.++ "\n  HC weight exp=" P.++ show (rowExponent hcW)
+                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas hcW)))
+                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW
+                                                         P.&& rowMantissas dramW P.== rowMantissas hcW)
+
+--------------------------------------------------------------------------------
+-- BLOCK: KVOutputChecker
+-- Compares final K or V output vectors
+--------------------------------------------------------------------------------
+kvOutputChecker :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
+  => String  -- Tag for error messages (K or V)
+  -> Signal dom Bool
+  -> Signal dom (Vec n FixedPoint)
+  -> Signal dom (Vec n FixedPoint)
+  -> Signal dom (Vec n FixedPoint)
+kvOutputChecker matrixTag outputValid dramOut hcOut = result
+  where
+    everValid = register False (everValid .||. outputValid)
+    prevOutputValid = register False outputValid
+    checkTrigger = prevOutputValid .&&. everValid
+
+    dramSampled = register (repeat 0) (mux checkTrigger dramOut dramSampled)
+    hcSampled   = register (repeat 0) (mux checkTrigger hcOut hcSampled)
+
+    tokenCnt :: Signal dom (Unsigned 32)
+    tokenCnt = register 0 (mux checkTrigger (tokenCnt + 1) tokenCnt)
+
+    result = mux checkTrigger (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled) dramOut
+
+    checkPure tok dr hr =
+      let pairs = P.zip [0..] (P.zip (toList dr) (toList hr))
+          mismatches = P.filter (\(_, (d,h)) -> d P./= h) pairs
+      in if P.null mismatches then dr
+         else let (i, (d, h)) = P.head mismatches
+              in P.error $ matrixTag P.++ "Head output mismatch at token " P.++ show tok
+                        P.++ ": index " P.++ show (i :: Int)
+                        P.++ " (DRAM=" P.++ show d P.++ ", HC=" P.++ show h P.++ ")"
+                        P.++ " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
+
+--------------------------------------------------------------------------------
+-- KeyValueHeadCore
+--------------------------------------------------------------------------------
+data KeyValueHeadCoreOut dom = KeyValueHeadCoreOut
+  { kvhcKAxiMaster   :: Master.AxiMasterOut dom
+  , kvhcVAxiMaster   :: Master.AxiMasterOut dom
+  , kvhcKResult      :: Signal dom (Vec HeadDimension FixedPoint)
+  , kvhcVResult      :: Signal dom (Vec HeadDimension FixedPoint)
+  , kvhcOutputValid  :: Signal dom Bool
+  , kvhcReady        :: Signal dom Bool
+  , kvhcDebug        :: KVHeadDebugInfo dom
+  }
+
+keyValueHeadCore :: forall dom.
+  HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom  -- K weight DRAM slave
+  -> Slave.AxiSlaveIn dom  -- V weight DRAM slave
+  -> Index NumLayers
+  -> Index NumKeyValueHeads
+  -> Signal dom Bool                              -- inputValid
+  -> Signal dom Bool                              -- downStreamReady
+  -> Signal dom Bool                              -- consumeSignal
+  -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
+  -> PARAM.DecoderParameters
+  -> KeyValueHeadCoreOut dom
+keyValueHeadCore cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx inputValid downStreamReady consumeSignal xHat params =
+  KeyValueHeadCoreOut
+    { kvhcKAxiMaster   = WeightFetchUnit.wfAxiMaster kWeightFetch
+    , kvhcVAxiMaster   = WeightFetchUnit.wfAxiMaster vWeightFetch
+    , kvhcKResult      = kOutFinal
+    , kvhcVResult      = vOutFinal
+    , kvhcOutputValid  = OutputTransactionController.otcOutputValid outputTxn
+    , kvhcReady        = readyForInput
+    , kvhcDebug        = debugInfo
+    }
+  where
+    -- Trace tag for this instance
+    tag = "[KVHP L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+
+    ----------------------------------------------------------------------------
+    -- Row Index Registers (separate for K and V)
+    ----------------------------------------------------------------------------
+    kRowIndex :: Signal dom (Index HeadDimension)
+    kRowIndex = traceChangeC cycleCounter (tag P.++ "kRowIndex") $ register 0 nextKRowIndex
+
+    vRowIndex :: Signal dom (Index HeadDimension)
+    vRowIndex = traceChangeC cycleCounter (tag P.++ "vRowIndex") $ register 0 nextVRowIndex
+
+    -- RowScheduler computes next indices (combinatorial)
+    kRsIn = RowScheduler.RowSchedulerIn
+                   { rsRowDone       = kRowDone
+                   , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
+                   , rsConsumeSignal = consumeSignal
+                   , rsCurrentIndex  = kRowIndex
+                   }
+    
+    vRsIn = RowScheduler.RowSchedulerIn
+                   { rsRowDone       = vRowDone
+                   , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
+                   , rsConsumeSignal = consumeSignal
+                   , rsCurrentIndex  = vRowIndex
+                   }
+    
+    kRowSched = RowScheduler.rowScheduler kRsIn
+    vRowSched = RowScheduler.rowScheduler vRsIn
+                 
+    nextKRowIndex = RowScheduler.rsNextRowIndex kRowSched
+    nextVRowIndex = RowScheduler.rsNextRowIndex vRowSched
+
+    inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx kvHeadIdx kRowIndex
+                 InputTransactionController.InputTransactionIn
+                   { itcInputValid      = inputValid
+                   , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
+                   , itcDownStreamReady = downStreamReady
+                   , itcConsumeSignal   = consumeSignal
+                   }
+
+    inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
+
+    ----------------------------------------------------------------------------
+    -- Output Valid Latch
+    -- CRITICAL: Latch individual allDone signals to prevent race condition
+    -- where K and V finish at different cycles and restart before both are done
+    ----------------------------------------------------------------------------
+    
+    -- Latch K allDone: stays high once asserted until consume
+    kAllDoneLatch :: Signal dom Bool
+    kAllDoneLatch = register False $ 
+      mux consumeSignal 
+        (pure False)  -- Clear on consume
+        (mux (RowComputeUnit.rcAllDone kCompute) 
+          (pure True)   -- Set when K done
+          kAllDoneLatch -- Hold current value
+        )
+    
+    -- Latch V allDone: stays high once asserted until consume  
+    vAllDoneLatch :: Signal dom Bool
+    vAllDoneLatch = register False $
+      mux consumeSignal
+        (pure False)  -- Clear on consume
+        (mux (RowComputeUnit.rcAllDone vCompute)
+          (pure True)   -- Set when V done
+          vAllDoneLatch -- Hold current value
+        )
+    
+    -- Combined allDone: both must be high (latched)
+    bothDone = kAllDoneLatch .&&. vAllDoneLatch
+    
+    outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx kvHeadIdx kRowIndex downStreamReady
+                  OutputTransactionController.OutputTransactionIn
+                    { otcAllDone       = bothDone
+                    , otcConsumeSignal = consumeSignal
+                    }
+
+    -- Compute effective row indices that reset combinationally
+    effectiveKRowIndex :: Signal dom (Index HeadDimension)
+    effectiveKRowIndex = mux (RowScheduler.rsOutputValid kRsIn .&&. RowScheduler.rsConsumeSignal kRsIn) 
+                            (pure 0) 
+                            kRowIndex
+
+    effectiveVRowIndex :: Signal dom (Index HeadDimension)
+    effectiveVRowIndex = mux (RowScheduler.rsOutputValid vRsIn .&&. RowScheduler.rsConsumeSignal vRsIn) 
+                            (pure 0) 
+                            vRowIndex
+
+    ----------------------------------------------------------------------------
+    -- Weight Loaders (K and V)
+    ----------------------------------------------------------------------------
+    kWeightFetch = WeightFetchUnit.kWeightFetchUnit cycleCounter kDramSlaveIn layerIdx kvHeadIdx params
+                    WeightFetchUnit.WeightFetchIn
+                      { wfRowIndex      = effectiveKRowIndex
+                      , wfRowReqValid   = RowComputeUnit.rcFetchReq kCompute
+                      , wfConsumeSignal = consumeSignal
+                      , wfRowDone       = RowComputeUnit.rcRowDone kCompute
+                      , wfInputValid    = inputValid
+                      }
+
+    vWeightFetch = WeightFetchUnit.vWeightFetchUnit cycleCounter vDramSlaveIn layerIdx kvHeadIdx params
+                    WeightFetchUnit.WeightFetchIn
+                      { wfRowIndex      = effectiveVRowIndex
+                      , wfRowReqValid   = RowComputeUnit.rcFetchReq vCompute
+                      , wfConsumeSignal = consumeSignal
+                      , wfRowDone       = RowComputeUnit.rcRowDone vCompute
+                      , wfInputValid    = inputValid
+                      }
+
+    currentKRowDram = WeightFetchUnit.wfWeightDram kWeightFetch
+    currentKRowHC   = WeightFetchUnit.wfWeightHC kWeightFetch
+    kWeightValid    = WeightFetchUnit.wfWeightValid kWeightFetch
+    kWeightReady    = WeightFetchUnit.wfIdleReady kWeightFetch
+
+    currentVRowDram = WeightFetchUnit.wfWeightDram vWeightFetch
+    currentVRowHC   = WeightFetchUnit.wfWeightHC vWeightFetch
+    vWeightValid    = WeightFetchUnit.wfWeightValid vWeightFetch
+    vWeightReady    = WeightFetchUnit.wfIdleReady vWeightFetch
+
+    ----------------------------------------------------------------------------
+    -- Row Multipliers (K and V FSMs + parallel processors)
+    ----------------------------------------------------------------------------
+
+    -- Track if we just consumed (to prevent immediate restart)
+    justConsumed :: Signal dom Bool
+    justConsumed = register False consumeSignal
+
+    -- Don't allow compute to restart while outputValid is high OR just after consume
+    effectiveInputValid = inputValidLatched .&&. 
+                          (not <$> OutputTransactionController.otcOutputValid outputTxn) .&&.
+                          (not <$> justConsumed)
+
+    kCompute = RowComputeUnit.rowComputeUnit cycleCounter
+            RowComputeUnit.RowComputeIn
+              { rcInputValid      = effectiveInputValid
+              , rcWeightValid     = kWeightValid
+              , rcDownStreamReady = downStreamReady
+              , rcRowIndex        = kRowIndex
+              , rcWeightHC        = currentKRowHC
+              , rcWeightDram      = currentKRowDram
+              , rcColumn          = xHat
+              }
+
+    vCompute = RowComputeUnit.rowComputeUnit cycleCounter
+            RowComputeUnit.RowComputeIn
+              { rcInputValid      = effectiveInputValid
+              , rcWeightValid     = vWeightValid
+              , rcDownStreamReady = downStreamReady
+              , rcRowIndex        = vRowIndex
+              , rcWeightHC        = currentVRowHC
+              , rcWeightDram      = currentVRowDram
+              , rcColumn          = xHat
+              }
+    
+    readyForInput = RowComputeUnit.rcIdleReady kCompute .&&. kWeightReady .&&.
+                    RowComputeUnit.rcIdleReady vCompute .&&. vWeightReady
+
+    ----------------------------------------------------------------------------
+    -- Row Done - simple edge traces
+    ----------------------------------------------------------------------------
+    kRowDone = traceEdgeC cycleCounter (tag P.++ "kRowDone") $ RowComputeUnit.rcRowDone kCompute
+    vRowDone = traceEdgeC cycleCounter (tag P.++ "vRowDone") $ RowComputeUnit.rcRowDone vCompute
+
+    ----------------------------------------------------------------------------
+    -- Row Result Checkers
+    -- Compares DRAM-computed vs HC-computed results for live verification
+    ----------------------------------------------------------------------------
+    dramKRowResultChecked = rowResultChecker
+      "K" (RowComputeUnit.rcRowDone kCompute) kRowIndex 
+      (RowComputeUnit.rcResult kCompute)    -- DRAM result
+      (RowComputeUnit.rcResultHC kCompute)  -- HC result
+      currentKRowDram currentKRowHC
+
+    dramVRowResultChecked = rowResultChecker
+      "V" (RowComputeUnit.rcRowDone vCompute) vRowIndex 
+      (RowComputeUnit.rcResult vCompute)    -- DRAM result
+      (RowComputeUnit.rcResultHC vCompute)  -- HC result
+      currentVRowDram currentVRowHC
+
+    ----------------------------------------------------------------------------
+    -- Result Accumulators (K and V)
+    ----------------------------------------------------------------------------
+    kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx kvHeadIdx
+                    OutputAccumulator.OutputAccumIn
+                      { oaRowDone     = RowComputeUnit.rcRowDone kCompute
+                      , oaRowIndex    = kRowIndex
+                      , oaRowResult   = dramKRowResultChecked   -- Checked DRAM result
+                      , oaRowResultHC = RowComputeUnit.rcResultHC kCompute
+                      }
+
+    vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx kvHeadIdx
+                    OutputAccumulator.OutputAccumIn
+                      { oaRowDone     = RowComputeUnit.rcRowDone vCompute
+                      , oaRowIndex    = vRowIndex
+                      , oaRowResult   = dramVRowResultChecked   -- Checked DRAM result
+                      , oaRowResultHC = RowComputeUnit.rcResultHC vCompute
+                      }
+
+    kOut   = OutputAccumulator.oaOutput kOutputAccum
+    kOutHC = OutputAccumulator.oaOutputHC kOutputAccum
+    vOut   = OutputAccumulator.oaOutput vOutputAccum
+    vOutHC = OutputAccumulator.oaOutputHC vOutputAccum
+
+    kOutFinal = kvOutputChecker "K" (OutputTransactionController.otcOutputValid outputTxn) kOut kOutHC
+    vOutFinal = kvOutputChecker "V" (OutputTransactionController.otcOutputValid outputTxn) vOut vOutHC
+
+    ----------------------------------------------------------------------------
+    -- Debug Info
+    ----------------------------------------------------------------------------
+    debugInfo = KVHeadDebugInfo
+      { kvhKRowIndex    = kRowIndex
+      , kvhVRowIndex    = vRowIndex
+      , kvhKState       = RowComputeUnit.rcMultState kCompute
+      , kvhVState       = RowComputeUnit.rcMultState vCompute
+      , kvhKRowResult   = register 0 (RowComputeUnit.rcResult kCompute)
+      , kvhVRowResult   = register 0 (RowComputeUnit.rcResult vCompute)
+      , kvhKRowDone     = RowComputeUnit.rcRowDone kCompute
+      , kvhVRowDone     = RowComputeUnit.rcRowDone vCompute
+      , kvhKFetchValid  = kWeightValid
+      , kvhVFetchValid  = vWeightValid
+      , kvhKWeightReady = kWeightReady
+      , kvhVWeightReady = vWeightReady
+      }
+
+--------------------------------------------------------------------------------
+-- Top Level: keyValueHeadProjector
+-- Wraps KeyValueHeadCore and applies rotary encoding to K
+--------------------------------------------------------------------------------
+keyValueHeadProjector :: forall dom.
+  HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom    -- K weight DRAM slave
+  -> Slave.AxiSlaveIn dom    -- V weight DRAM slave
+  -> Index NumLayers
+  -> Index NumKeyValueHeads
+  -> Signal dom Bool                              -- inputValid
+  -> Signal dom Bool                              -- downStreamReady
+  -> Signal dom Bool                              -- consumeSignal
+  -> Signal dom (Index SequenceLength)            -- stepCount
+  -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom   -- K AXI master
+     , Master.AxiMasterOut dom   -- V AXI master
+     , Signal dom (Vec HeadDimension FixedPoint)  -- K output
+     , Signal dom (Vec HeadDimension FixedPoint)  -- V output
+     , Signal dom Bool           -- outputValid
+     , Signal dom Bool           -- readyForInput
+     , KVHeadDebugInfo dom
+     )
+keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx inputValid downStreamReady consumeSignal stepCount xHat params =
+  ( kvhcKAxiMaster core
+  , kvhcVAxiMaster core
+  , kWithRotary
+  , kvhcVResult core
+  , kvhcOutputValid core
+  , kvhcReady core
+  , kvhcDebug core
+  )
+  where
+    core = keyValueHeadCore cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx inputValid downStreamReady consumeSignal xHat params
+
+    -- Apply rotary encoding to K output
+    kWithRotary = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> kvhcKResult core
