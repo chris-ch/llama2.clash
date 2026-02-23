@@ -71,8 +71,19 @@ qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamRe
       (PARAM.qHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
   tagStr = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
--- | Weight loader for K matrices
--- Uses the proven weightLoader pattern with K-specific address calculation
+-- | Weight loader for K matrices.
+--
+-- Delegates to 'weightLoaderGeneric' with K-specific address calculation
+-- and HC weights.  K thereby gets the same full verification coverage as Q:
+--
+--   * ARADDR assertion ('assertArAddrMatchGeneric')
+--   * Full commit-time mismatch diagnostics ('assertRowsMatchOnCommitGeneric')
+--   * Trace events on fetch start and row commit
+--
+-- NOTE: This function provides the DRAM-fetching infrastructure for K, but
+-- it is not yet wired into 'KeyValueHeadProjector', which still uses
+-- hardwired (HC) parameters. Integrating this loader is the next migration
+-- step for K.
 kWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
@@ -89,66 +100,22 @@ kWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      )
 kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed params =
-  (axiMaster, out, weightValid, weightReady)
+  weightLoaderGeneric cycleCounter dram Layout.KMatrix layerIdx (fromIntegral kvHeadIdx)
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
  where
   hcWeights :: MatI8E HeadDimension ModelDimension
   hcWeights = PARAM.kMatrix
     (PARAM.kvHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! kvHeadIdx)
   tagStr = "[KWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
 
-  -- FSM (identical to Q weightLoader)
-  loadState :: Signal dom LoadState
-  loadState = register LIdle nextState
-  weightReady = loadState .==. pure LIdle
-  weightValid = loadState .==. pure LDone
-  prevValid = register False weightValid
-  dvRise = weightValid .&&. (not <$> prevValid)
-  dvRiseD1 = register False dvRise
-
-  -- K-specific address calculation
-  liveRow = rowReq
-  liveAddr = Layout.rowAddressCalculator Layout.KMatrix layerIdx (fromEnum kvHeadIdx) <$> liveRow
-
-  actualFetchStart = weightReady .&&. fetcherReady .&&. rowReqValid
-
-  (axiMaster, fetchedWords, fetchValid, fetcherReady, _fetcherDebug) =
-    Layout.axiMultiWordRowFetcher @_ @ModelDimension dram actualFetchStart liveAddr
-
-  txnReg = regEn (Txn 0 0) actualFetchStart (Txn <$> liveRow <*> liveAddr)
-
-  zeroRow :: RowI8E ModelDimension
-  zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
-
-  parsedRow = Layout.multiWordRowParser <$> fetchedWords
-  dramRowAssembled = regEn zeroRow fetchValid parsedRow
-  dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
-  hcRowCommitted = regEn zeroRow dvRise ((!!) hcWeights . tRow <$> txnReg)
-
-  -- Verification
-  dramRowChecked = assertKVRowMatch cycleCounter dvRiseD1 (tRow <$> txnReg)
-                                     "K" layerIdx kvHeadIdx
-                                     dramRowCommitted hcRowCommitted
-  
-  -- Trace commits
-  dramRowTraced = traceKVRowCommit cycleCounter dvRise (tRow <$> txnReg) tagStr dramRowChecked
-
-  nextState =
-    mux (loadState .==. pure LIdle .&&. actualFetchStart) (pure LFetching)
-    $ mux (loadState .==. pure LFetching .&&. fetchValid) (pure LDone)
-    $ mux (loadState .==. pure LDone .&&. downstreamReady .&&. dataConsumed) (pure LIdle)
-    loadState
-
-  out = WeightLoaderOutput
-    { hcRowOut = hcRowCommitted
-    , dramRowOut = dramRowTraced
-    , dbgRequestedAddr = liveAddr
-    , dbgCapturedAddr = tAddr <$> txnReg
-    , dbgCapturedRowReq = tRow <$> txnReg
-    , dbgLoadState = loadState
-    }
-
--- | Weight loader for V matrices
--- Uses the proven weightLoader pattern with V-specific address calculation
+-- | Weight loader for V matrices.
+--
+-- Mirrors 'kWeightLoader' exactly, with V-specific address calculation.
+-- Delegates to 'weightLoaderGeneric', giving V the same full verification
+-- coverage as Q (ARADDR assertion, full commit diagnostics, trace events).
+--
+-- NOTE: Like 'kWeightLoader', this is not yet wired into
+-- 'KeyValueHeadProjector'. Wiring it in is part of the V DRAM migration.
 vWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
@@ -165,101 +132,13 @@ vWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      )
 vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed params =
-  (axiMaster, out, weightValid, weightReady)
+  weightLoaderGeneric cycleCounter dram Layout.VMatrix layerIdx (fromIntegral kvHeadIdx)
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
  where
   hcWeights :: MatI8E HeadDimension ModelDimension
   hcWeights = PARAM.vMatrix
     (PARAM.kvHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! kvHeadIdx)
   tagStr = "[VWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
-
-  -- FSM (identical to Q weightLoader)
-  loadState :: Signal dom LoadState
-  loadState = register LIdle nextState
-  weightReady = loadState .==. pure LIdle
-  weightValid = loadState .==. pure LDone
-  prevValid = register False weightValid
-  dvRise = weightValid .&&. (not <$> prevValid)
-  dvRiseD1 = register False dvRise
-
-  -- V-specific address calculation
-  liveRow = rowReq
-  liveAddr = Layout.rowAddressCalculator Layout.VMatrix layerIdx (fromEnum kvHeadIdx) <$> liveRow
-
-  actualFetchStart = weightReady .&&. fetcherReady .&&. rowReqValid
-
-  (axiMaster, fetchedWords, fetchValid, fetcherReady, _fetcherDebug) =
-    Layout.axiMultiWordRowFetcher @_ @ModelDimension dram actualFetchStart liveAddr
-
-  txnReg = regEn (Txn 0 0) actualFetchStart (Txn <$> liveRow <*> liveAddr)
-
-  zeroRow :: RowI8E ModelDimension
-  zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
-
-  parsedRow = Layout.multiWordRowParser <$> fetchedWords
-  dramRowAssembled = regEn zeroRow fetchValid parsedRow
-  dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
-  hcRowCommitted = regEn zeroRow dvRise ((!!) hcWeights . tRow <$> txnReg)
-
-  -- Verification
-  dramRowChecked = assertKVRowMatch cycleCounter dvRiseD1 (tRow <$> txnReg)
-                                     "V" layerIdx kvHeadIdx
-                                     dramRowCommitted hcRowCommitted
-  
-  -- Trace commits
-  dramRowTraced = traceKVRowCommit cycleCounter dvRise (tRow <$> txnReg) tagStr dramRowChecked
-
-  nextState =
-    mux (loadState .==. pure LIdle .&&. actualFetchStart) (pure LFetching)
-    $ mux (loadState .==. pure LFetching .&&. fetchValid) (pure LDone)
-    $ mux (loadState .==. pure LDone .&&. downstreamReady .&&. dataConsumed) (pure LIdle)
-    loadState
-
-  out = WeightLoaderOutput
-    { hcRowOut = hcRowCommitted
-    , dramRowOut = dramRowTraced
-    , dbgRequestedAddr = liveAddr
-    , dbgCapturedAddr = tAddr <$> txnReg
-    , dbgCapturedRowReq = tRow <$> txnReg
-    , dbgLoadState = loadState
-    }
-
--- | KV row match assertion
-assertKVRowMatch
-  :: Signal dom (Unsigned 32)
-  -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> String  -- "K" or "V"
-  -> Index NumLayers
-  -> Index NumKeyValueHeads
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-assertKVRowMatch cyc trigger rowIdx matName layerIdx' kvHeadIdx' dramRow hcRow =
-  mux trigger (check <$> cyc <*> rowIdx <*> dramRow <*> hcRow) dramRow
- where
-  check c ri dr hr
-    | rowExponent dr P.== rowExponent hr P.&& rowMantissas dr P.== rowMantissas hr = dr
-    | otherwise = P.error $
-        "@" P.++ show c P.++ " " P.++ matName P.++ " DRAM/HC mismatch!"
-        P.++ "\n  layer=" P.++ show layerIdx' P.++ " kvHead=" P.++ show kvHeadIdx'
-        P.++ " row=" P.++ show ri
-        P.++ "\n  DRAM exp=" P.++ show (rowExponent dr) P.++ " HC exp=" P.++ show (rowExponent hr)
-
--- | Trace KV row commits
-traceKVRowCommit
-  :: Signal dom (Unsigned 32)
-  -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> String
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-traceKVRowCommit cyc dvRise rowIdx tagStr row =
-  go <$> cyc <*> dvRise <*> rowIdx <*> row
- where
-  go c True ri r =
-    let msg = "@" P.++ show c P.++ " " P.++ tagStr P.++ "COMMIT row=" P.++ show ri
-    in trace (if ri == maxBound then msg P.++ " *** FINAL ***" else msg) r
-  go _ _ _ r = r
 
 -- | Generic weight loader that works for any matrix type (Q, K, or V)
 --

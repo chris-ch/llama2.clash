@@ -63,7 +63,7 @@ bundledOutputs bundledInputs =
 
   -- Create DDR simulator
   dramSlaveIn = exposeClockResetEnable
-    (DRAMSlave.createDRAMBackedAxiSlave params ddrMaster)
+    (DRAMSlave.createDRAMBackedAxiSlave (pure 0) params ddrMaster)
     systemClockGen
     resetGen
     enableGen
@@ -71,7 +71,7 @@ bundledOutputs bundledInputs =
   -- Decoder with AXI feedback loop
   (ddrMaster, tokenOut, validOut, introspection) =
     exposeClockResetEnable
-      (Decoder.decoder dramSlaveIn params token isValid temperature seed)
+      (Decoder.decoder (pure 0) dramSlaveIn params token isValid temperature seed)
       systemClockGen
       resetGen
       enableGen

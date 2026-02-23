@@ -105,51 +105,55 @@ import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
 -- [@readyForInput@] True when ALL heads are ready for new input.
 --                   Computed as: AND of all individual head readys.
 --
--- == Coordination Strategy (Working HC-path Version)
+-- == Coordination Strategy
 --
--- In the current working version, all heads receive `downStreamReady` directly:
+-- === Q Heads (current implementation — DRAM path)
 --
--- @
--- qResults = map (qHead params) indicesI
---   where
---     qHead params' headIdx = 
---       queryHeadProjector dramSlaveIn layerIdx headIdx
---                         inputValid downStreamReady seqPos xNorm params'
---                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
---                         Direct downStreamReady to each head
--- @
---
--- This means:
--- 1. All heads start simultaneously when inputValid arrives
--- 2. Heads may finish at different times (due to AXI arbitration in DRAM path)
--- 3. When downStreamReady arrives, ALL heads clear their latches simultaneously
--- 4. Combined outputValid = AND of all head valids
---
--- The key insight: even though heads might finish at slightly different times,
--- they all CLEAR together when downStreamReady arrives, ensuring clean handoff.
---
--- == Alternative: consumeSignal Coordination (for DRAM path)
---
--- For proper DRAM arbitration, heads need coordinated clearing:
+-- Q heads fetch weights from DRAM via AXI. A shared AXI arbiter routes
+-- per-head requests. Coordinated clearing uses a 'consumeSignal':
 --
 -- @
 -- consumeSignal = outputValid .&&. downStreamReady
 --
--- qResults' = imap (\headIdx _ ->
+-- qResults = imap (\headIdx _ ->
 --     queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
---                       inputValid consumeSignal seqPos xNorm params
---                       ^^^^^^^^^^^^
---                       consumeSignal instead of downStreamReady
+--                       inputValid
+--                       (pure True)    -- FSM always accepts next row
+--                       consumeSignal  -- latch clears only when ALL done
+--                       seqPos xNorm params
 --   ) (repeat () :: Vec NumQueryHeads ())
 -- @
 --
--- This ensures:
--- 1. Heads only clear when ALL heads are done AND downstream ready
--- 2. Prevents early-finishing heads from restarting before others complete
--- 3. Required for proper AXI arbiter operation
+-- The split between 'downStreamReady' (passed as @pure True@) and
+-- 'consumeSignal' is intentional:
 --
--- __REQUIREMENT__: When using consumeSignal, outputValidLatch MUST have
--- CLR priority over SET (as documented in queryHeadMatrixMultiplier).
+-- * The per-row FSM inside 'queryHeadProjector' sees @pure True@ for its
+--   own row scheduling — it is always ready to accept the next row request.
+-- * The output latch sees 'consumeSignal' — it only clears when ALL heads
+--   are done AND downstream is ready, preventing any head from restarting
+--   before the group output has been consumed.
+--
+-- __REQUIREMENT__: 'consumeSignal' requires that the output-valid latch
+-- inside each head has CLR priority over SET (as documented in
+-- 'queryHeadMatrixMultiplier').
+--
+-- === KV Heads (current implementation — HC path, DRAM migration pending)
+--
+-- KV heads still use hardwired (HC) parameters.  Because there is no AXI
+-- request to coordinate, 'downStreamReady' is passed directly:
+--
+-- @
+-- kvResults = map kvHead indicesI
+--   where
+--     kvHead kvIdx =
+--       keyValueHeadProjector inputValid downStreamReady seqPos xNorm ...
+--                                        ^^^^^^^^^^^^^
+--                                        Direct downStreamReady (no AXI arbiter)
+-- @
+--
+-- When K and V are migrated to DRAM, 'downStreamReady' must be replaced
+-- with 'consumeSignal' here as well, and KV AXI masters must be wired
+-- into the arbiter (see 'KeyValueHeadProjector' for the full migration plan).
 --
 -- == Usage Notes
 --
@@ -199,8 +203,8 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   -- Define coordinated consume signal AFTER outputValid is computed
   consumeSignal = outputValid .&&. downStreamReady
 
-  -- Working version: direct connection, each head gets downStreamReady for FSM
-  -- and consumeSignal for latch clearing
+  -- Q DRAM path: FSM sees (pure True) so it always accepts the next row;
+  -- latch clearing is gated by consumeSignal so all heads clear together.
   qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
   qResults = imap (\headIdx _ ->
       QHP.queryHeadProjector cycleCounter (perHeadSlaves !! headIdx) layerIdx headIdx
@@ -217,6 +221,8 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
 
+  -- KV HC path: downStreamReady passed directly (no AXI arbiter needed yet).
+  -- When K/V migrate to DRAM, replace downStreamReady with consumeSignal here.
   kvResults = map kvHead indicesI
    where
     kvHead kvIdx =

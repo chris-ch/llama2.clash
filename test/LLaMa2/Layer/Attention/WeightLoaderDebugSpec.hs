@@ -2,7 +2,7 @@ module LLaMa2.Layer.Attention.WeightLoaderDebugSpec (spec) where
 
 import Clash.Prelude
 import qualified Clash.Signal as CS
-import LLaMa2.Layer.Attention.WeightLoader (weightLoader, WeightLoaderOutput(..))
+import LLaMa2.Layer.Attention.WeightLoader (qWeightLoader, WeightLoaderOutput(..))
 import LLaMa2.Types.ModelConfig
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
 import qualified Simulation.Parameters as PARAM
@@ -23,6 +23,7 @@ spec :: Spec
 spec = do
   criticalRow1Test
   staticMemoryTests
+  staticKMemoryTests
   cycleByClycleTraceTests
   axiAddressDbg
 
@@ -253,6 +254,104 @@ checkRow params dramVec li hi ri =
       match = hcRow == dramRow
   in (li, hi, ri, match, hcRow, dramRow)
 
+-- Helper function for static K-matrix row checking
+checkKRow :: PARAM.DecoderParameters
+          -> Vec TestDRAMDepth DRAMSlave.WordData
+          -> Int -> Int -> Int
+          -> (Int, Int, Int, Bool, RowI8E ModelDimension, RowI8E ModelDimension)
+checkKRow params dramVec li hi ri =
+  let layer  = PARAM.modelLayers params !! li
+      mha    = PARAM.multiHeadAttention layer
+      kvHead = PARAM.kvHeads mha !! hi
+      kMat   = PARAM.kMatrix kvHead
+      hcRow  = kMat !! ri
+
+      addr     = Layout.rowAddressCalculator Layout.KMatrix
+                   (toEnum li) (toEnum hi) (toEnum ri)
+      baseWord = fromIntegral (addr `shiftR` 6) :: Int
+
+      wordsPerRow = Layout.wordsPerRowVal @ModelDimension
+      wordsList = [dramVec !! (baseWord + k) | k <- [0..wordsPerRow-1]]
+      wordsVec = unsafeFromList wordsList :: Vec (Layout.WordsPerRow ModelDimension) (BitVector 512)
+
+      dramRow = Layout.multiWordRowParser wordsVec
+      match   = hcRow == dramRow
+  in (li, hi, ri, match, hcRow, dramRow)
+
+-- ============================================================================
+-- Static K-Matrix Memory Tests
+-- ============================================================================
+
+staticKMemoryTests :: Spec
+staticKMemoryTests = describe "WeightLoaderDbg - Static K-Matrix Memory Verification" $ do
+
+  it "verifies ALL K matrix rows in DRAM match hardcoded (Layer 0, all KV heads)" $ do
+    let params = PARAM.decoderConst
+        dramVec :: Vec TestDRAMDepth DRAMSlave.WordData
+        dramVec = DRAMSlave.buildMemoryFromParams params
+
+        checkAllKVHeads =
+          [ checkKRow params dramVec li hi ri
+          | li <- [0 :: Int]  -- Layer 0 only
+          , hi <- [0..natToNum @NumKeyValueHeads - 1]
+          , ri <- [0..natToNum @HeadDimension - 1]
+          ]
+
+    P.putStrLn "\n=== Checking ALL K matrix rows (Layer 0) ==="
+    results <- P.mapM (\(li, hi, ri, match, hcRow, dramRow) -> do
+      unless match $ do
+        P.putStrLn $ printf "MISMATCH: Layer %d, KVHead %d, Row %d" li hi ri
+        P.putStrLn $ "  HC exp=" P.++ show (rowExponent hcRow) P.++
+                     " mant[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas hcRow)
+        P.putStrLn $ "  DRAM exp=" P.++ show (rowExponent dramRow) P.++
+                     " mant[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas dramRow)
+      return match
+      ) checkAllKVHeads
+
+    P.and results `shouldBe` True
+
+  it "verifies ALL K matrix rows across ALL layers" $ do
+    let params = PARAM.decoderConst
+        dramVec :: Vec TestDRAMDepth DRAMSlave.WordData
+        dramVec = DRAMSlave.buildMemoryFromParams params
+
+        checkAllLayers =
+          [ checkKRow params dramVec li hi ri
+          | li <- [0..natToNum @NumLayers - 1]
+          , hi <- [0..natToNum @NumKeyValueHeads - 1]
+          , ri <- [0..natToNum @HeadDimension - 1]
+          ]
+
+    P.putStrLn $ "\n=== Checking ALL K matrix rows (all " P.++
+                 show (natToNum @NumLayers :: Int) P.++ " layers) ==="
+    P.putStrLn $ "Total rows to check: " P.++ show (P.length checkAllLayers)
+
+    results <- P.mapM (\(li, hi, ri, match, hcRow, dramRow) -> do
+      unless match $ do
+        P.putStrLn $ printf "MISMATCH: Layer %d, KVHead %d, Row %d" li hi ri
+        let addr = Layout.rowAddressCalculator Layout.KMatrix
+                     (toEnum li) (toEnum hi) (toEnum ri)
+        P.putStrLn $ "  Address: " P.++ show addr
+        P.putStrLn $ "  HC exp=" P.++ show (rowExponent hcRow) P.++
+                     " mant[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas hcRow)
+        P.putStrLn $ "  DRAM exp=" P.++ show (rowExponent dramRow) P.++
+                     " mant[0..7]=" P.++ show (P.take 8 $ toList $ rowMantissas dramRow)
+      return match
+      ) checkAllLayers
+
+    let mismatches = P.length $ P.filter not results
+    P.putStrLn $ "Mismatches found: " P.++ show mismatches P.++ " / " P.++ show (P.length results)
+    P.and results `shouldBe` True
+
+  it "dumps address map for K matrix, Layer 0, KVHead 0" $ do
+    P.putStrLn "\n=== K Matrix Address Map (Layer 0, KVHead 0) ==="
+    P.putStrLn "Row | Address  | Word"
+    forM_ [0..natToNum @HeadDimension - 1 :: Int] $ \ri -> do
+      let addr = Layout.rowAddressCalculator Layout.KMatrix 0 0 (toEnum ri)
+          word = addr `div` 64
+      P.putStrLn $ printf "%3d | %8d | %4d" ri addr word
+    True `shouldBe` True
+
 -- ============================================================================
 -- Cycle-by-Cycle Trace Tests
 -- ============================================================================
@@ -280,13 +379,13 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
 
         realDRAM masterOut' =
           exposeClockResetEnable
-            (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+            (DRAMSlave.createDRAMBackedAxiSlaveFromVec (pure 0)
                (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
             CS.systemClockGen CS.resetGen CS.enableGen
 
         (axiDRAM, outDRAM, dvDRAM, readyOut) =
           exposeClockResetEnable
-            (weightLoader (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig (pure True) params)
+            (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig (pure True) params)
             CS.systemClockGen CS.resetGen CS.enableGen
 
         -- Sample all debug signals
@@ -348,13 +447,13 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
 
           realDRAM masterOut' =
             exposeClockResetEnable
-              (DRAMSlave.createDRAMBackedAxiSlaveFromVec
+              (DRAMSlave.createDRAMBackedAxiSlaveFromVec (pure 0)
                 (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
               CS.systemClockGen CS.resetGen CS.enableGen
 
           (axiMaster, outDRAM, dvDRAM, readyOut) =
             exposeClockResetEnable
-              (weightLoader (realDRAM axiMaster) 0 0 reqSig reqValidSig readySig (pure True) params)
+              (qWeightLoader (pure 0) (realDRAM axiMaster) 0 0 reqSig reqValidSig readySig (pure True) params)
               CS.systemClockGen CS.resetGen CS.enableGen
 
           -- Sample AXI AR channel

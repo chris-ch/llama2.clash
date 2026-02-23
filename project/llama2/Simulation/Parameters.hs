@@ -32,7 +32,9 @@ data RotaryEncodingComponentF = RotaryEncodingComponentF
   } deriving (Generic, NFDataX, Show, Eq)
 
 -- MHA with quantized per-head WO and preconverted RMS weights.
--- Query head only contains Q matrix and rotary
+-- Query head only contains Q matrix.
+-- Rotary encoding is stored at the top level in 'RotaryEncodingComponentF' (inside
+-- 'DecoderParameters') and applied externally after projection.
 newtype QueryHeadComponentQ
   = QueryHeadComponentQ {qMatrix :: MatI8E HeadDimension ModelDimension}
   deriving (Generic, Show, Eq)

@@ -192,6 +192,7 @@ spec = do
           (masterOut, _qOut, _validOut, _readyOut, debugInfo) =
             exposeClockResetEnable
               ( queryHeadProjector
+                  (pure 0)
                   (createMockDRAMForRow testRow arvalidSignal)
                   layerIdx
                   headIdx
@@ -251,11 +252,11 @@ spec = do
           validIn = fromList ([False, True] P.++ P.replicate 98 False)
 
           stubSlaveIn = exposeClockResetEnable
-            (DRAMSlave.createDRAMBackedAxiSlave params masterOut)
+            (DRAMSlave.createDRAMBackedAxiSlave (pure 0) params masterOut)
             CS.systemClockGen CS.resetGen CS.enableGen
 
           (masterOut, _, _, _, debugInfo) = exposeClockResetEnable
-              (queryHeadProjector stubSlaveIn 0 0 validIn (pure True) (pure True) (pure 0) (pure (repeat 1.0)) params)
+              (queryHeadProjector (pure 0) stubSlaveIn 0 0 validIn (pure True) (pure True) (pure 0) (pure (repeat 1.0)) params)
               CS.systemClockGen CS.resetGen CS.enableGen
 
           states = sampleN maxCycles (qhState debugInfo)

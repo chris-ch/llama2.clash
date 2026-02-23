@@ -150,7 +150,7 @@ spec = do
           realDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
           realDRAM masterOut' =
             exposeClockResetEnable
-              (createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) dramContents masterOut')
+              (createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) dramContents masterOut')
               systemClockGen resetGen enableGen
 
           -- Two different inputs
@@ -188,6 +188,7 @@ spec = do
            _qkvDone, _writeDone, attnDone, ffnDone, _qkvReady, _debugInfo, ffnArmed, ffnStageStart, ffnValidIn) =
             exposeClockResetEnable
               (transformerLayer
+                (pure 0)
                 (realDRAM masterOut)
                 0  -- layer 0
                 params

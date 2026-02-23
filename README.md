@@ -125,8 +125,8 @@ cabal exec -- clash --verilog \
 | Signal        | Direction | Purpose                        | Behavior                                                                                                 |
 | ------------- | --------- | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | **Ready Out** | Output    | Indicates consumer readiness   | Asserted (high) when the consumer can accept/process data; deasserted when busy (e.g., stalled or full). |
-| **Valid Out** | Output    | Indicates valid output data    | Asserted (high) for one clock cycle (pulse) when new data is available; deasserted otherwise.            |
-| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data (keeps `validOut` high) only when `readyIn` is high; holds data if low.          |
+| **Valid Out** | Output    | Indicates valid output data    | Asserted (high, level) when new data is available; held high until the transaction completes (i.e., until `readyIn` is also high). |
+| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data only when `readyIn` is high; holds `validOut` and data stable if `readyIn` is low. |
 | **Valid In**  | Input     | Indicates valid input data     | Consumer processes `dataIn` only when `validIn` is high and it asserts `readyOut`.                       |
 
 ## SUMMARY OF TOKEN FLOW
@@ -146,7 +146,7 @@ cabal exec -- clash --verilog \
 
 | Aspect | Choice | Rationale |
 |--------|--------|-----------|
-| **Weight Storage** | NVMe SSD (ROM) | Non-volatile, reprogrammable, 10× cheaper than RAM |
+| **Weight Storage** | eMMC 5.1 | Non-volatile, reprogrammable, high-density embedded storage |
 | **Weight Format** | I8E (8-bit + 7-bit exp) | 4× compression vs FixedPoint, minimal quality loss |
 | **Compute Format** | FixedPoint (SFixed 12 20) | Native FPGA arithmetic, good precision |
 | **Working Memory** | DDR4 DRAM | Fast random access for KV cache, affordable |
