@@ -252,10 +252,12 @@ axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integr
                 , bdata = pure (AxiB 0 0)
                 }
 
-            requestStream = [False, True]
+            -- Cycle 0 is system reset; cycle 1 has notInReset=False so ready=False.
+            -- Start first pulse at cycle 2 when ready first becomes True.
+            requestStream = [False, False, True]
                 P.++ P.replicate 18 False
                 P.++ [True]
-                P.++ P.replicate (maxCycles - 21) False
+                P.++ P.replicate (maxCycles - 22) False
             request = fromList requestStream :: Signal System Bool
 
             address = pure testAddress :: Signal System (Unsigned 32)
@@ -302,10 +304,10 @@ axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integr
             cyclesPerRequest = 40
             numRequests = 8
 
-            -- IMPORTANT: do not issue a pulse during reset (cycle 0).
-            -- Shift the first pulse to cycle 1 by prepending a False.
+            -- Cycle 0 is system reset; cycle 1 has notInReset=False so ready=False.
+            -- Prepend two False cycles so first pulse lands at cycle 2 when ready=True.
             requestStream =
-                False
+                False : False
                 : P.concat
                     [ [n == 0 | n <- [0..cyclesPerRequest-1]]
                     | _ <- [0..numRequests-1]
@@ -314,10 +316,9 @@ axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integr
             request = fromList requestStream :: Signal System Bool
 
             baseAddr = 49472
-            -- Keep address aligned: prepend baseAddr once so that at cycle 1
-            -- (first pulse) the address is baseAddr.
+            -- Prepend two baseAddr entries so address is valid at the first pulse (cycle 2).
             addressStream =
-                baseAddr
+                baseAddr : baseAddr
                 : P.concat
                     [ P.replicate cyclesPerRequest (baseAddr + fromIntegral (i * 64))
                     | i <- [0..numRequests-1 :: Int]
@@ -388,11 +389,11 @@ axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integr
 
     -- Reset-safe debug trace: first pulse after reset
     describe "DEBUG: Reset-safe trace" $ do
-        it "shows all signals through cycle 0-10 (first request at cycle 1)" $ do
+        it "shows all signals through cycle 0-10 (first request at cycle 2)" $ do
             let maxCycles = 15
 
-                -- Do not pulse during reset; start at cycle 1.
-                request = fromList (False : True : P.replicate (maxCycles-2) False)
+                -- Cycle 1 has notInReset=False (ready=False); start at cycle 2.
+                request = fromList (False : False : True : P.replicate (maxCycles-3) False)
                 address = pure (49472 :: Unsigned 32)
 
                 mockDRAM masterOut' = Slave.AxiSlaveIn
@@ -419,14 +420,14 @@ axiRowFetcherIntegrationTests = describe "WeightsLayout - axiRowFetcher - Integr
                 addrs    = sampleN maxCycles capturedAddr
                 arvalids = sampleN maxCycles (Master.arvalid masterOut)
 
-            P.putStrLn "\n=== RESET-SAFE TRACE (first pulse at cycle 1) ==="
+            P.putStrLn "\n=== RESET-SAFE TRACE (first pulse at cycle 2) ==="
             P.putStrLn "Cyc | Req | Ready | ReqAvail | Addr  | ARval"
             mapM_ (\(c, r, rd, ra, ad, arv) ->
                 P.putStrLn $ printf "%3d | %5s | %5s | %8s | %5d | %5s"
                     c (show r) (show rd) (show ra) ad (show arv))
                 (DL.zip6 [(0::Int)..] reqs readys avails addrs arvalids)
 
-            -- With the first pulse at cycle 1, ARvalid should appear within a few cycles.
+            -- With the first pulse at cycle 2, ARvalid should appear at cycle 3.
             DL.or (P.take 6 arvalids) `shouldBe` True
 
 -- ============================================================================

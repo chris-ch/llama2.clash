@@ -30,7 +30,7 @@ main = hspec $ do
   Simulation.DynamicMatMulSpec.spec
   LLaMa2.Memory.WeightsLayoutSpec.spec
   LLaMa2.Layer.Attention.QKVProjectionSpec.spec
-  --LLaMa2.Decoder.DecoderSpec.spec
+  LLaMa2.Decoder.DecoderSpec.spec
   LLaMa2.Layer.Attention.WeightLoaderSpec.spec
   LLaMa2.Memory.WeightsLayoutRoundtripSpec.spec
   LLaMa2.Layer.Attention.WeightLoaderDebugSpec.spec

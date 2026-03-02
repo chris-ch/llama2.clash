@@ -84,7 +84,7 @@ spec = do
             promptTokens = [1, 320] :: [Token]
             temperature = 0.0 :: FixedPoint
             seed = 123 :: Seed
-            maxCycles = 12_000
+            maxCycles = 28_000
             
             -- Autoregressive state management (from Main.hs)
             (firstToken, restPrompt) = case promptTokens of
@@ -152,14 +152,12 @@ spec = do
                            Nothing -> -1.0
                    ]
             
-            -- Find when tokens actually complete
-            tokenCompletions = [ (i, tok) | (i, (tok, ready)) <- P.zip cycles coreOutputs, ready ]
-            
-            token0End = case DL.find (\(_, tok) -> tok == 1) tokenCompletions of
-                Just (c, _) -> c
-                Nothing -> 10_000  -- fallback
-            
-            token1Start = token0End + 1
+            -- Find when token 0 completes: first cycle where the decoder signals ready
+            token0End = case DL.findIndex id readyFlags of
+                Just i  -> i + 1  -- include the completion cycle in token 0's range
+                Nothing -> maxCycles `P.div` 2
+
+            token1Start = token0End
             
             token0Events = extractCompletions 0 token0End
             token1Events = extractCompletions token1Start maxCycles

@@ -361,11 +361,12 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
 
   it "traces first 4 row fetches in detail" $ do
     let params = PARAM.decoderConst
-        maxCycles = 250
+        maxCycles = 300
         cyclesPerRequest = 50
 
-        -- Request rows 0, 1, 2, 3
-        requestGroups = [(0, False)] :
+        -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
+        -- First valid request fires at cycle 2 when axiRowFetcher ready=True.
+        requestGroups = [(0, False), (0, False)] :
               [(toEnum i, True) : P.replicate (cyclesPerRequest - 1) (toEnum i, False)
               | i <- [0..3::Int]]
         requestPairs = P.concat requestGroups P.++ P.repeat (0, False)

@@ -198,7 +198,7 @@ spec = do
                   headIdx
                   validIn
                   downStreamReady
-                  downStreamReady
+                  (pure False)   -- consumeSignal: never consume; we only check rowDone pulses
                   stepCount
                   input
                   paramsWL

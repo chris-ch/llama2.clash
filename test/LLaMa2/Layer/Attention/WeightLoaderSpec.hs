@@ -25,7 +25,9 @@ spec = do
       let maxCycles = 400
           cyclesPerRequest = 40
 
-          requestGroups = [(0, False)] :
+          -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
+          -- First valid request fires at cycle 2 when axiRowFetcher ready=True.
+          requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
                 | i <- [0..7::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
@@ -60,7 +62,8 @@ spec = do
       let maxCycles = 400
           cyclesPerRequest = 50
 
-          requestGroups = [(0, False)] :
+          -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
+          requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
                 | i <- [0..7::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
@@ -125,7 +128,8 @@ spec = do
       let maxCycles = 400
           cyclesPerRequest = 50
 
-          requestGroups = [(0, False)] :
+          -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
+          requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
                 | i <- [0..7::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)

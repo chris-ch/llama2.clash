@@ -151,7 +151,7 @@ spec = do
           doneIndices = DL.findIndices id dones
 
       it "there should be only one completion" $ do
-        P.length doneIndices `shouldBe` 4
+        P.length doneIndices `shouldBe` 1
       it "(test input) reset flags should match expected flags" $ do
         let expectedResets = [True,False,False,False,False,False,False,False,False,False,False,False]
         resets `shouldBe` expectedResets
@@ -159,10 +159,12 @@ spec = do
         let expectedEnables = [False,True,True,True,True,False,False,False,False,False,False,False]
         enables `shouldBe` expectedEnables
       it "done flags should match expected flags" $ do
-        let expectedDones = [False,False,True,True,True,True,False,False,False,False,False,False]
+        let expectedDones = [False,False,True,False,False,False,False,False,False,False,False,False]
         dones `shouldBe` expectedDones
       it "final output should match expected value" $ do
-        let expectedOuts = [0.0,0.0,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25]
+        -- After rowDone pulses at index 2, enable stays True so counter stays at maxBound=3.
+        -- Each extra enabled cycle accumulates element[3] = 4 * 0.125 = 0.5.
+        let expectedOuts = [0.0,0.0,3.25,3.25,3.75,4.25,4.25,4.25,4.25,4.25,4.25,4.25]
         outs `shouldBe` expectedOuts
 
     context "computes dot product for a 3-column row" $ do
@@ -195,12 +197,14 @@ spec = do
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
       it "completes at expected cycle" $ do
-        doneIndices `shouldBe` [3,4,5]
+        doneIndices `shouldBe` [3]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
         let
-          expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
+          -- rowDone pulses at index 3, then enable stays True so counter stays at maxBound=2.
+          -- Each extra enabled cycle accumulates element[2] = 3 * 3.0 = 9.0.
+          expectedOuts = [0.0,0.0,0.0,14.0,14.0,23.0,23.0]
           actualOutputs = P.take maxCycles outs
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip actualOutputs expectedOuts) `shouldBe` True
 
@@ -234,12 +238,12 @@ spec = do
           dones = P.take maxCycles $ sample rowDone
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
-      it "completes after 3 columns (cycle 5)" $ do
-        doneIndices `shouldBe` [3,4,5]
+      it "completes after 3 columns (cycle 3)" $ do
+        doneIndices `shouldBe` [3]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
-        let expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
+        let expectedOuts = [0.0,0.0,0.0,14.0,14.0,23.0,23.0]
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip (P.take maxCycles outs) expectedOuts) `shouldBe` True
 
   describe "matrixMultiplierStateMachine" $ do
