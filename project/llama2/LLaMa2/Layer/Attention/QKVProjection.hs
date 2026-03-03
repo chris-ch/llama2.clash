@@ -1,5 +1,5 @@
 module LLaMa2.Layer.Attention.QKVProjection
-  ( 
+  (
     qkvProjectionController
   ) where
 
@@ -78,93 +78,23 @@ import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
 --                    └─────────────────────────────────────────────────────────┘
 -- @
 --
--- == Input Signals
---
--- [@inputValid@] Start signal for all heads.
---                Directly passed to each head's inputValid.
---
--- [@downStreamReady@] Acknowledgment from downstream.
---                     __CRITICAL__: In the working HC-path version, this is
---                     passed DIRECTLY to each head. Each head clears its
---                     output latch independently when downStreamReady arrives.
---
--- [@seqPos@] Sequence position for rotary encoding.
---
--- [@xVec@] Input activations (Vec ModelDimension FixedPoint).
---          Normalized internally using RMS norm before projection.
---
--- [@params@] Full model parameters.
---
--- == Output Signals
---
--- [@qkvOut@] Bundled output: (Vec NumQueryHeads qVec, Vec NumKVHeads kVec, Vec NumKVHeads vVec)
---
--- [@outputValid@] True when ALL heads have completed.
---                 Computed as: AND of all individual head valids.
---
--- [@readyForInput@] True when ALL heads are ready for new input.
---                   Computed as: AND of all individual head readys.
---
 -- == Coordination Strategy
 --
--- === Q Heads (current implementation — DRAM path)
---
--- Q heads fetch weights from DRAM via AXI. A shared AXI arbiter routes
--- per-head requests. Coordinated clearing uses a 'consumeSignal':
+-- All heads (Q, K, V) share a single AXI arbiter and use coordinated clearing:
 --
 -- @
 -- consumeSignal = outputValid .&&. downStreamReady
---
--- qResults = imap (\headIdx _ ->
---     queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
---                       inputValid
---                       (pure True)    -- FSM always accepts next row
---                       consumeSignal  -- latch clears only when ALL done
---                       seqPos xNorm params
---   ) (repeat () :: Vec NumQueryHeads ())
 -- @
 --
--- The split between 'downStreamReady' (passed as @pure True@) and
--- 'consumeSignal' is intentional:
+-- Q heads pass @pure True@ as downStreamReady to the per-row FSM (always
+-- accepts the next row); their output latch clears only via consumeSignal.
 --
--- * The per-row FSM inside 'queryHeadProjector' sees @pure True@ for its
---   own row scheduling — it is always ready to accept the next row request.
--- * The output latch sees 'consumeSignal' — it only clears when ALL heads
---   are done AND downstream is ready, preventing any head from restarting
---   before the group output has been consumed.
+-- KV heads follow the same pattern: @pure True@ for the FSM, consumeSignal
+-- for latch clearing. K and V within each KV head are independent compute
+-- paths, both governed by the same consumeSignal.
 --
--- __REQUIREMENT__: 'consumeSignal' requires that the output-valid latch
--- inside each head has CLR priority over SET (as documented in
--- 'queryHeadMatrixMultiplier').
---
--- === KV Heads (current implementation — HC path, DRAM migration pending)
---
--- KV heads still use hardwired (HC) parameters.  Because there is no AXI
--- request to coordinate, 'downStreamReady' is passed directly:
---
--- @
--- kvResults = map kvHead indicesI
---   where
---     kvHead kvIdx =
---       keyValueHeadProjector inputValid downStreamReady seqPos xNorm ...
---                                        ^^^^^^^^^^^^^
---                                        Direct downStreamReady (no AXI arbiter)
--- @
---
--- When K and V are migrated to DRAM, 'downStreamReady' must be replaced
--- with 'consumeSignal' here as well, and KV AXI masters must be wired
--- into the arbiter (see 'KeyValueHeadProjector' for the full migration plan).
---
--- == Usage Notes
---
--- 1. Start processing by asserting inputValid for at least 1 cycle.
---
--- 2. Wait for outputValid before reading qkvOut.
---
--- 3. Assert downStreamReady to acknowledge and prepare for next token.
---
--- 4. Ensure proper handshake: don't assert new inputValid until previous
---    operation is acknowledged.
+-- The AXI arbiter routes Q + K + V masters (NumQueryHeads + 2*NumKeyValueHeads
+-- total) to the single DRAM slave.
 --
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -191,51 +121,77 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   mhaParams = PARAM.multiHeadAttention layerParams
   xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
 
-  -- Get global rotary once
-  rotary = PARAM.rotaryEncoding params
-
-  -- AXI arbiter setup (mutual recursion handled by lazy evaluation)
-  qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
-  perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
-  
-  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn qAxiMasters
-
-  -- Define coordinated consume signal AFTER outputValid is computed
+  -- Coordinated consume signal: all heads clear together
   consumeSignal = outputValid .&&. downStreamReady
 
-  -- Q DRAM path: FSM sees (pure True) so it always accepts the next row;
-  -- latch clearing is gated by consumeSignal so all heads clear together.
-  qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
+  ----------------------------------------------------------------------------
+  -- AXI arbiter: Q + K + V masters all routed through a single arbiter.
+  -- Total: NumQueryHeads + NumKeyValueHeads (K) + NumKeyValueHeads (V) = 16
+  ----------------------------------------------------------------------------
+  allAxiMasters :: Vec 16 (Master.AxiMasterOut dom)
+  allAxiMasters = qAxiMasters ++ (kAxiMasters ++ vAxiMasters)
+
+  allSlaves :: Vec 16 (Slave.AxiSlaveIn dom)
+  (axiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
+
+  -- Split slaves: first 8 for Q, next 4 for K, last 4 for V
+  (perQSlaves, kvSlaves)   = splitAt d8 allSlaves
+  (perKSlaves, perVSlaves) = splitAt d4 kvSlaves
+
+  ----------------------------------------------------------------------------
+  -- Q DRAM path: FSM sees (pure True), latch clears via consumeSignal
+  ----------------------------------------------------------------------------
+  qResults :: Vec NumQueryHeads ( Master.AxiMasterOut dom
+                                , Signal dom (Vec HeadDimension FixedPoint)
+                                , Signal dom Bool
+                                , Signal dom Bool
+                                , QHP.QHeadDebugInfo dom )
   qResults = imap (\headIdx _ ->
-      QHP.queryHeadProjector cycleCounter (perHeadSlaves !! headIdx) layerIdx headIdx
-                        inputValid 
+      QHP.queryHeadProjector cycleCounter (perQSlaves !! headIdx) layerIdx headIdx
+                        inputValid
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
                         seqPos xNorm params
     ) (repeat () :: Vec NumQueryHeads ())
 
-  head0Debug = head qDebugInfos
+  head0Debug  = head qDebugInfos
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
   qVecs       = map (\(_, q, _, _, _) -> q) qResults
   qValids     = map (\(_, _, v, _, _) -> v) qResults
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
 
-  -- KV HC path: downStreamReady passed directly (no AXI arbiter needed yet).
-  -- When K/V migrate to DRAM, replace downStreamReady with consumeSignal here.
-  kvResults = map kvHead indicesI
-   where
-    kvHead kvIdx =
-      let kvHeadParams = PARAM.kvHeads mhaParams !! kvIdx  -- Get actual KV head
-      in KVHP.keyValueHeadProjector inputValid downStreamReady seqPos xNorm kvHeadParams rotary
-  
-  kVecs    = map (\(k, _, _, _) -> k) kvResults
-  vVecs    = map (\(_, v, _, _) -> v) kvResults
-  kvValids = map (\(_, _, v, _) -> v) kvResults
-  kvReadys = map (\(_, _, _, r) -> r) kvResults
-  outputValid = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
+  ----------------------------------------------------------------------------
+  -- KV DRAM path: independent K and V compute paths per head, both via AXI
+  ----------------------------------------------------------------------------
+  kvResults :: Vec NumKeyValueHeads ( Master.AxiMasterOut dom  -- K AXI master
+                                    , Master.AxiMasterOut dom  -- V AXI master
+                                    , Signal dom (Vec HeadDimension FixedPoint)  -- K (with rotary)
+                                    , Signal dom (Vec HeadDimension FixedPoint)  -- V
+                                    , Signal dom Bool  -- outputValid
+                                    , Signal dom Bool  -- readyForInput
+                                    )
+  kvResults = imap (\kvIdx _ ->
+      KVHP.keyValueHeadProjector cycleCounter
+        (perKSlaves !! kvIdx)   -- K DRAM slave
+        (perVSlaves !! kvIdx)   -- V DRAM slave
+        layerIdx kvIdx
+        inputValid
+        (pure True)             -- downStreamReady for FSM (always ready for next row)
+        consumeSignal           -- consumeSignal for coordinated latch clearing
+        seqPos xNorm params
+    ) (repeat () :: Vec NumKeyValueHeads ())
+
+  kAxiMasters = map (\(k, _, _, _, _, _) -> k) kvResults
+  vAxiMasters = map (\(_, v, _, _, _, _) -> v) kvResults
+  kVecs       = map (\(_, _, k, _, _, _) -> k) kvResults
+  vVecs       = map (\(_, _, _, v, _, _) -> v) kvResults
+  kvValids    = map (\(_, _, _, _, va, _) -> va) kvResults
+  kvReadys    = map (\(_, _, _, _, _, r)  -> r)  kvResults
+
+  outputValid   = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
   readyForInput = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
-  qkvOut = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)
+  qkvOut        = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)
 
 --------------------------------------------------------------------------------
 -- QKV Projection Controller
