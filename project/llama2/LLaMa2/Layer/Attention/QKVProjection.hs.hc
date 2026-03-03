@@ -24,13 +24,10 @@ import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
 import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
-import qualified GHC.TypeNats as TN
 
 --------------------------------------------------------------------------------
 -- QKV projector
 --------------------------------------------------------------------------------
--- Total masters: NumQueryHeads (for Q) + 2*NumKeyValueHeads (for K and V)
-type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 
 -- | Coordinates all query heads and key-value heads for QKV projection.
 --
@@ -48,10 +45,10 @@ type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 --                    │                                                         │
 --                    │  ┌─────────────────────────────────────────────────┐    │
 --                    │  │              Query Heads (×NumQueryHeads)       │    │
---                    │  │              Each with DRAM weight access       │    │
+--                    │  │                                                 │    │
 --   inputValid ─────►│  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
 --                    │  │  │ QHead 0 │ │ QHead 1 │ ... │ QHead N │        │    │
---   downStreamReady─►│  │  │ +DRAM   │ │ +DRAM   │     │ +DRAM   │        │    │
+--   downStreamReady─►│  │  │         │ │         │     │         │        │    │
 --                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
 --   xVec ───────────►│  │       │           │               │             │    │
 --                    │  │       ▼           ▼               ▼             │    │
@@ -62,11 +59,10 @@ type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 --                    │                                                         │
 --                    │  ┌─────────────────────────────────────────────────┐    │
 --                    │  │              KV Heads (×NumKeyValueHeads)       │    │
---                    │  │              Each with DRAM weight access       │    │
+--                    │  │                                                 │    │
 --                    │  │  ┌─────────┐ ┌─────────┐     ┌─────────┐        │    │
 --                    │  │  │ KVHead0 │ │ KVHead1 │ ... │ KVHeadM │        │    │
---                    │  │  │ K+V     │ │ K+V     │     │ K+V     │        │    │
---                    │  │  │ +DRAM   │ │ +DRAM   │     │ +DRAM   │        │    │
+--                    │  │  │ (K & V) │ │ (K & V) │     │ (K & V) │        │    │
 --                    │  │  └────┬────┘ └────┬────┘     └────┬────┘        │    │
 --                    │  │       │           │               │             │    │
 --                    │  │       ▼           ▼               ▼             │    │
@@ -79,8 +75,6 @@ type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 --                    │  outputValid = AND(all qValids) AND AND(all kvValids)   │
 --                    │  readyForInput = AND(all qReadys) AND AND(all kvReadys) │
 --                    │                                                         │
---                    │  AXI Arbiter combines Q, K, V DRAM access             │
---                    │                                                         │
 --                    └─────────────────────────────────────────────────────────┘
 -- @
 --
@@ -90,6 +84,9 @@ type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 --                Directly passed to each head's inputValid.
 --
 -- [@downStreamReady@] Acknowledgment from downstream.
+--                     __CRITICAL__: In the working HC-path version, this is
+--                     passed DIRECTLY to each head. Each head clears its
+--                     output latch independently when downStreamReady arrives.
 --
 -- [@seqPos@] Sequence position for rotary encoding.
 --
@@ -107,6 +104,67 @@ type TotalMasters = NumQueryHeads + (2 TN.* NumKeyValueHeads)
 --
 -- [@readyForInput@] True when ALL heads are ready for new input.
 --                   Computed as: AND of all individual head readys.
+--
+-- == Coordination Strategy
+--
+-- === Q Heads (current implementation — DRAM path)
+--
+-- Q heads fetch weights from DRAM via AXI. A shared AXI arbiter routes
+-- per-head requests. Coordinated clearing uses a 'consumeSignal':
+--
+-- @
+-- consumeSignal = outputValid .&&. downStreamReady
+--
+-- qResults = imap (\headIdx _ ->
+--     queryHeadProjector (perHeadSlaves !! headIdx) layerIdx headIdx
+--                       inputValid
+--                       (pure True)    -- FSM always accepts next row
+--                       consumeSignal  -- latch clears only when ALL done
+--                       seqPos xNorm params
+--   ) (repeat () :: Vec NumQueryHeads ())
+-- @
+--
+-- The split between 'downStreamReady' (passed as @pure True@) and
+-- 'consumeSignal' is intentional:
+--
+-- * The per-row FSM inside 'queryHeadProjector' sees @pure True@ for its
+--   own row scheduling — it is always ready to accept the next row request.
+-- * The output latch sees 'consumeSignal' — it only clears when ALL heads
+--   are done AND downstream is ready, preventing any head from restarting
+--   before the group output has been consumed.
+--
+-- __REQUIREMENT__: 'consumeSignal' requires that the output-valid latch
+-- inside each head has CLR priority over SET (as documented in
+-- 'queryHeadMatrixMultiplier').
+--
+-- === KV Heads (current implementation — HC path, DRAM migration pending)
+--
+-- KV heads still use hardwired (HC) parameters.  Because there is no AXI
+-- request to coordinate, 'downStreamReady' is passed directly:
+--
+-- @
+-- kvResults = map kvHead indicesI
+--   where
+--     kvHead kvIdx =
+--       keyValueHeadProjector inputValid downStreamReady seqPos xNorm ...
+--                                        ^^^^^^^^^^^^^
+--                                        Direct downStreamReady (no AXI arbiter)
+-- @
+--
+-- When K and V are migrated to DRAM, 'downStreamReady' must be replaced
+-- with 'consumeSignal' here as well, and KV AXI masters must be wired
+-- into the arbiter (see 'KeyValueHeadProjector' for the full migration plan).
+--
+-- == Usage Notes
+--
+-- 1. Start processing by asserting inputValid for at least 1 cycle.
+--
+-- 2. Wait for outputValid before reading qkvOut.
+--
+-- 3. Assert downStreamReady to acknowledge and prepare for next token.
+--
+-- 4. Ensure proper handshake: don't assert new inputValid until previous
+--    operation is acknowledged.
 --
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -133,28 +191,23 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   mhaParams = PARAM.multiHeadAttention layerParams
   xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
 
-  -- =====================================================================
-  -- AXI Arbiter Setup for Q, K, V DRAM Access
-  -- =====================================================================
+  -- Get global rotary once
+  rotary = PARAM.rotaryEncoding params
 
-  allAxiMasters :: Vec TotalMasters (Master.AxiMasterOut dom)
-  perHeadSlaves :: Vec TotalMasters (Slave.AxiSlaveIn dom)
+  -- AXI arbiter setup (mutual recursion handled by lazy evaluation)
+  qAxiMasters :: Vec NumQueryHeads (Master.AxiMasterOut dom)
+  perHeadSlaves :: Vec NumQueryHeads (Slave.AxiSlaveIn dom)
   
-  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
-
-  -- Split slaves into three groups: Q, K, V
-  (qSlaves, kvSlaves) = splitAtI @NumQueryHeads perHeadSlaves
-  (kSlaves, vSlaves) = splitAtI @NumKeyValueHeads kvSlaves
+  (axiMasterOut, perHeadSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn qAxiMasters
 
   -- Define coordinated consume signal AFTER outputValid is computed
   consumeSignal = outputValid .&&. downStreamReady
 
-  -- =====================================================================
-  -- Query Heads (with DRAM weight access)
-  -- =====================================================================
+  -- Q DRAM path: FSM sees (pure True) so it always accepts the next row;
+  -- latch clearing is gated by consumeSignal so all heads clear together.
   qResults :: Vec NumQueryHeads (Master.AxiMasterOut dom, Signal dom (Vec HeadDimension FixedPoint), Signal dom Bool, Signal dom Bool, QHP.QHeadDebugInfo dom)
   qResults = imap (\headIdx _ ->
-      QHP.queryHeadProjector cycleCounter (qSlaves !! headIdx) layerIdx headIdx
+      QHP.queryHeadProjector cycleCounter (perHeadSlaves !! headIdx) layerIdx headIdx
                         inputValid 
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
@@ -168,50 +221,18 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
   qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
 
-  -- =====================================================================
-  -- KV Heads (with DRAM weight access for both K and V)
-  -- =====================================================================
-  -- Each KV head gets ONE K slave and ONE V slave (already split above)
-  kvResults :: Vec NumKeyValueHeads 
-               ( Master.AxiMasterOut dom   -- K AXI master
-               , Master.AxiMasterOut dom   -- V AXI master
-               , Signal dom (Vec HeadDimension FixedPoint)  -- K output
-               , Signal dom (Vec HeadDimension FixedPoint)  -- V output
-               , Signal dom Bool           -- outputValid
-               , Signal dom Bool           -- readyForInput
-               , KVHP.KVHeadDebugInfo dom
-               )
-  kvResults = imap kvHead (indicesI :: Vec NumKeyValueHeads (Index NumKeyValueHeads))
+  -- KV HC path: downStreamReady passed directly (no AXI arbiter needed yet).
+  -- When K/V migrate to DRAM, replace downStreamReady with consumeSignal here.
+  kvResults = map kvHead indicesI
    where
-    kvHead :: Index NumKeyValueHeads 
-           -> Index NumKeyValueHeads 
-           -> ( Master.AxiMasterOut dom
-              , Master.AxiMasterOut dom
-              , Signal dom (Vec HeadDimension FixedPoint)
-              , Signal dom (Vec HeadDimension FixedPoint)
-              , Signal dom Bool
-              , Signal dom Bool
-              , KVHP.KVHeadDebugInfo dom
-              )
-    kvHead _ kvIdx =
-      let kSlave = kSlaves !! kvIdx
-          vSlave = vSlaves !! kvIdx
-      in KVHP.keyValueHeadProjector cycleCounter kSlave vSlave layerIdx kvIdx
-                        inputValid 
-                        (pure True)      -- downStreamReady for FSM
-                        consumeSignal    -- consumeSignal for latch clearing
-                        seqPos xNorm params
+    kvHead kvIdx =
+      let kvHeadParams = PARAM.kvHeads mhaParams !! kvIdx  -- Get actual KV head
+      in KVHP.keyValueHeadProjector inputValid downStreamReady seqPos xNorm kvHeadParams rotary
   
-  kvAxiMastersK = map (\(kAxi, _, _, _, _, _, _) -> kAxi) kvResults
-  kvAxiMastersV = map (\(_, vAxi, _, _, _, _, _) -> vAxi) kvResults
-  kVecs         = map (\(_, _, k, _, _, _, _) -> k) kvResults
-  vVecs         = map (\(_, _, _, v, _, _, _) -> v) kvResults
-  kvValids      = map (\(_, _, _, _, valid, _, _) -> valid) kvResults
-  kvReadys      = map (\(_, _, _, _, _, ready, _) -> ready) kvResults
-
-  -- Combine all AXI masters: Q heads, then K heads, then V heads
-  allAxiMasters = qAxiMasters ++ kvAxiMastersK ++ kvAxiMastersV
-
+  kVecs    = map (\(k, _, _, _) -> k) kvResults
+  vVecs    = map (\(_, v, _, _) -> v) kvResults
+  kvValids = map (\(_, _, v, _) -> v) kvResults
+  kvReadys = map (\(_, _, _, r) -> r) kvResults
   outputValid = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
   readyForInput = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
   qkvOut = bundle (sequenceA qVecs, sequenceA kVecs, sequenceA vVecs)

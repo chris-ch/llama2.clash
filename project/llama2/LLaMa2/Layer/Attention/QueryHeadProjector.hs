@@ -91,15 +91,22 @@ qOutputChecker :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
   -> Signal dom (Vec n FixedPoint)
 qOutputChecker outputValid dramOut hcOut = result
   where
-    everValid = register False (everValid .||. outputValid)
-    prevOutputValid = register False outputValid
-    checkTrigger = prevOutputValid .&&. everValid
+    -- Capture on rising edge of outputValid (first cycle it fires).
+    -- Using prevOutputValid.&&.everValid caused a one-cycle late capture:
+    -- for the last head in round-robin, outputValid fires exactly at
+    -- consumeSignal, leaving no time for dramSampled to be captured before
+    -- qkvDone fires at T_all+1. Fix: latch on the FIRST cycle outputValid
+    -- is True, then compare one cycle later when qkvDone fires.
+    risingEdge = outputValid .&&. (not <$> register False outputValid)
 
-    dramSampled = register (repeat 0) (mux checkTrigger dramOut dramSampled)
-    hcSampled   = register (repeat 0) (mux checkTrigger hcOut hcSampled)
+    dramSampled = register (repeat 0) (mux risingEdge dramOut dramSampled)
+    hcSampled   = register (repeat 0) (mux risingEdge hcOut hcSampled)
 
     tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0 (mux checkTrigger (tokenCnt + 1) tokenCnt)
+    tokenCnt = register 0 (mux risingEdge (tokenCnt + 1) tokenCnt)
+
+    -- checkTrigger fires ONE cycle after capture (when dramSampled is valid).
+    checkTrigger = register False risingEdge
 
     result = mux checkTrigger (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled) dramOut
 
