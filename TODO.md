@@ -274,58 +274,56 @@ First batch: 100 units
     ✅ Q matrices  — DRAM-backed via AXI; 8 heads, 8 masters in arbiter
     ✅ K matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
     ✅ V matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
-    All 16 Q/K/V AXI masters share a single arbiter inside QKVProjection.
+    ✅ WO matrices — DRAM-backed via 2-level arbiter; 8 Q-heads, 8 masters
+    All 24 AXI masters share a single DRAM slave via a 2-level arbiter tree:
+      MHA top arbiter (2 masters): QKV sub-arbiter (16) + WO sub-arbiter (8).
     HC parallel path runs alongside DRAM for regression assertions during migration.
     OutputChecker stale-data bug found and fixed (rising-edge capture pattern).
+    All 101 tests pass on branch `dram`.
 
-### Next: WO Output Projection (Option A — in progress)
+### Next: FFN Weight Matrices (W1, W2, W3)
 
-WO matrix: `MatI8E ModelDimension HeadDimension` — 64 rows × 8 columns per Q-head (8 heads).
-Address layout already implemented: `WOMatrix` in `WeightsLayout.MatrixType`.
+FFN has three matrices per layer, computed sequentially: W1 (gate) → W3 (up) → W2 (down).
 
-Key technical challenges vs Q/K/V migration:
+Matrix shapes (260K model: ModelDimension=64, HiddenDimension=172):
+  W1: `MatI8E HiddenDimension ModelDimension` — 172 rows × 64 cols (input: Vec 64)
+  W3: `MatI8E HiddenDimension ModelDimension` — 172 rows × 64 cols (input: Vec 64)
+  W2: `MatI8E ModelDimension HiddenDimension` — 64 rows × 172 cols (input: Vec 172)
+Beats per row: W1/W3 → WordsPerRow ModelDimension (same as Q/K/V); W2 → WordsPerRow HiddenDimension.
+`W1Matrix`, `W2Matrix`, `W3Matrix` already in `WeightsLayout.MatrixType`.
+No per-head indexing; `headIdxInt = 0` always (one projector per matrix per layer).
 
-1. **Transposed dimensions**: Q/K/V are HeadDimension rows × ModelDimension cols (8×64).
-   WO is ModelDimension rows × HeadDimension cols (64×8). Every sub-module is currently
-   specialised to `Index HeadDimension` (row index) and `ModelDimension` (column count).
+Key technical challenges:
 
-2. **Sub-module generalisation required**:
-   - `WeightsLayout.rowAddressCalculator`: change row index from `Index HeadDimension` → `Int`
-   - `WeightLoader.weightLoaderGeneric` + `WeightLoaderOutput` + `Txn`: add `numRows`/`numCols`
-     type parameters (currently hardcoded to `HeadDimension`/`ModelDimension`)
-   - `QueryHeadProjector/RowScheduler`: `Index HeadDimension` → polymorphic `Index numRows`
-   - `QueryHeadProjector/RowComputeUnit`: column vec `ModelDimension` and row index
-     `Index HeadDimension` both need to become type parameters
-   - `QueryHeadProjector/OutputAccumulator`: output `Vec HeadDimension` → `Vec numRows`
+1. **Sequential pipeline, not parallel**: unlike Q/K/V/WO (all heads in parallel),
+   FFN runs Gate→Up→Down in strict order. Only one DRAM master is active at a time.
+   Design choice: 3 separate weight loaders with a 3-master sub-arbiter inside
+   a new `FFNProjector` module (cleaner; only the active phase issues AR requests).
 
-3. **Arbiter extension**: WO adds 8 more AXI masters. Currently 16 (8Q+4K+4V) inside
-   QKVProjection. WO projection lives in MultiHeadAttention (one level up). Options:
-   a. Extend the existing arbiter to 24 masters (16 QKV + 8 WO); thread WO slaves down.
-   b. Give MultiHeadAttention its own mini-arbiter for the 8 WO masters and combine the
-      two master outputs at the MultiHeadAttention level.
-   Option (b) is cleaner because it keeps WO self-contained and doesn't require changing
-   QKVProjection's arbiter size.
+2. **Two input widths**: W1/W3 take `Vec ModelDimension FixedPoint` (64 elements);
+   W2 takes `Vec HiddenDimension FixedPoint` (172 elements = `gateUpLatched`).
+   The generic RowComputeUnit already supports arbitrary column widths after WO migration.
+
+3. **Arbiter extension at transformer layer level**:
+   Currently `transformerLayer` passes `dramSlaveIn` directly to MHA.
+   FFN needs its own DRAM slave. Add a 2-master arbiter inside `transformerLayer`:
+     Master 0 → MHA's existing arbiter tree
+     Master 1 → FFN's 3-master sub-arbiter (W1, W3, W2 — sequential, so at most 1 active)
+
+4. **FFN is much larger** at 7B scale: HiddenDimension=11008 → 220-beat bursts.
+   The generic loader already handles multi-beat rows; 260K simulation uses short rows.
 
 Migration steps:
-    Step 1: Generalise `rowAddressCalculator` row index type (Int, or KnownNat numRows).
-    Step 2: Generalise `weightLoaderGeneric`/`WeightLoaderOutput` with `numRows`/`numCols`.
-    Step 3: Generalise `RowScheduler`, `RowComputeUnit`, `OutputAccumulator` with type params.
-    Step 4: Add `woWeightLoader` to `WeightLoader.hs` using the generic loader.
-    Step 5: Build `woHeadProjector` (mirrors queryHeadCore / keyValueHeadProjector).
-    Step 6: Add WO arbiter in `MultiHeadAttention.hs`; replace `perHeadWOController`.
-    Step 7: Validate: tests pass with DRAM WO + HC cross-check assertions.
-
-### After WO: FFN (Option B — future)
-
-FFN has three matrices per layer: W1 (gate), W2 (down), W3 (up).
-W1/W3: `MatI8E HiddenDimension ModelDimension` — 256×64 rows (largest matrices).
-W2: `MatI8E ModelDimension HiddenDimension` — 64×256 rows.
-`WOMatrix`, `W1Matrix`, `W2Matrix`, `W3Matrix` all in `WeightsLayout.MatrixType`.
-No per-head indexing for FFN (headIdxInt = 0 always).
-
-Additional challenge: FFN sequential pipeline (Gate→Up→Down) shares the DRAM bus.
-An FFN arbiter (3 masters: W1, W2, W3 active one at a time) or time-multiplexed
-access is needed.
+    Step 1: Add `w1WeightLoader`, `w3WeightLoader`, `w2WeightLoader` to `WeightLoader.hs`.
+            Use `Layout.W1Matrix`/`W3Matrix`/`W2Matrix`; HC from `PARAM.fW1Q`/`fW3Q`/`fW2Q`.
+    Step 2: Build `FFNProjector` module replacing `feedForwardCore`'s 3× `parallelRowMatrixMultiplier`.
+            Each phase (FFNGate/FFNUp/FFNDown) uses its weight loader + RowScheduler + RowComputeUnit + OutputAccumulator.
+            3-master internal sub-arbiter; only active phase drives AR requests.
+    Step 3: Expose `ffnAxiMasterOut` from `FFNProjector`; wire into `TransformerLayer.hs`.
+            Add 2-master top arbiter: MHA master + FFN master (sequential, no contention in practice).
+    Step 4: Retain HC cross-check (row-level and output-level assertions) until tests pass.
+    Step 5: Validate: all 101 tests pass with DRAM FFN + HC cross-check active.
+    Step 6: (Optional cleanup) Remove HC path and `FeedForwardNetworkComponentQ` param.
 
 ### Remaining small parameters (low priority — not synthesis blockers at 260K scale)
     ⬜ rmsAttF  — Vec 64 FixedPoint per layer (attention RMS norm weights)
