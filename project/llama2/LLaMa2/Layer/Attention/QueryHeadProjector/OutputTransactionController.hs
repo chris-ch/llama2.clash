@@ -4,7 +4,7 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, HeadDimension)
+import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads)
 import qualified Prelude as P
 
 import TraceUtils (traceEdgeC)
@@ -27,11 +27,9 @@ outputTransactionController :: forall dom.
   => Signal dom (Unsigned 32)
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension)     -- rowIndex (unused, API compat)
-  -> Signal dom Bool                       -- downStreamReady (unused, API compat)
   -> OutputTransactionIn dom
   -> OutputTransactionOut dom
-outputTransactionController cycleCounter layerIdx headIdx _rowIndex _downStreamReady inputs =
+outputTransactionController cycleCounter layerIdx headIdx inputs =
   OutputTransactionOut { otcOutputValid = outputValidTraced }
   where
     tag = "[OTC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "

@@ -4,6 +4,8 @@ import Clash.Prelude
 import qualified Data.List as DL
 import Test.Hspec
 import qualified Prelude as P
+import Control.Exception (try, SomeException)
+import System.IO (hFlush, stdout)
 
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import LLaMa2.Types.LayerData (Token, Temperature, Seed, LayerData(..))
@@ -84,7 +86,7 @@ spec = do
             promptTokens = [1, 320] :: [Token]
             temperature = 0.0 :: FixedPoint
             seed = 123 :: Seed
-            maxCycles = 28_000
+            maxCycles = 60_000
             
             -- Autoregressive state management (from Main.hs)
             (firstToken, restPrompt) = case promptTokens of
@@ -152,16 +154,6 @@ spec = do
                            Nothing -> -1.0
                    ]
             
-            -- Find when token 0 completes: first cycle where the decoder signals ready
-            token0End = case DL.findIndex id readyFlags of
-                Just i  -> i + 1  -- include the completion cycle in token 0's range
-                Nothing -> maxCycles `P.div` 2
-
-            token1Start = token0End
-            
-            token0Events = extractCompletions 0 token0End
-            token1Events = extractCompletions token1Start maxCycles
-            
             -- Print detailed comparison
             printTokenResults tokenNum events expected = do
                 P.putStrLn $ "\n=== TOKEN " P.++ show tokenNum P.++ " ==="
@@ -182,22 +174,61 @@ spec = do
                             P.putStrLn $ "  FFN:  " P.++ show ffnN
                     ) events
         
-        printTokenResults (0 :: Int) token0Events token0Expected
-        printTokenResults (1 :: Int) token1Events token1Expected
-        
-        -- Focused assertion: Token 1 Layer 0 attention norm
-        let token1Layer0Attn = case DL.find (\(li, _, _, _) -> li == 0) token1Events of
-                Just (_, _, attnN, _) -> attnN
-                Nothing -> error "No layer 0 attention event found for token 1"
-        
-        let expectedToken1Layer0Attn = case DL.lookup 0 token1Expected of
-                Just (ExpectedNorms attnN _) -> attnN
-                Nothing -> error "No expected value for token 1 layer 0"
-        
-        P.putStrLn "\n=== CRITICAL BUG CHECK ==="
-        P.putStrLn "Token 1 Layer 0 Attention Norm:"
-        P.putStrLn $ "  Actual:   " P.++ show token1Layer0Attn
-        P.putStrLn $ "  Expected: " P.++ show expectedToken1Layer0Attn
-        P.putStrLn $ "  Error:    " P.++ show (abs (token1Layer0Attn - expectedToken1Layer0Attn))
-        
-        abs (token1Layer0Attn - expectedToken1Layer0Attn) `shouldSatisfy` (< 0.01)
+        -- Eagerly find token0End before any LayerData is forced
+        P.putStrLn $ "[DBG] Searching for token0End in " P.++ show maxCycles P.++ " cycles..."
+        hFlush stdout
+        let token0End = case DL.findIndex id readyFlags of
+                Just i  -> i + 1
+                Nothing -> maxCycles `P.div` 2
+        P.putStrLn $ "[DBG] token0End=" P.++ show token0End
+        hFlush stdout
+
+        let token1Start = token0End
+
+        let token0Events = extractCompletions 0 token0End
+            token1Events = extractCompletions token1Start maxCycles
+
+        -- Wrap everything in try to catch P.error / exceptions
+        result <- try @SomeException $ do
+            P.putStrLn "[DBG] About to evaluate token0Events length..."
+            hFlush stdout
+            let n0 = P.length token0Events
+            P.putStrLn $ "[DBG] token0Events has " P.++ show n0 P.++ " entries"
+            hFlush stdout
+
+            printTokenResults (0 :: Int) token0Events token0Expected
+            hFlush stdout
+
+            P.putStrLn "[DBG] token 0 done, evaluating token1Events..."
+            hFlush stdout
+            let n1 = P.length token1Events
+            P.putStrLn $ "[DBG] token1Events has " P.++ show n1 P.++ " entries"
+            hFlush stdout
+
+            printTokenResults (1 :: Int) token1Events token1Expected
+            hFlush stdout
+
+            -- Focused assertion: Token 1 Layer 0 attention norm
+            let token1Layer0Attn = case DL.find (\(li, _, _, _) -> li == 0) token1Events of
+                    Just (_, _, attnN, _) -> attnN
+                    Nothing -> error "No layer 0 attention event found for token 1"
+
+            let expectedToken1Layer0Attn = case DL.lookup 0 token1Expected of
+                    Just (ExpectedNorms attnN _) -> attnN
+                    Nothing -> error "No expected value for token 1 layer 0"
+
+            P.putStrLn "\n=== CRITICAL BUG CHECK ==="
+            P.putStrLn "Token 1 Layer 0 Attention Norm:"
+            P.putStrLn $ "  Actual:   " P.++ show token1Layer0Attn
+            P.putStrLn $ "  Expected: " P.++ show expectedToken1Layer0Attn
+            P.putStrLn $ "  Error:    " P.++ show (abs (token1Layer0Attn - expectedToken1Layer0Attn))
+            hFlush stdout
+
+            abs (token1Layer0Attn - expectedToken1Layer0Attn) `shouldSatisfy` (< 0.01)
+
+        case result of
+            Right () -> pure ()
+            Left e   -> do
+                P.putStrLn $ "\n[EXCEPTION CAUGHT]: " P.++ show e
+                hFlush stdout
+                expectationFailure $ show e

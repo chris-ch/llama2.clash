@@ -89,7 +89,7 @@ rowAddressCalculator ::
   MatrixType
   -> Index NumLayers
   -> Int                    -- ^ Head index as Int (caller responsible for bounds)
-  -> Index HeadDimension
+  -> Int                    -- ^ Row index as Int (caller responsible for bounds)
   -> Unsigned 32
 rowAddressCalculator matType layerIdx headIdxInt rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
@@ -195,7 +195,7 @@ rowAddressCalculator matType layerIdx headIdxInt rowIdx =
       _        -> wordsPerRowVal @ModelDimension * bytesPerWord   -- Q/K/V/W1/W3 have ModelDim columns
 
     rowOffset :: Int
-    rowOffset = fromIntegral rowIdx * rowBytesForMatrix
+    rowOffset = rowIdx * rowBytesForMatrix
 
 -- State machine for AXI read
 data RowFetcherState = Idle | WaitAR | WaitR

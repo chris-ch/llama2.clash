@@ -3,7 +3,7 @@ module LLaMa2.Layer.Attention.MultiHeadAttention (
 ) where
 
 import Clash.Prelude
-import qualified Simulation.Parameters as PARAM (MultiHeadAttentionComponentQ (..), DecoderParameters, TransformerLayerComponent (..))
+import qualified Simulation.Parameters as PARAM (DecoderParameters)
 import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -14,8 +14,9 @@ import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import Simulation.Parameters (DecoderParameters(..))
+import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
+import qualified LLaMa2.Layer.Attention.WOHeadProjector as WOHP
 
 multiHeadAttentionStage :: forall dom.
   (HiddenClockResetEnable dom) =>
@@ -41,9 +42,6 @@ multiHeadAttentionStage :: forall dom.
 multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
   (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
   where
-    layerParams = modelLayers params !! layerIdx
-    mhaParams = PARAM.multiHeadAttention layerParams
-
     -- Write-back controller
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeDone, writeReadyIn, writeEnable) =
@@ -73,11 +71,25 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
 
     input = inputVector <$> layerData
 
-    -- QKV projection with AXI
-    (axiMasterOut, qkvProjected, qkvDone, qkvReady, debugInfo) =
+    -------------------------------------------------------------------------
+    -- Top-level 2-master AXI arbiter: splits dramSlaveIn → qkvSlave + woTopSlave
+    -------------------------------------------------------------------------
+    topAllMasters :: Vec 2 (Master.AxiMasterOut dom)
+    topAllMasters = qkvAxiMaster :> woAxiMaster :> Nil
+
+    topAllSlaves :: Vec 2 (Slave.AxiSlaveIn dom)
+    (axiMasterOut, topAllSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn topAllMasters
+
+    qkvSlave   = topAllSlaves !! (0 :: Index 2)
+    woTopSlave = topAllSlaves !! (1 :: Index 2)
+
+    -------------------------------------------------------------------------
+    -- QKV projection (DRAM-backed via qkvSlave)
+    -------------------------------------------------------------------------
+    (qkvAxiMaster, qkvProjected, qkvDone, qkvReady, debugInfo) =
       qkvProjectionController
         cycleCounter
-        dramSlaveIn
+        qkvSlave
         layerIdx
         validIn
         writeReadyIn
@@ -87,10 +99,12 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
 
     (q, k, v) = unbundle qkvProjected
 
-    -- Stage2/3
-    initHeadOutputs   = repeat (pure (repeat 0))
-    initHeadDone      = repeat (pure False)
-    initWriteDone     = repeat (pure False)
+    -------------------------------------------------------------------------
+    -- Stage 2/3: attention scoring (KV bank controller)
+    -------------------------------------------------------------------------
+    initHeadOutputs = repeat (pure (repeat 0))
+    initHeadDone    = repeat (pure False)
+    initWriteDone   = repeat (pure False)
 
     (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
       foldl
@@ -101,20 +115,42 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
         (initHeadOutputs, initHeadDone, initWriteDone)
         indicesI
 
-    -- WO projection
-    (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs) =
-      perHeadWOController perHeadOutputs perHeadDoneFlags (PARAM.mWoQ mhaParams)
+    -------------------------------------------------------------------------
+    -- WO projection (DRAM-backed, one head per Q-head)
+    -- inputValid[i] fires when head i's attention output is ready.
+    -- consumeSignal is coordinated: all heads clear together when all done.
+    -------------------------------------------------------------------------
+    woConsumeSignal = woAllValid
 
-    validProjection proj valid _ready = mux valid proj (pure (repeat 0))
-    gatedHeads =
-      zipWith3 validProjection
-        perHeadProjected
-        perHeadOutputValids
-        perHeadReadyForInputs
+    woResults :: Vec NumQueryHeads ( Master.AxiMasterOut dom
+                                   , Signal dom (Vec ModelDimension FixedPoint)
+                                   , Signal dom Bool   -- outputValid
+                                   , Signal dom Bool   -- readyForInput
+                                   )
+    woResults = imap (\headIdx _ ->
+        WOHP.woHeadProjector cycleCounter (perWOSlaves !! headIdx) layerIdx headIdx
+          (perHeadDoneFlags  !! headIdx)  -- inputValid: fires when this head's attention is done
+          (pure True)                     -- downStreamReady: no backpressure at WO level
+          woConsumeSignal                 -- coordinated clear when all WO heads done
+          (perHeadOutputs !! headIdx)     -- per-head attention output
+          params
+      ) (repeat () :: Vec NumQueryHeads ())
 
-    -- Sum heads and produce “projection valid” when all outputs are valid
-    woHeads        = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
-    validProjected = and <$> sequenceA perHeadOutputValids
+    woAxiMasterPer = map (\(axi, _, _, _) -> axi) woResults
+    woVecs         = map (\(_, v', _, _)   -> v')   woResults
+    woValids       = map (\(_, _, va, _)  -> va)  woResults
+
+    -------------------------------------------------------------------------
+    -- WO 8-master sub-arbiter (all 8 WO heads share woTopSlave)
+    -------------------------------------------------------------------------
+    (woAxiMaster, perWOSlaves) =
+      ARB.axiArbiterWithRouting cycleCounter woTopSlave woAxiMasterPer
+
+    woAllValid     = and <$> sequenceA woValids
+    validProjected = woAllValid
+
+    gatedHeads = zipWith (\va vec -> mux va vec (pure (repeat 0))) woValids woVecs
+    woHeads    = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
 
     xAfterAttn = residualAdder <$> layerData <*> woHeads
 
@@ -122,28 +158,6 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
       let prevValid = register False validProjected
        in validProjected .&&. (not <$> prevValid)
 
-perHeadWOController ::
-  forall dom.
-  (HiddenClockResetEnable dom) =>
-  Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint)) ->
-  Vec NumQueryHeads (Signal dom Bool) ->
-  Vec NumQueryHeads (MatI8E ModelDimension HeadDimension) ->
-  ( Vec NumQueryHeads (Signal dom (Vec ModelDimension FixedPoint)),
-    Vec NumQueryHeads (Signal dom Bool),  -- outputValid per head
-    Vec NumQueryHeads (Signal dom Bool)   -- readyForInput per head
-  )
-perHeadWOController perHeadOutputs perHeadDoneFlags mWoQs =
-  (perHeadProjected, perHeadOutputValids, perHeadReadyForInputs)
-  where
-    -- Drive each head only when it is both needed (done flag) and ready to accept input
-    perHeadReadyForInputs = map (\(_, _, readyForInput) -> readyForInput) perHeadResults
-    headInputValids       = zipWith (.&&.) perHeadDoneFlags perHeadReadyForInputs
-
-    perHeadResults =
-      zipWith3 singleHeadController headInputValids perHeadOutputs mWoQs
-
-    perHeadProjected      = map (\(result, _, _) -> result)      perHeadResults
-    perHeadOutputValids   = map (\(_, outputValid, _) -> outputValid) perHeadResults
 
 residualAdder :: LayerData -> Vec ModelDimension FixedPoint -> Vec ModelDimension FixedPoint
 residualAdder layerData = zipWith (+) (inputVector layerData)

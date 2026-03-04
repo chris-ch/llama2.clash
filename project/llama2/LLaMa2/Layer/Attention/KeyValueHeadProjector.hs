@@ -172,7 +172,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kRowIndex :: Signal dom (Index HeadDimension)
   kRowIndex = traceChangeC cycleCounter (kTag P.++ "rowIndex") $ register 0 kNextRowIndex
 
-  kRsIn :: RowScheduler.RowSchedulerIn dom
+  kRsIn :: RowScheduler.RowSchedulerIn dom HeadDimension
   kRsIn = RowScheduler.RowSchedulerIn
     { rsRowDone       = kRowDone
     , rsOutputValid   = OutputTransactionController.otcOutputValid kOutputTxn
@@ -180,12 +180,12 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     , rsCurrentIndex  = kRowIndex
     }
 
-  kRowSched :: RowScheduler.RowSchedulerOut dom
+  kRowSched :: RowScheduler.RowSchedulerOut dom HeadDimension
   kRowSched     = RowScheduler.rowScheduler kRsIn
   kNextRowIndex = RowScheduler.rsNextRowIndex kRowSched
 
   kInputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx qTag kRowIndex
+    cycleCounter layerIdx qTag
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
       , itcOutputValid     = OutputTransactionController.otcOutputValid kOutputTxn
@@ -196,7 +196,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kInputValidLatched = InputTransactionController.itcLatchedValid kInputTxn
 
   kOutputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx qTag kRowIndex downStreamReady
+    cycleCounter layerIdx qTag
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone kCompute
       , otcConsumeSignal = consumeSignal
@@ -281,7 +281,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vRowIndex :: Signal dom (Index HeadDimension)
   vRowIndex = traceChangeC cycleCounter (vTag P.++ "rowIndex") $ register 0 vNextRowIndex
 
-  vRsIn :: RowScheduler.RowSchedulerIn dom
+  vRsIn :: RowScheduler.RowSchedulerIn dom HeadDimension
   vRsIn = RowScheduler.RowSchedulerIn
     { rsRowDone       = vRowDone
     , rsOutputValid   = OutputTransactionController.otcOutputValid vOutputTxn
@@ -289,12 +289,12 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     , rsCurrentIndex  = vRowIndex
     }
 
-  vRowSched :: RowScheduler.RowSchedulerOut dom
+  vRowSched :: RowScheduler.RowSchedulerOut dom HeadDimension
   vRowSched     = RowScheduler.rowScheduler vRsIn
   vNextRowIndex = RowScheduler.rsNextRowIndex vRowSched
 
   vInputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx qTag vRowIndex
+    cycleCounter layerIdx qTag
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
       , itcOutputValid     = OutputTransactionController.otcOutputValid vOutputTxn
@@ -305,7 +305,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vInputValidLatched = InputTransactionController.itcLatchedValid vInputTxn
 
   vOutputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx qTag vRowIndex downStreamReady
+    cycleCounter layerIdx qTag
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone vCompute
       , otcConsumeSignal = consumeSignal

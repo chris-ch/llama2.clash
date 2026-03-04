@@ -6,7 +6,6 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Numeric.Operations as OPS
@@ -32,15 +31,18 @@ data RowMultiplierOut dom = RowMultiplierOut
   , rmoDebug      :: RowMultiplierDebug dom
   } deriving (Generic)
 
-rowMultiplier :: forall dom.
-  HiddenClockResetEnable dom
+rowMultiplier :: forall dom numRows numCols.
+  ( HiddenClockResetEnable dom
+  , KnownNat numRows
+  , KnownNat numCols
+  )
   => Signal dom (Unsigned 32)
-  -> Signal dom (Vec ModelDimension FixedPoint)
-  -> Signal dom (RowI8E ModelDimension)
+  -> Signal dom (Vec numCols FixedPoint)
+  -> Signal dom (RowI8E numCols)
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> Signal dom (Index HeadDimension)
+  -> Signal dom (Index numRows)
   -> RowMultiplierOut dom
 rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
   RowMultiplierOut
@@ -69,14 +71,14 @@ rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
 -- Executes row-vector multiplication with DRAM weights for computation
 -- and HC weights for parallel validation
 --------------------------------------------------------------------------------
-data RowComputeIn dom = RowComputeIn
+data RowComputeIn dom numRows numCols = RowComputeIn
   { rcInputValid      :: Signal dom Bool
   , rcWeightValid     :: Signal dom Bool
   , rcDownStreamReady :: Signal dom Bool
-  , rcRowIndex        :: Signal dom (Index HeadDimension)
-  , rcWeightDram      :: Signal dom (RowI8E ModelDimension)  -- DRAM weights for computation
-  , rcWeightHC        :: Signal dom (RowI8E ModelDimension)  -- HC weights for validation
-  , rcColumn          :: Signal dom (Vec ModelDimension FixedPoint)
+  , rcRowIndex        :: Signal dom (Index numRows)
+  , rcWeightDram      :: Signal dom (RowI8E numCols)    -- DRAM weights for computation
+  , rcWeightHC        :: Signal dom (RowI8E numCols)    -- HC weights for validation
+  , rcColumn          :: Signal dom (Vec numCols FixedPoint)
   } deriving (Generic)
 
 data RowComputeOut dom = RowComputeOut
@@ -90,10 +92,13 @@ data RowComputeOut dom = RowComputeOut
   , rcDebug        :: RowMultiplierDebug dom
   } deriving (Generic)
 
-rowComputeUnit :: forall dom.
-  HiddenClockResetEnable dom
+rowComputeUnit :: forall dom numRows numCols.
+  ( HiddenClockResetEnable dom
+  , KnownNat numRows
+  , KnownNat numCols
+  )
   => Signal dom (Unsigned 32)
-  -> RowComputeIn dom
+  -> RowComputeIn dom numRows numCols
   -> RowComputeOut dom
 rowComputeUnit cycleCounter inputs =
   RowComputeOut
@@ -109,7 +114,7 @@ rowComputeUnit cycleCounter inputs =
   where
     -- Main multiplier using DRAM weights (primary computation path)
     mult = rowMultiplier cycleCounter (rcColumn inputs) (rcWeightDram inputs)
-                         (rcInputValid inputs) (rcWeightValid inputs) 
+                         (rcInputValid inputs) (rcWeightValid inputs)
                          (rcDownStreamReady inputs) (rcRowIndex inputs)
 
     -- HC reference path (for validation)

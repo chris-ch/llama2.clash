@@ -13,25 +13,27 @@ import TraceUtils (traceWhenC)
 -- COMPONENT: OutputAccumulator
 -- Accumulates row results into output vector
 --------------------------------------------------------------------------------
-data OutputAccumIn dom = OutputAccumIn
+data OutputAccumIn dom numRows = OutputAccumIn
   { oaRowDone     :: Signal dom Bool
-  , oaRowIndex    :: Signal dom (Index HeadDimension)
+  , oaRowIndex    :: Signal dom (Index numRows)
   , oaRowResult   :: Signal dom FixedPoint
   , oaRowResultHC :: Signal dom FixedPoint
   } deriving (Generic)
 
-data OutputAccumOut dom = OutputAccumOut
-  { oaOutput   :: Signal dom (Vec HeadDimension FixedPoint)
-  , oaOutputHC :: Signal dom (Vec HeadDimension FixedPoint)
+data OutputAccumOut dom numRows = OutputAccumOut
+  { oaOutput   :: Signal dom (Vec numRows FixedPoint)
+  , oaOutputHC :: Signal dom (Vec numRows FixedPoint)
   } deriving (Generic)
 
-outputAccumulator :: forall dom.
-  HiddenClockResetEnable dom
+outputAccumulator :: forall dom numRows.
+  ( HiddenClockResetEnable dom
+  , KnownNat numRows
+  )
   => Signal dom (Unsigned 32)
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> OutputAccumIn dom
-  -> OutputAccumOut dom
+  -> OutputAccumIn dom numRows
+  -> OutputAccumOut dom numRows
 outputAccumulator cycleCounter layerIdx headIdx inputs =
   OutputAccumOut
     { oaOutput   = qOut

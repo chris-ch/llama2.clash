@@ -80,7 +80,7 @@ spec = describe "RowI8E pack/parse round-trip" $ do
         fetchRow :: Index HeadDimension -> RowI8E ModelDimension
         fetchRow ri =
           let addrBytes :: Unsigned 32
-              addrBytes = Layout.rowAddressCalculator Layout.QMatrix 0 0 ri
+              addrBytes = Layout.rowAddressCalculator Layout.QMatrix 0 0 (fromIntegral ri)
               baseWord  = fromIntegral (addrBytes `shiftR` 6) :: Int
               slice'     = map (\k -> dramVec !! (snatToNum (SNat @0) + toInteger (baseWord + k)))
                               (iterateI (+1) 0 :: Vec (Layout.WordsPerRow ModelDimension) Int)

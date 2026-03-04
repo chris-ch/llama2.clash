@@ -173,7 +173,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                  
     nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
-    inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx rowIndex
+    inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx
                  InputTransactionController.InputTransactionIn
                    { itcInputValid      = inputValid
                    , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
@@ -188,7 +188,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     -- CLR has priority over SET (critical for correct handshake)
     -- Uses consumeSignal for coordinated multi-head clearing
     ----------------------------------------------------------------------------
-    outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx headIdx rowIndex downStreamReady
+    outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx headIdx
                   OutputTransactionController.OutputTransactionIn
                     { otcAllDone       = RowComputeUnit.rcAllDone compute
                     , otcConsumeSignal = consumeSignal

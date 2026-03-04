@@ -111,6 +111,7 @@ library
       LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit
       LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController
       LLaMa2.Layer.Attention.MultiHeadAttention
+      LLaMa2.Layer.Attention.WOHeadProjector
       LLaMa2.Layer.Attention.QKVProjection
       LLaMa2.Layer.Attention.QueryHeadProjector
       LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
@@ -201,6 +202,6 @@ test-suite llama2-test
     -Wall
     -threaded
     -rtsopts
-    -with-rtsopts=-N
+    "-with-rtsopts=-N -K64m"
     -main-is Spec.main
     -DMODEL_260K

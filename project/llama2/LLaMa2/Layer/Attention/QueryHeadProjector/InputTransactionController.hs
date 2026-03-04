@@ -5,7 +5,7 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig
+import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads)
 import qualified Prelude as P
 
 import TraceUtils (traceEdgeC)
@@ -30,10 +30,9 @@ inputTransactionController :: forall dom.
   => Signal dom (Unsigned 32)
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom (Index HeadDimension)  -- rowIndex (unused now, kept for API compat)
   -> InputTransactionIn dom
   -> InputTransactionOut dom
-inputTransactionController cycleCounter layerIdx headIdx _rowIndex inputs =
+inputTransactionController cycleCounter layerIdx headIdx inputs =
   InputTransactionOut { itcLatchedValid = latchedValidTraced }
   where
     tag = "[ITC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "

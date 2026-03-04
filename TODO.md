@@ -268,6 +268,72 @@ First batch: 100 units
         Boot path/tests: enable write master to populate DDR (or to persist I8E to eMMC).
     Expected code changes: ~500 lines; 2–3 weeks including tests.
 
+## DRAM Weight Migration Status
+
+### Completed
+    ✅ Q matrices  — DRAM-backed via AXI; 8 heads, 8 masters in arbiter
+    ✅ K matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
+    ✅ V matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
+    All 16 Q/K/V AXI masters share a single arbiter inside QKVProjection.
+    HC parallel path runs alongside DRAM for regression assertions during migration.
+    OutputChecker stale-data bug found and fixed (rising-edge capture pattern).
+
+### Next: WO Output Projection (Option A — in progress)
+
+WO matrix: `MatI8E ModelDimension HeadDimension` — 64 rows × 8 columns per Q-head (8 heads).
+Address layout already implemented: `WOMatrix` in `WeightsLayout.MatrixType`.
+
+Key technical challenges vs Q/K/V migration:
+
+1. **Transposed dimensions**: Q/K/V are HeadDimension rows × ModelDimension cols (8×64).
+   WO is ModelDimension rows × HeadDimension cols (64×8). Every sub-module is currently
+   specialised to `Index HeadDimension` (row index) and `ModelDimension` (column count).
+
+2. **Sub-module generalisation required**:
+   - `WeightsLayout.rowAddressCalculator`: change row index from `Index HeadDimension` → `Int`
+   - `WeightLoader.weightLoaderGeneric` + `WeightLoaderOutput` + `Txn`: add `numRows`/`numCols`
+     type parameters (currently hardcoded to `HeadDimension`/`ModelDimension`)
+   - `QueryHeadProjector/RowScheduler`: `Index HeadDimension` → polymorphic `Index numRows`
+   - `QueryHeadProjector/RowComputeUnit`: column vec `ModelDimension` and row index
+     `Index HeadDimension` both need to become type parameters
+   - `QueryHeadProjector/OutputAccumulator`: output `Vec HeadDimension` → `Vec numRows`
+
+3. **Arbiter extension**: WO adds 8 more AXI masters. Currently 16 (8Q+4K+4V) inside
+   QKVProjection. WO projection lives in MultiHeadAttention (one level up). Options:
+   a. Extend the existing arbiter to 24 masters (16 QKV + 8 WO); thread WO slaves down.
+   b. Give MultiHeadAttention its own mini-arbiter for the 8 WO masters and combine the
+      two master outputs at the MultiHeadAttention level.
+   Option (b) is cleaner because it keeps WO self-contained and doesn't require changing
+   QKVProjection's arbiter size.
+
+Migration steps:
+    Step 1: Generalise `rowAddressCalculator` row index type (Int, or KnownNat numRows).
+    Step 2: Generalise `weightLoaderGeneric`/`WeightLoaderOutput` with `numRows`/`numCols`.
+    Step 3: Generalise `RowScheduler`, `RowComputeUnit`, `OutputAccumulator` with type params.
+    Step 4: Add `woWeightLoader` to `WeightLoader.hs` using the generic loader.
+    Step 5: Build `woHeadProjector` (mirrors queryHeadCore / keyValueHeadProjector).
+    Step 6: Add WO arbiter in `MultiHeadAttention.hs`; replace `perHeadWOController`.
+    Step 7: Validate: tests pass with DRAM WO + HC cross-check assertions.
+
+### After WO: FFN (Option B — future)
+
+FFN has three matrices per layer: W1 (gate), W2 (down), W3 (up).
+W1/W3: `MatI8E HiddenDimension ModelDimension` — 256×64 rows (largest matrices).
+W2: `MatI8E ModelDimension HiddenDimension` — 64×256 rows.
+`WOMatrix`, `W1Matrix`, `W2Matrix`, `W3Matrix` all in `WeightsLayout.MatrixType`.
+No per-head indexing for FFN (headIdxInt = 0 always).
+
+Additional challenge: FFN sequential pipeline (Gate→Up→Down) shares the DRAM bus.
+An FFN arbiter (3 masters: W1, W2, W3 active one at a time) or time-multiplexed
+access is needed.
+
+### Remaining small parameters (low priority — not synthesis blockers at 260K scale)
+    ⬜ rmsAttF  — Vec 64 FixedPoint per layer (attention RMS norm weights)
+    ⬜ fRMSFfnF — Vec 64 FixedPoint per layer (FFN RMS norm weights)
+    ⬜ rmsFinalWeightF — Vec 64 FixedPoint (final output norm weights)
+    ⬜ rotaryEncoding — Vec SequenceLength (Vec 16 FixedPoint) cos/sin tables
+    These are tiny; can live in small BRAMs or stay as ROM constants.
+
 ## Final Checklist
 
     ✅ Models: 7B/13B only; 70B excluded.
