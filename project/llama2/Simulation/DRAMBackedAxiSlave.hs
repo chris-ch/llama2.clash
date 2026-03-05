@@ -22,7 +22,6 @@ import LLaMa2.Types.ModelConfig
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
 import qualified LLaMa2.Memory.WeightsLayout as Layout
-import Clash.Debug (trace)
 
 -- | Timing configuration
 -- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
@@ -132,7 +131,7 @@ createDRAMBackedAxiSlaveFromVec :: forall dom n.
   -> Vec n WordData
   -> Master.AxiMasterOut dom
   -> Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlaveFromVec cycleCounter config initVec masterIn =
+createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
   Slave.AxiSlaveIn
     { arready = arreadySigTraced
     , rvalid  = rvalidSig
@@ -185,12 +184,7 @@ createDRAMBackedAxiSlaveFromVec cycleCounter config initVec masterIn =
 
     -- Trace AR accepted with cycle counter
     arreadySigTraced :: Signal dom Bool
-    arreadySigTraced = traceArAccept <$> cycleCounter <*> arAccepted <*> Master.ardata masterIn <*> arreadySig
-      where
-        traceArAccept cyc True ar ardy = 
-          trace ("@" P.++ show cyc P.++ " [DRAM] AR_ACCEPT addr=" P.++ show (araddr ar) 
-                 P.++ " len=" P.++ show (arlen ar)) ardy
-        traceArAccept _ False _ ardy = ardy
+    arreadySigTraced = arreadySig
 
     currentBeat :: Signal dom (Index 256)
     currentBeat = (\case RProcessing b _ -> b; _ -> 0) <$> readState
@@ -355,20 +349,6 @@ createDRAMBackedAxiSlaveFromVec cycleCounter config initVec masterIn =
     bdataSig :: Signal dom AxiB
     bdataSig = AxiB 0 . awid <$> capturedAW
 
-    -- Trace R data with cycle counter
-    traceRead :: Signal dom AxiR -> Signal dom AxiR
-    traceRead rdataIn = 
-      go <$> cycleCounter <*> rvalidSig <*> currentAddress <*> readAddrIdx <*> currentBeat <*> rdataIn
-        where
-          go cyc True addr idx beat r = 
-            trace ("@" P.++ show cyc P.++ " [DRAM] R_DATA addr=" P.++ show addr 
-                    P.++ " wordIdx=" P.++ show idx
-                    P.++ " beat=" P.++ show beat
-                    P.++ " rlast=" P.++ show (rlast r)
-                    P.++ " data[0..3]=" P.++ show (P.take 4 $ toList $ unpack (rdata r) :: [BitVector 8]))
-            r
-          go _ False _ _ _ r = r
-
     rdataSigTraced :: Signal dom AxiR
-    rdataSigTraced = traceRead rdataSig
+    rdataSigTraced = rdataSig
   

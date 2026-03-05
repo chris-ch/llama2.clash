@@ -123,6 +123,7 @@ library
       LLaMa2.Layer.Attention.RotaryEncoding
       LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
+      LLaMa2.Layer.FeedForward.FFNProjector
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
       LLaMa2.Layer.TransformerLayer
       LLaMa2.Memory.AXI.Arbiter

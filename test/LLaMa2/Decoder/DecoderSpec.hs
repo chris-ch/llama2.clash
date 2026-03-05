@@ -101,29 +101,38 @@ spec = do
             
             -- Build signals
             inputSignals = fromList (DL.zip4 inputTokens inputValidFlags (P.repeat temperature) (P.repeat seed))
-            
+
             (coreOutputsSignal, introspection) = bundledOutputs inputSignals
-            
-            -- Sample core outputs
-            coreOutputs :: [(Token, Bool)]
-            coreOutputs = sampleN maxCycles coreOutputsSignal
-            
-            (outputTokens, readyFlags) = P.unzip coreOutputs
-            
+
+            -- Single bundled sampleN: allows per-cycle circuit state to be GC'd
+            -- (5 separate sampleN calls would hold the full circuit state for all
+            --  maxCycles cycles alive simultaneously via shared thunks, causing OOM)
+            (tokenSig, validSig) = unbundle coreOutputsSignal
+
+            allSampled = sampleN maxCycles $ bundle
+              ( tokenSig
+              , validSig
+              , Decoder.layerIndex introspection
+              , Decoder.attnDone introspection
+              , Decoder.ffnDone introspection
+              , Decoder.layerData introspection
+              )
+
+            outputTokens  = [tok | (tok, _, _, _, _, _) <- allSampled]
+            readyFlags    = [v   | (_, v, _, _, _, _)   <- allSampled]
+            cycles        = [0 .. maxCycles - 1]
+            layerIndices  = P.map fromIntegral [li | (_, _, li, _, _, _) <- allSampled]
+            attnDones     = [d   | (_, _, _, d, _, _)   <- allSampled]
+            ffnDones      = [d   | (_, _, _, _, d, _)   <- allSampled]
+            layerDataList = [ld  | (_, _, _, _, _, ld)  <- allSampled]
+
             -- Derive evolving state
             states :: [DecoderInputState]
             states = P.scanl advanceState (firstToken, restPrompt, True)
                         (P.zip (P.drop 1 readyFlags) (P.drop 1 outputTokens))
-            
+
             inputTokens     = firstToken : [ tok | (tok, _, _) <- states ]
             inputValidFlags = True : [ usePrompt | (_, _, usePrompt) <- states ]
-            
-            -- Sample introspection signals
-            cycles = [0 .. maxCycles - 1]
-            layerIndices = P.take maxCycles $ P.map fromIntegral $ sampleN maxCycles (Decoder.layerIndex introspection)
-            attnDones = P.take maxCycles $ sampleN maxCycles (Decoder.attnDone introspection)
-            ffnDones = P.take maxCycles $ sampleN maxCycles (Decoder.ffnDone introspection)
-            layerDataList = P.take maxCycles $ sampleN maxCycles (Decoder.layerData introspection)
             
             -- Extract completion events with norms
             extractCompletions :: Int -> Int -> [(Int, Int, Double, Double)]
@@ -177,11 +186,21 @@ spec = do
         -- Eagerly find token0End before any LayerData is forced
         P.putStrLn $ "[DBG] Searching for token0End in " P.++ show maxCycles P.++ " cycles..."
         hFlush stdout
-        let token0End = case DL.findIndex id readyFlags of
-                Just i  -> i + 1
-                Nothing -> maxCycles `P.div` 2
-        P.putStrLn $ "[DBG] token0End=" P.++ show token0End
-        hFlush stdout
+        token0EndResult <- try @SomeException $ do
+            let idx = DL.findIndex id readyFlags
+            let v = case idx of
+                      Just i  -> i + 1
+                      Nothing -> maxCycles `P.div` 2
+            P.putStrLn $ "[DBG] token0End=" P.++ show v
+            hFlush stdout
+            return v
+        token0End <- case token0EndResult of
+            Right v -> return v
+            Left e  -> do
+                P.putStrLn $ "[DBG EXCEPTION in findIndex]: " P.++ show e
+                hFlush stdout
+                expectationFailure $ "findIndex threw: " P.++ show e
+                return (maxCycles `P.div` 2)
 
         let token1Start = token0End
 

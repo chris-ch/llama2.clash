@@ -14,24 +14,32 @@ import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, T
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import Simulation.Parameters (DecoderParameters(..))
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
+  Signal dom (Unsigned 32) ->
+  Slave.AxiSlaveIn dom ->
+  Index NumLayers ->
+  PARAM.DecoderParameters ->
   Signal dom Bool ->
   Signal dom Bool ->
   Signal dom (Vec ModelDimension FixedPoint) ->
   PARAM.FeedForwardNetworkComponentQ ->
-  ( Signal dom (Vec ModelDimension FixedPoint),
-    Signal dom Bool,
-    Signal dom Bool
+  ( Master.AxiMasterOut dom
+  , Signal dom (Vec ModelDimension FixedPoint)
+  , Signal dom Bool
+  , Signal dom Bool
   )
-ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
+ffnController cycleCounter dramSlaveIn layerIdx params inValid outReady inputVec ffnQ =
+  (ffnAxiMaster, result, validOut, inReady)
   where
     (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
-    (result, ffnSeqValid, _) =
-      FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
+    (ffnAxiMaster, result, ffnSeqValid, _readyOut) =
+      FeedForwardNetwork.feedForwardStage
+        cycleCounter dramSlaveIn layerIdx enable outReady ffnQ inputVec params
 
 transformerLayer ::
   forall dom.
@@ -89,9 +97,17 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
 
     validInGated = validIn .&&. (not <$> layerBusy)
 
-    -- Use validInGated everywhere instead of validIn
-    (axiMasterOut, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
-      multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validInGated
+    -- MHA uses its own DRAM slave (from 2-master arbiter)
+    (mhaAxiMaster, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
+      multiHeadAttentionStage cycleCounter mhaSlave layerIdx params seqPos layerData validInGated
+
+    -- 2-master arbiter: slot 0 = MHA, slot 1 = FFN
+    (axiMasterOut, perLayerSlaves) =
+      ARB.axiArbiterWithRouting cycleCounter dramSlaveIn
+        (mhaAxiMaster :> ffnAxiMaster :> Nil)
+
+    mhaSlave = perLayerSlaves !! (0 :: Index 2)
+    ffnSlave = perLayerSlaves !! (1 :: Index 2)
 
     ffnArmed :: Signal dom Bool
     ffnArmed = register False nextFfnArmed
@@ -107,21 +123,25 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
 
     ffnInput = attentionOutput <$> layerData
 
-    -- Convert start pulse to sustained valid
+    -- Convert start pulse to sustained valid.
+    -- Clear on ffnDone (not on ffnInReady) to prevent the FFN from re-triggering:
+    -- when the processing FSM cycles DONE→IDLE, ffnInReady becomes True in the
+    -- same cycle that ffnValidIn is still True, causing a spurious re-start.
+    -- Clearing on ffnDone ensures ffnValidIn is already False when FSM reaches IDLE.
     ffnValidIn :: Signal dom Bool
     ffnValidIn = register False nextFFNValidIn
       where
         setFFNValid   = ffnStageStart
-        clearFFNValid = ffnValidIn .&&. ffnInReady
+        clearFFNValid = ffnValidIn .&&. ffnDone
         nextFFNValidIn =
           mux setFFNValid (pure True)
             (mux clearFFNValid (pure False) ffnValidIn)
 
     ffnOutReady :: Signal dom Bool
-    ffnOutReady = pure True  -- always ready (?)
+    ffnOutReady = pure True  -- always ready
 
-    (ffnOutput, ffnValidOut, ffnInReady) =
-      ffnController ffnValidIn ffnOutReady ffnInput ffnParams
+    (ffnAxiMaster, ffnOutput, ffnValidOut, _ffnInReady) =
+      ffnController cycleCounter ffnSlave layerIdx params ffnValidIn ffnOutReady ffnInput ffnParams
 
     ffnDone = risingEdge ffnValidOut
 

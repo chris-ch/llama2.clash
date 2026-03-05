@@ -3,6 +3,9 @@ module LLaMa2.Layer.Attention.WeightLoader
   , kWeightLoader      -- K weights
   , vWeightLoader      -- V weights
   , woWeightLoader     -- WO output-projection weights
+  , w1WeightLoader     -- FFN W1 (gate)
+  , w2WeightLoader     -- FFN W2 (down)
+  , w3WeightLoader     -- FFN W3 (up)
   , WeightLoaderOutput(..)
   , LoadState(..)
   , assertRowStable
@@ -10,7 +13,7 @@ module LLaMa2.Layer.Attention.WeightLoader
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
-    ( HeadDimension, ModelDimension, NumQueryHeads, NumLayers, NumKeyValueHeads )
+    ( HeadDimension, ModelDimension, HiddenDimension, NumQueryHeads, NumLayers, NumKeyValueHeads )
 import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -20,7 +23,6 @@ import qualified Prelude as P
 import Data.Type.Bool (If)
 import Data.Type.Ord (OrdCond)
 import qualified GHC.TypeNats as T
-import Clash.Debug (trace)
 
 data LoadState = LIdle | LFetching | LDone
   deriving (Show, Eq, Generic, NFDataX)
@@ -148,6 +150,78 @@ woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamR
   hcWeights :: MatI8E ModelDimension HeadDimension
   hcWeights = PARAM.mWoQ (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx
   tagStr = "[WOWFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+
+-- | Weight loader for W1 (gate) FFN matrices.
+-- W1: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
+w1WeightLoader :: forall dom. HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Signal dom (Index HiddenDimension)  -- ^ row request (0..HiddenDimension-1)
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
+     , WeightLoaderOutput dom ModelDimension
+     , Signal dom Bool
+     , Signal dom Bool
+     )
+w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+  weightLoaderGeneric cycleCounter dram Layout.W1Matrix layerIdx 0
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+ where
+  hcWeights :: MatI8E HiddenDimension ModelDimension
+  hcWeights = PARAM.fW1Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
+  tagStr = "[W1WFU L" P.++ show layerIdx P.++ "] "
+
+-- | Weight loader for W3 (up) FFN matrices.
+-- W3: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
+w3WeightLoader :: forall dom. HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Signal dom (Index HiddenDimension)  -- ^ row request (0..HiddenDimension-1)
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
+     , WeightLoaderOutput dom ModelDimension
+     , Signal dom Bool
+     , Signal dom Bool
+     )
+w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+  weightLoaderGeneric cycleCounter dram Layout.W3Matrix layerIdx 0
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+ where
+  hcWeights :: MatI8E HiddenDimension ModelDimension
+  hcWeights = PARAM.fW3Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
+  tagStr = "[W3WFU L" P.++ show layerIdx P.++ "] "
+
+-- | Weight loader for W2 (down) FFN matrices.
+-- W2: MatI8E ModelDimension HiddenDimension — ModelDimension rows × HiddenDimension cols.
+w2WeightLoader :: forall dom. HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Index NumLayers
+  -> Signal dom (Index ModelDimension)   -- ^ row request (0..ModelDimension-1)
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
+     , WeightLoaderOutput dom HiddenDimension
+     , Signal dom Bool
+     , Signal dom Bool
+     )
+w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+  weightLoaderGeneric cycleCounter dram Layout.W2Matrix layerIdx 0
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+ where
+  hcWeights :: MatI8E ModelDimension HiddenDimension
+  hcWeights = PARAM.fW2Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
+  tagStr = "[W2WFU L" P.++ show layerIdx P.++ "] "
 
 -- | Generic weight loader for any matrix type and dimensions.
 --
@@ -313,8 +387,8 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
 -- Helper functions (generalized over numRows / numCols)
 --------------------------------------------------------------------------------
 
-traceRowIndicesGeneric :: forall dom numRows numCols. KnownNat numRows
-  => Signal dom (Unsigned 32)           -- cycleCounter
+traceRowIndicesGeneric :: forall dom numRows numCols.
+     Signal dom (Unsigned 32)           -- cycleCounter
   -> Signal dom Bool                    -- actualFetchStart
   -> Signal dom Bool                    -- dvRise
   -> Signal dom (Index numRows)         -- liveRow
@@ -322,18 +396,7 @@ traceRowIndicesGeneric :: forall dom numRows numCols. KnownNat numRows
   -> String                             -- tag string
   -> Signal dom (RowI8E numCols)        -- pass-through signal
   -> Signal dom (RowI8E numCols)
-traceRowIndicesGeneric cyc start rise lRow txnRow tagStr' rowIn =
-  go <$> cyc <*> start <*> rise <*> lRow <*> txnRow <*> rowIn
- where
-  go c True _ lr _ row =
-    trace ("@" P.++ show c P.++ " " P.++ tagStr' P.++ "reqPulse RISE liveRow=" P.++ show lr) row
-  go c _ True _ tr row =
-    let msg = "@" P.++ show c P.++ " " P.++ tagStr' P.++ "COMMIT txnRow=" P.++ show tr
-        finalMsg = if tr == maxBound
-                   then msg P.++ " *** FINAL ROW ***"
-                   else msg
-    in trace finalMsg row
-  go _ _ _ _ _ row = row
+traceRowIndicesGeneric _cyc _start _rise _lRow _txnRow _tagStr' rowIn = rowIn
 
 assertArAddrMatchGeneric :: forall dom numRows numCols.
      Signal dom (Unsigned 32)
