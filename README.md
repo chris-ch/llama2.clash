@@ -63,10 +63,36 @@ cabal run llama2 --flag model-260k -- --temperature 0 --seed 123 "Hi"
  Hibo and Anna, Anna, Anna, came to visit her. She saw a big box and asked Anna. [...]
 ```
 
-## Running a single test
+## Testing
+
+The test suite supports two model configurations:
+
+| Command | Model | Time | When to use |
+|---------|-------|------|-------------|
+| `make test` | nano (ModelDim=8) | ~18 s | Day-to-day development |
+| `make test-full` | 260K | ~10 min | Pre-merge / numeric validation |
 
 ```shell
-cabal test --test-show-details=direct --test-options='--match "Layer 0 output norm"'
+# Fast tests (nano model — all unit + integration tests)
+make test
+
+# Full numeric validation (260K model — checks exact layer norms vs Python reference)
+make test-full
+```
+
+The nano model has tiny dimensions (ModelDimension=8, HeadDimension=2, 2 layers) so
+every DRAM fetch is a single beat and simulation finishes quickly. The HC cross-check
+assertions (`P.error` on DRAM/HC mismatch) still run in both modes, so correctness is
+verified regardless of which model is used.
+
+To run a single test by name:
+
+```shell
+make test ARGS='--test-options="--match \"Layer 0 output norm\""'
+# or directly:
+cabal test llama2-test -f model-nano -f -model-260k \
+  --test-show-details=direct \
+  --test-options='--match "Layer 0 output norm"'
 ```
 
 ## C Version

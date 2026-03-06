@@ -30,6 +30,11 @@ flag model-15m
   default: False
   manual: True
 
+flag model-nano
+  description: Build with MODEL_NANO configuration (tiny dims, fast simulation tests)
+  default: False
+  manual: True
+
 -- package-wide defaults
 common project-defaults
   default-language: Haskell2010
@@ -153,12 +158,13 @@ library
       TraceUtils
   hs-source-dirs:
       project/llama2
-  if flag(model-260k)
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  elif flag(model-260k)
     ghc-options: -DMODEL_260K
-  if flag(model-15m)
+  elif flag(model-15m)
     ghc-options: -DMODEL_15M
-  if !flag(model-260k) && !flag(model-15m)
-    ghc-options: -DMODEL_260K
+  else
     buildable: False
 
 executable llama2
@@ -205,4 +211,7 @@ test-suite llama2-test
     -rtsopts
     "-with-rtsopts=-N -K64m"
     -main-is Spec.main
-    -DMODEL_260K
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  else
+    ghc-options: -DMODEL_260K

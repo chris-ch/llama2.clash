@@ -66,6 +66,20 @@ type RotaryPositionalEmbeddingDimension = 32
 type VocabularySize = 32000
 type SequenceLength = 1024
 
+#elif MODEL_NANO
+-- nano model config for fast simulation tests
+-- Constraints: HeadDimension * NumQueryHeads = ModelDimension (2*4=8)
+--              All dims <= 63 so WordsPerRow = 1 for everything (single-beat DRAM)
+type ModelDimension = 8
+type HiddenDimension = 4
+type NumLayers = 2
+type NumQueryHeads = 4
+type NumKeyValueHeads = 2
+type HeadDimension  = 2
+type RotaryPositionalEmbeddingDimension = 1
+type VocabularySize = 512
+type SequenceLength = 512
+
 #else
 -- defaults to model config 260K
 type ModelDimension = 64

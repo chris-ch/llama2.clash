@@ -239,9 +239,9 @@ spec = do
               expsWLs = sampleN maxCycles (qhCurrentRowExp debugInfo)
               mant0WLs = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
 
-      it "completes 8 rows successfully" $ do
+      it "completes all rows successfully" $ do
         let doneCycles = P.filter rowDone diagnostics
-        P.length doneCycles `shouldBe` 8
+        P.length doneCycles `shouldBe` natToNum @HeadDimension
 
     it "resets rowIndex to 0 immediately upon Idle state" $ do
       let maxCycles = 100

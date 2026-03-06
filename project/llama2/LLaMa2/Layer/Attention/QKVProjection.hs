@@ -126,17 +126,17 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
 
   ----------------------------------------------------------------------------
   -- AXI arbiter: Q + K + V masters all routed through a single arbiter.
-  -- Total: NumQueryHeads + NumKeyValueHeads (K) + NumKeyValueHeads (V) = 16
+  -- Total: NumQueryHeads + NumKeyValueHeads (K) + NumKeyValueHeads (V)
   ----------------------------------------------------------------------------
-  allAxiMasters :: Vec 16 (Master.AxiMasterOut dom)
+  allAxiMasters :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Master.AxiMasterOut dom)
   allAxiMasters = qAxiMasters ++ (kAxiMasters ++ vAxiMasters)
 
-  allSlaves :: Vec 16 (Slave.AxiSlaveIn dom)
+  allSlaves :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Slave.AxiSlaveIn dom)
   (axiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
 
-  -- Split slaves: first 8 for Q, next 4 for K, last 4 for V
-  (perQSlaves, kvSlaves)   = splitAt d8 allSlaves
-  (perKSlaves, perVSlaves) = splitAt d4 kvSlaves
+  -- Split slaves: first NumQueryHeads for Q, next NumKeyValueHeads for K, last for V
+  (perQSlaves, kvSlaves)   = splitAt (SNat @NumQueryHeads)    allSlaves
+  (perKSlaves, perVSlaves) = splitAt (SNat @NumKeyValueHeads) kvSlaves
 
   ----------------------------------------------------------------------------
   -- Q DRAM path: FSM sees (pure True), latch clears via consumeSignal

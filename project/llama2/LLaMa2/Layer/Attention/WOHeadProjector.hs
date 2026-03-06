@@ -9,7 +9,6 @@ import qualified Prelude as P
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave

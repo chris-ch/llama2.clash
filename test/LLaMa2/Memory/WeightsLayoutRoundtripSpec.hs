@@ -93,7 +93,7 @@ spec = describe "RowI8E pack/parse round-trip" $ do
               dramRow  = fetchRow ri
           in (hcRow, dramRow)
 
-        results = P.map go [(0::Int)..3]
+        results = P.map go [0..natToNum @HeadDimension - 1 :: Int]
 
     -- All rows must match exactly
     forM_ results $ \(hcRow, dramRow) -> dramRow `shouldBe` hcRow

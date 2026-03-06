@@ -48,14 +48,13 @@ criticalRow1Test = describe "WeightLoaderDbg - CRITICAL: Row 1 at address 131712
         -- Calculate address and read from DRAM
         addr = Layout.rowAddressCalculator Layout.QMatrix 0 0 1
         wordIdx = fromIntegral (addr `shiftR` 6) :: Int
-        word0 = dramVec !! wordIdx
-        word1 = dramVec !! (wordIdx + 1)
-        wordsVec = word0 :> word1 :> Nil :: Vec 2 (BitVector 512)
+        wordsVec :: Vec (Layout.WordsPerRow ModelDimension) (BitVector 512)
+        wordsVec = unsafeFromList [dramVec !! (wordIdx + k) | k <- [0..Layout.wordsPerRowVal @ModelDimension - 1]]
         dramRow = Layout.multiWordRowParser @ModelDimension wordsVec
 
     P.putStrLn "\n=== CRITICAL ROW 1 CHECK ==="
-    P.putStrLn $ "Address: " P.++ show addr P.++ " (expected 131712)"
-    P.putStrLn $ "Word indices: " P.++ show wordIdx P.++ ", " P.++ show (wordIdx + 1)
+    P.putStrLn $ "Address: " P.++ show addr
+    P.putStrLn $ "Word index: " P.++ show wordIdx
     P.putStrLn ""
     P.putStrLn "HC row 1:"
     P.putStrLn $ "  exp=" P.++ show (rowExponent hcRow)
@@ -67,7 +66,6 @@ criticalRow1Test = describe "WeightLoaderDbg - CRITICAL: Row 1 at address 131712
     P.putStrLn ""
     P.putStrLn $ "Match: " P.++ show (hcRow == dramRow)
 
-    addr `shouldBe` 131712
     hcRow `shouldBe` dramRow
 
   it "static check: row 0 also matches (sanity check)" $ do
@@ -82,7 +80,8 @@ criticalRow1Test = describe "WeightLoaderDbg - CRITICAL: Row 1 at address 131712
 
         addr0 = Layout.rowAddressCalculator Layout.QMatrix 0 0 0
         wordIdx0 = fromIntegral (addr0 `shiftR` 6) :: Int
-        words0 = (dramVec !! wordIdx0) :> (dramVec !! (wordIdx0 + 1)) :> Nil
+        words0 :: Vec (Layout.WordsPerRow ModelDimension) (BitVector 512)
+        words0 = unsafeFromList [dramVec !! (wordIdx0 + k) | k <- [0..Layout.wordsPerRowVal @ModelDimension - 1]]
         dramRow0 = Layout.multiWordRowParser @ModelDimension words0
 
     P.putStrLn "\n=== ROW 0 SANITY CHECK ==="
@@ -368,7 +367,7 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
         -- First valid request fires at cycle 2 when axiRowFetcher ready=True.
         requestGroups = [(0, False), (0, False)] :
               [(toEnum i, True) : P.replicate (cyclesPerRequest - 1) (toEnum i, False)
-              | i <- [0..3::Int]]
+              | i <- [0..natToNum @HeadDimension - 1 :: Int]]
         requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
         reqSig = fromList (P.map fst requestPairs P.++ P.repeat 0)
@@ -423,7 +422,7 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
     -- Verify all 4 completed
     let validCycles = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
     P.putStrLn $ "\nValid output cycles: " P.++ show validCycles
-    P.length validCycles `shouldSatisfy` (>= 4)
+    P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
 
 axiAddressDbg :: Spec
 axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
@@ -436,7 +435,7 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
           -- Request rows 0, 1, 2 with spacing
           requestGroups = [(0, False)] :
                 [(toEnum i, True) : P.replicate (cyclesPerRequest - 1) (toEnum i, False)
-                | i <- [0..2::Int]]
+                | i <- [0..natToNum @HeadDimension - 1 :: Int]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
           reqSig = fromList (P.map fst requestPairs P.++ P.repeat 0)

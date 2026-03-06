@@ -29,7 +29,7 @@ spec = do
           -- First valid request fires at cycle 2 when axiRowFetcher ready=True.
           requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
-                | i <- [0..7::Index HeadDimension]]
+                | i <- [minBound..maxBound::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
           reqSig     = fromList (P.map fst requestPairs P.++ P.repeat 0)
@@ -55,7 +55,7 @@ spec = do
           hcMant0s = sampleN maxCycles ((!! (0 :: Int)) . rowMantissas <$> hcRowOut weightsOut)
           validMant0s = [hcMant0s P.!! n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
-      P.length validMant0s `shouldSatisfy` (>= 8)
+      P.length validMant0s `shouldSatisfy` (>= natToNum @HeadDimension)
       P.length (P.filter (/= 0) validMant0s) `shouldSatisfy` (>= 1)
 
     it "HC and DRAM paths produce identical outputs" $ do
@@ -65,7 +65,7 @@ spec = do
           -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
           requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
-                | i <- [0..7::Index HeadDimension]]
+                | i <- [minBound..maxBound::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
           reqSig      = fromList (P.map fst requestPairs P.++ P.repeat 0)
@@ -98,7 +98,7 @@ spec = do
                       hcMantsSampled P.!! n == dramMantsSampled P.!! n
                     | n <- validCycles ]
 
-      P.length validCycles `shouldSatisfy` (>= 8)
+      P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
       P.and matches `shouldBe` True
 
     it "DRAM image contains correct Q weights" $ do
@@ -131,7 +131,7 @@ spec = do
           -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.
           requestGroups = [(0, False), (0, False)] :
                 [(i, True) : P.replicate (cyclesPerRequest - 1) (i, False)
-                | i <- [0..7::Index HeadDimension]]
+                | i <- [minBound..maxBound::Index HeadDimension]]
           requestPairs = P.concat requestGroups P.++ P.repeat (0, False)
 
           reqSig      = fromList (P.map fst requestPairs P.++ P.repeat 0)
@@ -164,7 +164,7 @@ spec = do
                       hcMantsSampled P.!! n == dramMantsSampled P.!! n
                     | n <- validCycles ]
 
-      P.length validCycles `shouldSatisfy` (>= 8)
+      P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
       P.and matches `shouldBe` True
 
     it "DRAM image contains correct K weights (layer 0, kvHead 0)" $ do

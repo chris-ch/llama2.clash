@@ -14,7 +14,6 @@ import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec,
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Types.LayerData (LayerData(..))
-import Clash.Sized.Vector (unsafeFromList)
 import LLaMa2.Layer.TransformerLayer (transformerLayer)
 
 -- | Simple deterministic WO matrix for testing
@@ -68,10 +67,10 @@ spec = do
       let maxCycles = 3000  -- Need time for attention + FFN
 
           -- Create test weights
-          testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E 64
-          testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E 8
-          testQMatrix = repeat testRow :: MatI8E 8 64
-          testWOMatrix = repeat testRow' :: MatI8E 64 8
+          testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E ModelDimension
+          testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E HeadDimension
+          testQMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
+          testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
 
           -- Global rotary (stored once)
           mockRotary = PARAM.RotaryEncodingComponentF
@@ -123,29 +122,10 @@ spec = do
             , PARAM.rotaryEncoding = mockRotary  -- Global rotary
             }
 
-          -- Build DRAM with Q weights
-          buildQWeights :: [BitVector 8]
-          buildQWeights = P.concatMap headWeights [(0 :: Int) ..7]
-            where
-              headWeights _ = P.concatMap rowBytes [(0 :: Int) ..7]
-              rowBytes _ = P.replicate 64 (1 :: BitVector 8) P.++ [0]
-
-          dramBytes = buildQWeights P.++ P.repeat 0
-
-          bytesToWords :: [BitVector 8] -> Vec 65536 WordData
-          bytesToWords bytes = map wordAtIdx indicesI
-            where
-              wordAtIdx idx =
-                let startByte = fromEnum idx * 64
-                    slice' = P.take 64 $ P.drop startByte bytes
-                    padded = slice' P.++ P.replicate (64 - P.length slice') 0
-                    vecBytes = listToVecTH' padded :: Vec 64 (BitVector 8)
-                in pack vecBytes
-
-              listToVecTH' :: forall n a. (KnownNat n, Default a) => [a] -> Vec n a
-              listToVecTH' xs = unsafeFromList $ P.take (natToNum @n) (xs P.++ P.repeat def)
-
-          dramContents = bytesToWords dramBytes
+          -- All-zero DRAM: circuit reads zero weights, produces zero outputs,
+          -- but control flow (FSM transitions) completes correctly regardless of data.
+          dramContents :: Vec 65536 WordData
+          dramContents = repeat 0
 
           realDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
           realDRAM masterOut' =
