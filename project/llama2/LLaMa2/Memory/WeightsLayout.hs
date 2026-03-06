@@ -1,12 +1,19 @@
 module LLaMa2.Memory.WeightsLayout
   ( MatrixType(..)
   , WordsPerRow
+  , WordsPerFPVec
   , rowAddressCalculator
+  , embeddingRowAddress
+  , rmsFinalAddress
+  , rmsAttAddress
+  , rmsFfnAddress
   , axiRowFetcher
+  , axiNWordFetcher
   , axiMultiWordRowFetcher
   , multiWordRowParser
   , multiWordRowPacker
   , fixedPointVecPacker
+  , fixedPointVecParser
   , matrixMultiWordPacker
   , rowStrideBytesI8E
   , align64
@@ -55,8 +62,9 @@ wordsPerFixedPointVec =
       perWord = 64 `div` bytesPerEl  -- 16 FixedPoints per 64-byte word
   in (n + perWord - 1) `div` perWord
 
--- | Matrix type identifier for address calculation
-data MatrixType = QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix | W3Matrix
+-- | Matrix type identifier for address calculation.
+-- EmbeddingMatrix is at DRAM offset 0; layerIdx and headIdx are ignored for it.
+data MatrixType = EmbeddingMatrix | QMatrix | KMatrix | VMatrix | WOMatrix | W1Matrix | W2Matrix | W3Matrix
   deriving (Show, Eq, Generic, NFDataX)
 
 data MultiWordFetchState (n :: Nat) = MWIdle | MWWaitAR | MWWaitR (Index n) | MWDone
@@ -91,6 +99,10 @@ rowAddressCalculator ::
   -> Int                    -- ^ Head index as Int (caller responsible for bounds)
   -> Int                    -- ^ Row index as Int (caller responsible for bounds)
   -> Unsigned 32
+-- EmbeddingMatrix is at DRAM offset 0 (before all per-layer data).
+-- layerIdx and headIdxInt are irrelevant for the embedding.
+rowAddressCalculator EmbeddingMatrix _ _ rowIdx =
+  fromIntegral (rowIdx * wordsPerRowVal @ModelDimension * 64)
 rowAddressCalculator matType layerIdx headIdxInt rowIdx =
   fromIntegral baseAddr + fromIntegral layerOffset +
   fromIntegral matrixOffset + fromIntegral headOffset + fromIntegral rowOffset
@@ -196,6 +208,75 @@ rowAddressCalculator matType layerIdx headIdxInt rowIdx =
 
     rowOffset :: Int
     rowOffset = rowIdx * rowBytesForMatrix
+
+-- | Address of a single vocabulary (embedding) row in DRAM.
+-- The embedding matrix is the first section at offset 0.
+-- Row n starts at byte offset: n * wordsPerRowVal @ModelDimension * 64.
+embeddingRowAddress :: Int -> Unsigned 32
+embeddingRowAddress rowIdx =
+  fromIntegral (rowIdx * wordsPerRowVal @ModelDimension * 64)
+
+-- | Address of rmsFinalWeightF (Vec ModelDimension FixedPoint) in DRAM.
+-- Sits immediately after the embedding table (before rotary and per-layer data).
+rmsFinalAddress :: Unsigned 32
+rmsFinalAddress = fromIntegral (natToNum @VocabularySize * wordsPerRowVal @ModelDimension * (64 :: Int))
+
+-- | Address of rmsAttF (Vec ModelDimension FixedPoint) for a given layer.
+-- rmsAttF is the first item in each layer section.
+rmsAttAddress :: Index NumLayers -> Unsigned 32
+rmsAttAddress layerIdx = fromIntegral (baseAddr + fromEnum layerIdx * layerBytes)
+ where
+  modelDim   = natToNum @ModelDimension :: Int
+  hiddenDim  = natToNum @HiddenDimension :: Int
+  numQHeads  = natToNum @NumQueryHeads :: Int
+  numKVHeads = natToNum @NumKeyValueHeads :: Int
+  headDim    = natToNum @HeadDimension :: Int
+  vocabSize  = natToNum @VocabularySize :: Int
+  seqLen     = natToNum @SequenceLength :: Int
+  bpw        = 64 :: Int
+  embeddingBytes = vocabSize * wordsPerRowVal @ModelDimension * bpw
+  rmsFinalBytes  = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  rotaryBytes    = align64 ((seqLen * wordsPerFixedPointVec @RotaryPositionalEmbeddingDimension * bpw) * 2)
+  baseAddr       = embeddingBytes + rmsFinalBytes + rotaryBytes
+  rmsAttBytes    = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  qTotalBytes    = numQHeads  * headDim * wordsPerRowVal @ModelDimension * bpw
+  kTotalBytes    = numKVHeads * headDim * wordsPerRowVal @ModelDimension * bpw
+  woTotalBytes   = numQHeads  * modelDim * wordsPerRowVal @HeadDimension  * bpw
+  rmsFfnBytes    = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  w1Bytes        = hiddenDim * wordsPerRowVal @ModelDimension  * bpw
+  w2Bytes        = modelDim  * wordsPerRowVal @HiddenDimension * bpw
+  w3Bytes        = hiddenDim * wordsPerRowVal @ModelDimension  * bpw
+  layerBytes     = rmsAttBytes + qTotalBytes + kTotalBytes + kTotalBytes + woTotalBytes
+                 + rmsFfnBytes + w1Bytes + w2Bytes + w3Bytes
+
+-- | Address of fRMSFfnF (Vec ModelDimension FixedPoint) for a given layer.
+-- fRMSFfnF sits after rmsAtt + Q + K + V + WO matrices within each layer.
+rmsFfnAddress :: Index NumLayers -> Unsigned 32
+rmsFfnAddress layerIdx = fromIntegral (baseAddr + fromEnum layerIdx * layerBytes + rmsAttBytes
+                                      + qTotalBytes + kTotalBytes + kTotalBytes + woTotalBytes)
+ where
+  modelDim   = natToNum @ModelDimension :: Int
+  hiddenDim  = natToNum @HiddenDimension :: Int
+  numQHeads  = natToNum @NumQueryHeads :: Int
+  numKVHeads = natToNum @NumKeyValueHeads :: Int
+  headDim    = natToNum @HeadDimension :: Int
+  vocabSize  = natToNum @VocabularySize :: Int
+  seqLen     = natToNum @SequenceLength :: Int
+  bpw        = 64 :: Int
+  embeddingBytes = vocabSize * wordsPerRowVal @ModelDimension * bpw
+  rmsFinalBytes  = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  rotaryBytes    = align64 ((seqLen * wordsPerFixedPointVec @RotaryPositionalEmbeddingDimension * bpw) * 2)
+  baseAddr       = embeddingBytes + rmsFinalBytes + rotaryBytes
+  rmsAttBytes    = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  qTotalBytes    = numQHeads  * headDim * wordsPerRowVal @ModelDimension * bpw
+  kTotalBytes    = numKVHeads * headDim * wordsPerRowVal @ModelDimension * bpw
+  woTotalBytes   = numQHeads  * modelDim * wordsPerRowVal @HeadDimension  * bpw
+  rmsFfnBytes    = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  w1Bytes        = hiddenDim * wordsPerRowVal @ModelDimension  * bpw
+  w2Bytes        = modelDim  * wordsPerRowVal @HiddenDimension * bpw
+  w3Bytes        = hiddenDim * wordsPerRowVal @ModelDimension  * bpw
+  layerBytes     = rmsAttBytes + qTotalBytes + kTotalBytes + kTotalBytes + woTotalBytes
+                 + rmsFfnBytes + w1Bytes + w2Bytes + w3Bytes
 
 -- State machine for AXI read
 data RowFetcherState = Idle | WaitAR | WaitR
@@ -454,6 +535,36 @@ matrixMultiWordPacker :: forall rows cols. KnownNat cols
   => MatI8E rows cols -> [BitVector 512]
 matrixMultiWordPacker m = P.concatMap multiWordRowPacker (toList m)
 
+-- | Number of 64-byte words needed to hold n FixedPoints (4 bytes each, 16 per word).
+type WordsPerFPVec (n :: Nat) = Div (n + 15) 16
+
+-- | Parse a burst of 64-byte words back into a Vec of FixedPoints.
+-- Inverse of fixedPointVecPacker: each element is 4 bytes, little-endian.
+fixedPointVecParser :: forall n.
+  ( KnownNat n
+  , KnownNat (WordsPerFPVec n)
+  )
+  => Vec (WordsPerFPVec n) (BitVector 512) -> Vec n FixedPoint
+fixedPointVecParser words' = imap parseElem (repeat ())
+ where
+  parseElem :: Index n -> () -> FixedPoint
+  parseElem elemIdx () =
+    let i       = fromEnum elemIdx
+        wIdx    = fromIntegral (i `div` 16) :: Index (WordsPerFPVec n)
+        byteOff = (i `mod` 16) * 4
+        bytes :: Vec 64 (BitVector 8)
+        bytes   = unpack (words' !! wIdx)
+        b0 = bytes !! (fromIntegral (byteOff + 0) :: Index 64)
+        b1 = bytes !! (fromIntegral (byteOff + 1) :: Index 64)
+        b2 = bytes !! (fromIntegral (byteOff + 2) :: Index 64)
+        b3 = bytes !! (fromIntegral (byteOff + 3) :: Index 64)
+        bits :: BitVector 32
+        bits =   resize b0
+             .|. (resize b1 `shiftL` 8)
+             .|. (resize b2 `shiftL` 16)
+             .|. (resize b3 `shiftL` 24)
+    in unpack bits
+
 -- | Debug signals from the multi-word fetcher for assertion checking
 data FetcherDebug dom = FetcherDebug
   { dbgLatchedAddr :: Signal dom (Unsigned 32)  -- Address actually latched by fetcher
@@ -589,6 +700,128 @@ axiMultiWordRowFetcher slaveIn reqPulse addrIn =
     , dbgBeat        = beatAsInt
     , dbgStateIsWaitR = isWaitRState
     , dbgStateIsDone = isDoneState
+    , dbgDoneCondition = doneCondition
+    }
+
+-- | Generic N-beat AXI burst fetcher, parameterized by word count directly.
+-- Identical to axiMultiWordRowFetcher but takes 'numWords' as a type parameter
+-- instead of deriving it from a row-dimension via WordsPerRow.
+axiNWordFetcher :: forall dom numWords.
+     ( HiddenClockResetEnable dom
+     , KnownNat numWords
+     )
+  => Slave.AxiSlaveIn dom
+  -> Signal dom Bool                   -- ^ requestPulse (1-cycle) when ready==True
+  -> Signal dom (Unsigned 32)          -- ^ base address
+  -> ( Master.AxiMasterOut dom
+     , Signal dom (Vec numWords (BitVector 512))
+     , Signal dom Bool                 -- ^ dataValid (1-cycle pulse at completion)
+     , Signal dom Bool                 -- ^ ready
+     , FetcherDebug dom
+     )
+axiNWordFetcher slaveIn reqPulse addrIn =
+  (masterOut, wordsOut, dataValid, ready, debugOut)
+ where
+  numWordsI = natToNum @numWords :: Int
+  burstLen  = numWordsI - 1
+
+  state :: Signal dom (MultiWordFetchState numWords)
+  state = register MWIdle nextState
+
+  notInReset :: Signal dom Bool
+  notInReset = register False (pure True)
+
+  ready :: Signal dom Bool
+  ready = (state .==. pure MWIdle) .&&. notInReset
+
+  start :: Signal dom Bool
+  start = ready .&&. reqPulse
+
+  addrReg :: Signal dom (Unsigned 32)
+  addrReg = regEn 0 start addrIn
+
+  arvalidOut = state .==. pure MWWaitAR
+
+  ardataOut = AxiAR
+    <$> addrReg
+    <*> pure (fromIntegral burstLen)
+    <*> pure 6
+    <*> pure 1
+    <*> pure 0
+
+  rreadyOut = pure True
+
+  arAccepted = arvalidOut .&&. Slave.arready slaveIn
+  rReceived  = Slave.rvalid slaveIn .&&. rreadyOut
+
+  beat :: Signal dom (Index numWords)
+  beat = register 0 nextBeat
+
+  nextBeat =
+    mux ((isWaitR <$> state) .&&. rReceived)
+        (succWrap <$> beat)
+        beat
+   where
+    isWaitR (MWWaitR _) = True
+    isWaitR _           = False
+    succWrap b = if b == maxBound then 0 else b + 1
+
+  doneCondition = (state .==. pure (MWWaitR 0)) .&&. rReceived .&&. (beat .==. pure maxBound)
+
+  nextState =
+    mux start (pure MWWaitAR) $
+    mux (arAccepted .&&. (state .==. pure MWWaitAR)) (pure (MWWaitR 0)) $
+    mux doneCondition
+         (pure MWDone) $
+    mux (((\case
+        MWWaitR _ -> True
+        _ -> False) <$> state) .&&. rReceived)
+         state
+         (mux (state .==. pure MWDone) (pure MWIdle) state)
+
+  rdataField :: Signal dom AxiR
+  rdataField = Slave.rdata slaveIn
+
+  currWord :: Signal dom (BitVector 512)
+  currWord = rdata <$> rdataField
+
+  bufInit = repeat 0 :: Vec numWords (BitVector 512)
+
+  wordBuffer :: Signal dom (Vec numWords (BitVector 512))
+  wordBuffer = register bufInit nextBuf
+
+  nextBuf =
+    mux (((\case
+      MWWaitR _ -> True
+      _ -> False) <$> state) .&&. rReceived)
+        (replace <$> beat <*> currWord <*> wordBuffer)
+        wordBuffer
+
+  wordsOut  = wordBuffer
+  dataValid = state .==. pure MWDone
+
+  masterOut = Master.AxiMasterOut
+    { arvalid = arvalidOut
+    , ardata  = ardataOut
+    , rready  = rreadyOut
+    , awvalid = pure False
+    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , wvalid  = pure False
+    , wdata   = pure (AxiW 0 0 False)
+    , bready  = pure False
+    }
+
+  isWaitRState = (\case MWWaitR _ -> True; _ -> False) <$> state
+  isDoneState  = (== MWDone) <$> state
+  beatAsInt    = fromEnum <$> beat
+
+  debugOut = FetcherDebug
+    { dbgLatchedAddr   = addrReg
+    , dbgArAccepted    = arAccepted
+    , dbgRReceived     = rReceived
+    , dbgBeat          = beatAsInt
+    , dbgStateIsWaitR  = isWaitRState
+    , dbgStateIsDone   = isDoneState
     , dbgDoneCondition = doneCondition
     }
 

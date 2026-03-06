@@ -360,7 +360,7 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
 
   it "traces first 4 row fetches in detail" $ do
     let params = PARAM.decoderConst
-        maxCycles = 300
+        maxCycles = 450
         cyclesPerRequest = 50
 
         -- Two idle cycles at start: cycle 0 is system reset, cycle 1 has notInReset=False.

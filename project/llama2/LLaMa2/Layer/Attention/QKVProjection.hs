@@ -22,8 +22,11 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
+import qualified LLaMa2.Memory.WeightsLayout as Layout
+import qualified LLaMa2.Memory.FPVecLoader as FPVec
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
 import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
+import qualified Prelude as P
 
 --------------------------------------------------------------------------------
 -- QKV projector
@@ -118,8 +121,37 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
  where
   layerParams = modelLayers params !! layerIdx
-  mhaParams = PARAM.multiHeadAttention layerParams
-  xNorm = rmsNormFwFix <$> xVec <*> pure (PARAM.rmsAttF mhaParams)
+  mhaParams   = PARAM.multiHeadAttention layerParams
+
+  ----------------------------------------------------------------------------
+  -- DRAM-backed rmsAttF fetch (once per inputValid; gates QKV start)
+  ----------------------------------------------------------------------------
+  -- Rising edge: fpVecLoader requires a one-shot trigger (processingControllerFSM
+  -- keeps 'enable' high for the entire PROCESSING_RUN state, so we must edge-detect).
+  inputValidRise :: Signal dom Bool
+  inputValidRise = inputValid .&&. (not <$> register False inputValid)
+
+  (rmsAttAxiMaster, rmsAttVec, rmsAttValid, rmsAttBusy) =
+    FPVec.fpVecLoader cycleCounter dramSlaveIn
+      inputValidRise
+      (pure (Layout.rmsAttAddress layerIdx))
+      (PARAM.rmsAttF mhaParams)
+      ("[RmsAtt L" P.++ show layerIdx P.++ "] ")
+
+  -- Hold inputValidRise latch until rmsAtt fetch completes
+  pendingInput :: Signal dom Bool
+  pendingInput = register False nextPendingInput
+   where
+    nextPendingInput =
+      mux (pendingInput .&&. rmsAttValid) (pure False) $
+      mux inputValidRise (pure True)
+      pendingInput
+
+  effectiveInputValid :: Signal dom Bool
+  effectiveInputValid = pendingInput .&&. rmsAttValid
+
+  -- Pre-normalise with DRAM-fetched RMS weights
+  xNorm = rmsNormFwFix <$> xVec <*> rmsAttVec
 
   -- Coordinated consume signal: all heads clear together
   consumeSignal = outputValid .&&. downStreamReady
@@ -127,12 +159,16 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   ----------------------------------------------------------------------------
   -- AXI arbiter: Q + K + V masters all routed through a single arbiter.
   -- Total: NumQueryHeads + NumKeyValueHeads (K) + NumKeyValueHeads (V)
+  -- rmsAttMaster is muxed in with priority (mutually exclusive with Q/K/V).
   ----------------------------------------------------------------------------
   allAxiMasters :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Master.AxiMasterOut dom)
   allAxiMasters = qAxiMasters ++ (kAxiMasters ++ vAxiMasters)
 
   allSlaves :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Slave.AxiSlaveIn dom)
-  (axiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
+  (qkvAxiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
+
+  -- rmsAtt fetch has priority (finishes before Q/K/V start due to pendingInput gate)
+  axiMasterOut = Master.axiMasterMux rmsAttBusy rmsAttAxiMaster qkvAxiMasterOut
 
   -- Split slaves: first NumQueryHeads for Q, next NumKeyValueHeads for K, last for V
   (perQSlaves, kvSlaves)   = splitAt (SNat @NumQueryHeads)    allSlaves
@@ -148,7 +184,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                                 , QHP.QHeadDebugInfo dom )
   qResults = imap (\headIdx _ ->
       QHP.queryHeadProjector cycleCounter (perQSlaves !! headIdx) layerIdx headIdx
-                        inputValid
+                        effectiveInputValid
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
                         seqPos xNorm params
@@ -176,7 +212,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
         (perKSlaves !! kvIdx)   -- K DRAM slave
         (perVSlaves !! kvIdx)   -- V DRAM slave
         layerIdx kvIdx
-        inputValid
+        effectiveInputValid
         (pure True)             -- downStreamReady for FSM (always ready for next row)
         consumeSignal           -- consumeSignal for coordinated latch clearing
         seqPos xNorm params

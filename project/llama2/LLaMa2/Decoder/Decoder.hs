@@ -127,17 +127,44 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
     -- =======================================================================
     -- LAYER PROCESSING (with AXI)
     -- =======================================================================
-    embeddedVector :: Signal dom (Vec ModelDimension FixedPoint)
-    embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
+
+    -- Trigger embedding fetch one cycle after token is stable:
+    --   • firstCycle: at cycle 0 outputToken = inputToken (forceInputToken)
+    --   • register False readyPulse: 1 cycle after readyPulse outputToken = new sampled token
+    firstCycle :: Signal dom Bool
+    firstCycle = register True (pure False)
+
+    embFetchTrigger :: Signal dom Bool
+    embFetchTrigger = firstCycle .||. register False readyPulse
+
+    (embAxiMaster, embeddedVector, embOutputValid, embBusy) =
+      InputEmbedding.inputEmbedding
+        cycleCounter dramSlaveIn (PARAM.modelEmbedding params)
+        embFetchTrigger outputToken
 
     layerInput :: Signal dom LayerData
     layerInput = LayerStack.layerInputStage
       <$> layerIdx
-      <*> layerDataReg  -- Use the explicitly named register
+      <*> layerDataReg
       <*> embeddedVector
 
     -- Capture the controller's layerValid signal from earlier
     controllerLayerValid = Controller.layerValidIn controller
+
+    -- Embedding is ready for layer 0: valid and not mid-fetch
+    embeddingOk :: Signal dom Bool
+    embeddingOk = embOutputValid .&&. (not <$> embBusy)
+
+    -- Hold layer-0 start request until embedding is ready.
+    -- Other layers start immediately on controllerLayerValid.
+    pendingLayer0 :: Signal dom Bool
+    pendingLayer0 = register False nextPendingLayer0
+      where
+        consumed = pendingLayer0 .&&. embeddingOk .&&. (not <$> layerValidLatched)
+        nextPendingLayer0 =
+          mux consumed (pure False) $
+          mux (controllerLayerValid .&&. (layerIdx .==. 0)) (pure True)
+          pendingLayer0
 
     -- Latched version that holds until handshake completes
     layerValidLatched :: Signal dom Bool
@@ -145,10 +172,12 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
       where
         layerReady = LayerStack.qkvReady layerOutputs
 
-        -- Set: controller wants to start
-        setLatch = controllerLayerValid .&&. (not <$> layerValidLatched)
+        -- Layer 0: wait for embedding; other layers: fire immediately
+        effectiveValid =
+          ((layerIdx ./=. 0) .&&. controllerLayerValid) .||.
+          (pendingLayer0 .&&. embeddingOk)
 
-        -- Clear: handshake completes (weights ready AND layer accepts)
+        setLatch  = effectiveValid .&&. (not <$> layerValidLatched)
         clearLatch = layerValidLatched .&&. layerReady
 
         nextLayerValidLatched = mux setLatch (pure True)
@@ -164,8 +193,10 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
       layerValidLatched
       params
 
-    -- AXI arbitration
-    axiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
+    -- AXI arbitration: embedding has priority while fetching
+    layerAxiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
+    axiMasterOut = Master.axiMasterMux classifierActive logitsAxiMaster
+                 $ Master.axiMasterMux embBusy embAxiMaster layerAxiMasterOut
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =
@@ -189,9 +220,14 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
     ffnOutput = feedForwardOutput <$> nextLayerData
     lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
 
-    (logits, logitsValid) = OutputProjection.logitsProjector
+    classifierActive = processingStage .==. pure Controller.Classifier
+
+    (logitsAxiMaster, logits, logitsValid) = OutputProjection.logitsProjector
+      cycleCounter
+      dramSlaveIn
       lastLayerComplete
-      (pure True) -- always ready to consume (?)
+      (pure True) -- always ready to consume
+      logitsValid -- self-consuming: OTC clears on next cycle after outputValid
       params
       ffnOutput
 

@@ -133,6 +133,7 @@ library
       LLaMa2.Layer.TransformerLayer
       LLaMa2.Memory.AXI.Arbiter
       LLaMa2.Memory.AXI.Master
+      LLaMa2.Memory.FPVecLoader
       LLaMa2.Memory.AXI.Slave
       LLaMa2.Memory.AXI.Types
       LLaMa2.Memory.AxiReadMaster

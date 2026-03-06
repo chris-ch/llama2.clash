@@ -6,6 +6,7 @@ module LLaMa2.Layer.Attention.WeightLoader
   , w1WeightLoader     -- FFN W1 (gate)
   , w2WeightLoader     -- FFN W2 (down)
   , w3WeightLoader     -- FFN W3 (up)
+  , embWeightLoader    -- Vocabulary embedding (output projection)
   , WeightLoaderOutput(..)
   , LoadState(..)
   , assertRowStable
@@ -13,7 +14,7 @@ module LLaMa2.Layer.Attention.WeightLoader
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
-    ( HeadDimension, ModelDimension, HiddenDimension, NumQueryHeads, NumLayers, NumKeyValueHeads )
+    ( HeadDimension, ModelDimension, HiddenDimension, NumQueryHeads, NumLayers, NumKeyValueHeads, VocabularySize )
 import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -222,6 +223,29 @@ w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dat
   hcWeights :: MatI8E ModelDimension HiddenDimension
   hcWeights = PARAM.fW2Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
   tagStr = "[W2WFU L" P.++ show layerIdx P.++ "] "
+
+-- | Weight loader for vocabulary embedding rows (output/logits projection).
+-- Shape: MatI8E VocabularySize ModelDimension — VocabularySize rows × ModelDimension cols.
+-- Address: EmbeddingMatrix (at DRAM offset 0, independent of layer/head).
+embWeightLoader :: forall dom. HiddenClockResetEnable dom
+  => Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom
+  -> Signal dom (Index VocabularySize)   -- ^ row request (0..VocabularySize-1)
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> Signal dom Bool
+  -> PARAM.DecoderParameters
+  -> ( Master.AxiMasterOut dom
+     , WeightLoaderOutput dom ModelDimension
+     , Signal dom Bool
+     , Signal dom Bool
+     )
+embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed params =
+  weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix 0 0
+                      rowReq rowReqValid downstreamReady dataConsumed hcWeights "[EMBWFU] "
+ where
+  hcWeights :: MatI8E VocabularySize ModelDimension
+  hcWeights = PARAM.vocabularyQ (PARAM.modelEmbedding params)
 
 -- | Generic weight loader for any matrix type and dimensions.
 --
