@@ -275,55 +275,13 @@ First batch: 100 units
     ✅ K matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
     ✅ V matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
     ✅ WO matrices — DRAM-backed via 2-level arbiter; 8 Q-heads, 8 masters
-    All 24 AXI masters share a single DRAM slave via a 2-level arbiter tree:
-      MHA top arbiter (2 masters): QKV sub-arbiter (16) + WO sub-arbiter (8).
-    HC parallel path runs alongside DRAM for regression assertions during migration.
+    ✅ W1/W2/W3 FFN matrices — DRAM-backed via FFNProjector (3-master sub-arbiter, sequential Gate→Up→Down)
+    All AXI masters share a single DRAM slave via a 2-level arbiter tree:
+      TransformerLayer top arbiter (2 masters): MHA sub-tree + FFN sub-arbiter (W1, W3, W2).
+    HC parallel path ran alongside DRAM for regression assertions during migration.
     OutputChecker stale-data bug found and fixed (rising-edge capture pattern).
     All 101 tests pass on branch `dram`.
-
-### Next: FFN Weight Matrices (W1, W2, W3)
-
-FFN has three matrices per layer, computed sequentially: W1 (gate) → W3 (up) → W2 (down).
-
-Matrix shapes (260K model: ModelDimension=64, HiddenDimension=172):
-  W1: `MatI8E HiddenDimension ModelDimension` — 172 rows × 64 cols (input: Vec 64)
-  W3: `MatI8E HiddenDimension ModelDimension` — 172 rows × 64 cols (input: Vec 64)
-  W2: `MatI8E ModelDimension HiddenDimension` — 64 rows × 172 cols (input: Vec 172)
-Beats per row: W1/W3 → WordsPerRow ModelDimension (same as Q/K/V); W2 → WordsPerRow HiddenDimension.
-`W1Matrix`, `W2Matrix`, `W3Matrix` already in `WeightsLayout.MatrixType`.
-No per-head indexing; `headIdxInt = 0` always (one projector per matrix per layer).
-
-Key technical challenges:
-
-1. **Sequential pipeline, not parallel**: unlike Q/K/V/WO (all heads in parallel),
-   FFN runs Gate→Up→Down in strict order. Only one DRAM master is active at a time.
-   Design choice: 3 separate weight loaders with a 3-master sub-arbiter inside
-   a new `FFNProjector` module (cleaner; only the active phase issues AR requests).
-
-2. **Two input widths**: W1/W3 take `Vec ModelDimension FixedPoint` (64 elements);
-   W2 takes `Vec HiddenDimension FixedPoint` (172 elements = `gateUpLatched`).
-   The generic RowComputeUnit already supports arbitrary column widths after WO migration.
-
-3. **Arbiter extension at transformer layer level**:
-   Currently `transformerLayer` passes `dramSlaveIn` directly to MHA.
-   FFN needs its own DRAM slave. Add a 2-master arbiter inside `transformerLayer`:
-     Master 0 → MHA's existing arbiter tree
-     Master 1 → FFN's 3-master sub-arbiter (W1, W3, W2 — sequential, so at most 1 active)
-
-4. **FFN is much larger** at 7B scale: HiddenDimension=11008 → 220-beat bursts.
-   The generic loader already handles multi-beat rows; 260K simulation uses short rows.
-
-Migration steps:
-    Step 1: Add `w1WeightLoader`, `w3WeightLoader`, `w2WeightLoader` to `WeightLoader.hs`.
-            Use `Layout.W1Matrix`/`W3Matrix`/`W2Matrix`; HC from `PARAM.fW1Q`/`fW3Q`/`fW2Q`.
-    Step 2: Build `FFNProjector` module replacing `feedForwardCore`'s 3× `parallelRowMatrixMultiplier`.
-            Each phase (FFNGate/FFNUp/FFNDown) uses its weight loader + RowScheduler + RowComputeUnit + OutputAccumulator.
-            3-master internal sub-arbiter; only active phase drives AR requests.
-    Step 3: Expose `ffnAxiMasterOut` from `FFNProjector`; wire into `TransformerLayer.hs`.
-            Add 2-master top arbiter: MHA master + FFN master (sequential, no contention in practice).
-    Step 4: Retain HC cross-check (row-level and output-level assertions) until tests pass.
-    Step 5: Validate: all 101 tests pass with DRAM FFN + HC cross-check active.
-    Step 6: (Optional cleanup) Remove HC path and `FeedForwardNetworkComponentQ` param.
+    Fast simulation: MODEL_NANO config (ModelDimension=8, 2 layers) — `make test` runs in ~18s.
 
 ### Remaining small parameters (low priority — not synthesis blockers at 260K scale)
     ⬜ rmsAttF  — Vec 64 FixedPoint per layer (attention RMS norm weights)
