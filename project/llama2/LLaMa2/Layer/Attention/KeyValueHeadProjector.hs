@@ -5,13 +5,11 @@ module LLaMa2.Layer.Attention.KeyValueHeadProjector
 import Clash.Prelude
 
 import qualified Prelude as P
-import Clash.Debug (trace)
 
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads
     , NumKeyValueHeads, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
 import qualified Simulation.Parameters as PARAM
 
@@ -26,110 +24,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowSc
 
 import TraceUtils (traceChangeC, traceEdgeC)
 
---------------------------------------------------------------------------------
--- KV Head Projector
---
--- Implements DRAM-backed weight loading for K and V, following the same FSM
--- pattern as QueryHeadProjector. K and V are completely independent compute
--- paths, each mirroring queryHeadCore. Rotary encoding is applied to K only.
---
--- 'consumeSignal' is provided by the parent (QKVProjection) as:
---   consumeSignal = outputValid .&&. downStreamReady
--- where outputValid is the AND of all head valids (Q, K, V), ensuring
--- coordinated clearing: no head restarts until ALL heads are done.
---------------------------------------------------------------------------------
-
---------------------------------------------------------------------------------
--- Row Result Checker
--- Asserts DRAM and HC row results match when rowDone fires
---------------------------------------------------------------------------------
-rowResultChecker :: forall dom. HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> Signal dom FixedPoint
-  -> Signal dom FixedPoint
-  -> Signal dom FixedPoint
-rowResultChecker rowDone rowIdx dramResult hcResult = result
-  where
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0 nextTokenCnt
-    nextTokenCnt = mux (rowDone .&&. (rowIdx .==. pure maxBound)) (tokenCnt + 1) tokenCnt
-
-    result = mux rowDone
-                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult)
-                 dramResult
-
-    check tok ri dr hr
-      | dr P.== hr = dr
-      | otherwise  = P.error $ "KV Row result mismatch at token " P.++ show tok
-                    P.++ " row " P.++ show ri P.++ ": DRAM=" P.++ show dr P.++ " HC=" P.++ show hr
-
---------------------------------------------------------------------------------
--- Output Checker
--- Compares final output vectors between DRAM and HC paths
---------------------------------------------------------------------------------
-kvOutputChecker :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
-  => Signal dom Bool
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-kvOutputChecker outputValid dramOut hcOut = result
-  where
-    -- Capture on rising edge of outputValid (first cycle it fires).
-    -- Using prevOutputValid.&&.everValid caused a one-cycle late capture:
-    -- for the last head (V3, master 15 in round-robin), outputValid fires
-    -- exactly at consumeSignal, so checkTrigger would fire at T_all+1 when
-    -- qkvDone fires — but dramSampled was still stale (repeat 0 or previous
-    -- token's values) because it hadn't been captured yet. That returned
-    -- wrong values to the KV cache write.
-    risingEdge   = outputValid .&&. (not <$> register False outputValid)
-
-    -- Latch values on the FIRST cycle outputValid is True.
-    dramSampled = register (repeat 0) (mux risingEdge dramOut dramSampled)
-    hcSampled   = register (repeat 0) (mux risingEdge hcOut   hcSampled)
-
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0 (mux risingEdge (tokenCnt + 1) tokenCnt)
-
-    -- checkTrigger fires ONE cycle after capture (when dramSampled is valid).
-    checkTrigger = register False risingEdge
-
-    result = mux checkTrigger (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled) dramOut
-
-    checkPure tok dr hr =
-      let pairs      = P.zip [0..] (P.zip (toList dr) (toList hr))
-          mismatches = P.filter (\(_, (d, h)) -> d P./= h) pairs
-      in if P.null mismatches then dr
-         else let (i, (d, h)) = P.head mismatches
-              in P.error $ "KVHead output mismatch at token " P.++ show tok
-                        P.++ ": index " P.++ show (i :: Int)
-                        P.++ " (DRAM=" P.++ show d P.++ ", HC=" P.++ show h P.++ ")"
-                        P.++ " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
-
---------------------------------------------------------------------------------
--- Weight Mismatch Checker (trace-only, mirrors WeightFetchUnit)
---------------------------------------------------------------------------------
-weightMismatchChecker :: Signal dom (Unsigned 32)
-  -> Index NumLayers
-  -> Signal dom Bool
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-weightMismatchChecker _cycleCounter layerIdx valid dram hc = result
-  where
-    result = check <$> valid <*> dram <*> hc
-    check v d h
-      | v && (rowExponent d P./= rowExponent h P.|| rowMantissas d P./= rowMantissas h) =
-          trace ("[KV WFU L" P.++ show layerIdx P.++ "] WEIGHT_MISMATCH exp_d="
-                 P.++ show (rowExponent d) P.++ " exp_h=" P.++ show (rowExponent h)) d
-      | otherwise = d
-
---------------------------------------------------------------------------------
--- keyValueHeadProjector
---
--- K and V are completely independent DRAM-backed compute paths.
--- Each mirrors queryHeadCore from QueryHeadProjector.
---------------------------------------------------------------------------------
 keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
@@ -139,9 +33,9 @@ keyValueHeadProjector :: forall dom.
   -> Index NumKeyValueHeads
   -> Signal dom Bool                               -- inputValid
   -> Signal dom Bool                               -- downStreamReady
-  -> Signal dom Bool                                                -- consumeSignal (coordinated)
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec (DRAM-fetched)
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec (DRAM-fetched)
+  -> Signal dom Bool                               -- consumeSignal (coordinated)
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
   -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom                     -- K AXI master
@@ -155,17 +49,14 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   inputValid downStreamReady consumeSignal cosVec sinVec xHat params =
   (kAxiMaster, vAxiMaster, kRoOut, vOut, outputValid, readyForInput)
  where
-  -- Cast KV head index to QueryHead index for sub-module trace tags only.
-  -- Safe: NumKeyValueHeads = 4 <= NumQueryHeads = 8.
   qTag :: Index NumQueryHeads
   qTag = fromIntegral kvHeadIdx
 
-  -- Prevent restart immediately after consume (shared by K and V)
   justConsumed :: Signal dom Bool
   justConsumed = register False consumeSignal
 
   -------------------------------------------------------------------------
-  -- K PATH: mirrors queryHeadCore with kWeightLoader
+  -- K PATH
   -------------------------------------------------------------------------
   kTag :: String
   kTag = "[KHP L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
@@ -181,7 +72,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     , rsCurrentIndex  = kRowIndex
     }
 
-  kRowSched :: RowScheduler.RowSchedulerOut dom HeadDimension
   kRowSched     = RowScheduler.rowScheduler kRsIn
   kNextRowIndex = RowScheduler.rsNextRowIndex kRowSched
 
@@ -203,14 +93,12 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
       , otcConsumeSignal = consumeSignal
       }
 
-  -- Effective row index resets combinationally when output is consumed
   kEffectiveRowIndex :: Signal dom (Index HeadDimension)
   kEffectiveRowIndex = mux
     (RowScheduler.rsOutputValid kRsIn .&&. RowScheduler.rsConsumeSignal kRsIn)
     (pure 0)
     kRowIndex
 
-  -- K row request pulse logic (mirrors WeightFetchUnit)
   kLoaderBecameIdle = kWeightReady .&&. (not <$> register False kWeightReady)
   kRowReqValidGated = RowComputeUnit.rcFetchReq kCompute .&&. kWeightReady
   kPrevRowReqValid  = register False $ mux kLoaderBecameIdle (pure False) kRowReqValidGated
@@ -220,7 +108,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kRowReqPulse      = traceEdgeC cycleCounter (kTag P.++ "reqPulse") $
                         kRowReqRise .||. (kRowReqValidGated .&&. kRowIndexChanged)
 
-  -- K weight loader
   (kAxiMaster, kWeightLoaderOut, kWeightValidRaw, kWeightReadyRaw) =
     LOADER.kWeightLoader cycleCounter kDramSlaveIn layerIdx kvHeadIdx
       kEffectiveRowIndex kRowReqPulse (pure True) (RowComputeUnit.rcRowDone kCompute) params
@@ -229,9 +116,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kWeightReady = traceEdgeC cycleCounter (kTag P.++ "weightReady") kWeightReadyRaw
 
   kCurrentRowDram = LOADER.assertRowStable kWeightValid (LOADER.dramRowOut kWeightLoaderOut)
-  kCurrentRowHC   = LOADER.assertRowStable kWeightValid (LOADER.hcRowOut   kWeightLoaderOut)
-  kCurrentRowDramChecked = weightMismatchChecker cycleCounter layerIdx kWeightValid
-                             kCurrentRowDram kCurrentRowHC
 
   kEffectiveInputValid = kInputValidLatched
     .&&. (not <$> OutputTransactionController.otcOutputValid kOutputTxn)
@@ -243,8 +127,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
       , rcWeightValid     = kWeightValid
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = kRowIndex
-      , rcWeightHC        = kCurrentRowHC
-      , rcWeightDram      = kCurrentRowDramChecked
+      , rcWeightDram      = kCurrentRowDram
       , rcColumn          = xHat
       }
 
@@ -252,29 +135,18 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   kRowDone = traceEdgeC cycleCounter (kTag P.++ "rowDone") $ RowComputeUnit.rcRowDone kCompute
 
-  kDramRowResultChecked = rowResultChecker
-    (RowComputeUnit.rcRowDone kCompute) kRowIndex
-    (RowComputeUnit.rcResult   kCompute)
-    (RowComputeUnit.rcResultHC kCompute)
-
   kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx qTag
     OutputAccumulator.OutputAccumIn
-      { oaRowDone     = RowComputeUnit.rcRowDone kCompute
-      , oaRowIndex    = kRowIndex
-      , oaRowResult   = kDramRowResultChecked
-      , oaRowResultHC = RowComputeUnit.rcResultHC kCompute
+      { oaRowDone   = RowComputeUnit.rcRowDone kCompute
+      , oaRowIndex  = kRowIndex
+      , oaRowResult = RowComputeUnit.rcResult kCompute
       }
 
   kOutputValid = OutputTransactionController.otcOutputValid kOutputTxn
-  kOutFinal    = kvOutputChecker kOutputValid
-                   (OutputAccumulator.oaOutput   kOutputAccum)
-                   (OutputAccumulator.oaOutputHC kOutputAccum)
-
-  -- Apply rotary encoding using DRAM-fetched cos/sin vectors
-  kRoOut = rotaryPositionEncoder <$> kOutFinal <*> cosVec <*> sinVec
+  kRoOut = rotaryPositionEncoder <$> OutputAccumulator.oaOutput kOutputAccum <*> cosVec <*> sinVec
 
   -------------------------------------------------------------------------
-  -- V PATH: mirrors queryHeadCore with vWeightLoader (no rotary)
+  -- V PATH
   -------------------------------------------------------------------------
   vTag :: String
   vTag = "[VHP L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
@@ -290,7 +162,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     , rsCurrentIndex  = vRowIndex
     }
 
-  vRowSched :: RowScheduler.RowSchedulerOut dom HeadDimension
   vRowSched     = RowScheduler.rowScheduler vRsIn
   vNextRowIndex = RowScheduler.rsNextRowIndex vRowSched
 
@@ -318,7 +189,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     (pure 0)
     vRowIndex
 
-  -- V row request pulse logic (mirrors WeightFetchUnit)
   vLoaderBecameIdle = vWeightReady .&&. (not <$> register False vWeightReady)
   vRowReqValidGated = RowComputeUnit.rcFetchReq vCompute .&&. vWeightReady
   vPrevRowReqValid  = register False $ mux vLoaderBecameIdle (pure False) vRowReqValidGated
@@ -328,7 +198,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vRowReqPulse      = traceEdgeC cycleCounter (vTag P.++ "reqPulse") $
                         vRowReqRise .||. (vRowReqValidGated .&&. vRowIndexChanged)
 
-  -- V weight loader
   (vAxiMaster, vWeightLoaderOut, vWeightValidRaw, vWeightReadyRaw) =
     LOADER.vWeightLoader cycleCounter vDramSlaveIn layerIdx kvHeadIdx
       vEffectiveRowIndex vRowReqPulse (pure True) (RowComputeUnit.rcRowDone vCompute) params
@@ -337,9 +206,6 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vWeightReady = traceEdgeC cycleCounter (vTag P.++ "weightReady") vWeightReadyRaw
 
   vCurrentRowDram = LOADER.assertRowStable vWeightValid (LOADER.dramRowOut vWeightLoaderOut)
-  vCurrentRowHC   = LOADER.assertRowStable vWeightValid (LOADER.hcRowOut   vWeightLoaderOut)
-  vCurrentRowDramChecked = weightMismatchChecker cycleCounter layerIdx vWeightValid
-                             vCurrentRowDram vCurrentRowHC
 
   vEffectiveInputValid = vInputValidLatched
     .&&. (not <$> OutputTransactionController.otcOutputValid vOutputTxn)
@@ -351,8 +217,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
       , rcWeightValid     = vWeightValid
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = vRowIndex
-      , rcWeightHC        = vCurrentRowHC
-      , rcWeightDram      = vCurrentRowDramChecked
+      , rcWeightDram      = vCurrentRowDram
       , rcColumn          = xHat
       }
 
@@ -360,23 +225,15 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   vRowDone = traceEdgeC cycleCounter (vTag P.++ "rowDone") $ RowComputeUnit.rcRowDone vCompute
 
-  vDramRowResultChecked = rowResultChecker
-    (RowComputeUnit.rcRowDone vCompute) vRowIndex
-    (RowComputeUnit.rcResult   vCompute)
-    (RowComputeUnit.rcResultHC vCompute)
-
   vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx qTag
     OutputAccumulator.OutputAccumIn
-      { oaRowDone     = RowComputeUnit.rcRowDone vCompute
-      , oaRowIndex    = vRowIndex
-      , oaRowResult   = vDramRowResultChecked
-      , oaRowResultHC = RowComputeUnit.rcResultHC vCompute
+      { oaRowDone   = RowComputeUnit.rcRowDone vCompute
+      , oaRowIndex  = vRowIndex
+      , oaRowResult = RowComputeUnit.rcResult vCompute
       }
 
   vOutputValid = OutputTransactionController.otcOutputValid vOutputTxn
-  vOut         = kvOutputChecker vOutputValid
-                   (OutputAccumulator.oaOutput   vOutputAccum)
-                   (OutputAccumulator.oaOutputHC vOutputAccum)
+  vOut         = OutputAccumulator.oaOutput vOutputAccum
 
   -------------------------------------------------------------------------
   -- COMBINED OUTPUTS

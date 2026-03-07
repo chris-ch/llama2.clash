@@ -32,68 +32,7 @@ data FFNProjState = FPIdle | FPGate | FPUp | FPDown | FPDone
   deriving (Show, Eq, Generic, NFDataX)
 
 --------------------------------------------------------------------------------
--- Row Result Checker
--- Validates DRAM row dot-product matches HC row dot-product on each rowDone.
---------------------------------------------------------------------------------
-
-rowResultChecker :: forall dom numRows.
-  ( HiddenClockResetEnable dom, KnownNat numRows )
-  => String
-  -> Signal dom Bool
-  -> Signal dom (Index numRows)
-  -> Signal dom FixedPoint
-  -> Signal dom FixedPoint
-  -> Signal dom FixedPoint
-rowResultChecker tag rowDone rowIdx dramResult hcResult = result
-  where
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0
-      (mux (rowDone .&&. (rowIdx .==. pure maxBound)) (tokenCnt + 1) tokenCnt)
-
-    result = mux rowDone
-               (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult)
-               dramResult
-
-    check tok ri dr hr
-      | dr P.== hr = dr
-      | otherwise  = P.error $ tag P.++ " row mismatch at token " P.++ show tok
-                     P.++ " row " P.++ show ri
-                     P.++ ": DRAM=" P.++ show dr P.++ " HC=" P.++ show hr
-
---------------------------------------------------------------------------------
--- Output Checker (rising-edge capture, avoids stale-data on one-cycle pulse)
---------------------------------------------------------------------------------
-
-ffnOutputChecker :: forall dom n.
-  ( HiddenClockResetEnable dom, KnownNat n )
-  => String
-  -> Signal dom Bool
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-ffnOutputChecker tag outputValid dramOut hcOut = result
-  where
-    risingEdge   = outputValid .&&. (not <$> register False outputValid)
-    dramSampled  = register (repeat 0) (mux risingEdge dramOut  dramSampled)
-    hcSampled    = register (repeat 0) (mux risingEdge hcOut    hcSampled)
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt     = register 0 (mux risingEdge (tokenCnt + 1) tokenCnt)
-    checkTrigger = register False risingEdge
-    result       = mux checkTrigger
-                     (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled)
-                     dramOut
-
-    checkPure tok dr hr =
-      let pairs      = P.zip [0..] (P.zip (toList dr) (toList hr))
-          mismatches = P.filter (\(_, (d, h)) -> d P./= h) pairs
-      in if P.null mismatches then dr
-         else let (i, (d, h)) = P.head mismatches
-              in P.error $ tag P.++ " output mismatch at token " P.++ show tok
-                        P.++ ": idx " P.++ show (i :: Int)
-                        P.++ " (DRAM=" P.++ show d P.++ ", HC=" P.++ show h P.++ ")"
-
---------------------------------------------------------------------------------
--- Row request pulse helper (same pattern as WOHeadProjector)
+-- Row request pulse helper
 --------------------------------------------------------------------------------
 
 mkRowReqPulse :: forall dom numRows.
@@ -118,13 +57,10 @@ mkRowReqPulse tag cycleCounter fetchReq weightReady effRowIdx = pulse
 --------------------------------------------------------------------------------
 -- ffnProjector
 --
--- DRAM-backed replacement for feedForwardCore. Sequential phases:
+-- DRAM-backed FFN. Sequential phases:
 --   FPGate: W1 (gate)   — HiddenDimension × ModelDimension, column = xHat
 --   FPUp:   W3 (up)     — HiddenDimension × ModelDimension, column = xHat
 --   FPDown: W2 (down)   — ModelDimension  × HiddenDimension, column = SiLU(W1) ⊙ W3
---
--- Each phase self-consumes immediately on completion. The final W2 result is
--- held in 'outputResult' while the FSM stays in FPDone until readyIn.
 --------------------------------------------------------------------------------
 
 ffnProjector :: forall dom.
@@ -175,7 +111,6 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
 
   acceptInput = fpState .==. pure FPIdle .&&. validIn .&&. w1WeightReady
 
-  -- Latch xHat when we accept a new token
   xHatLatched :: Signal dom (Vec ModelDimension FixedPoint)
   xHatLatched = regEn (repeat 0) acceptInput xHat
 
@@ -192,7 +127,6 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
     , RS.rsCurrentIndex  = w1RowIndex
     }
 
-  -- Reset row index combinatorially on consume
   w1EffRow :: Signal dom (Index HiddenDimension)
   w1EffRow = mux (w1OutputValid .&&. w1ConsumeSignal) (pure 0) w1RowIndex
 
@@ -211,7 +145,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
       }
 
   w1OutputValid   = OTC.otcOutputValid w1OutputTxn
-  w1ConsumeSignal = w1OutputValid  -- immediate self-consume (one-cycle pulse)
+  w1ConsumeSignal = w1OutputValid
 
   w1ReqPulse = mkRowReqPulse (tag P.++ "w1Req") cycleCounter
                  (RCU.rcFetchReq w1Compute) w1WeightReady w1EffRow
@@ -234,23 +168,15 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w1RowIndex
     , RCU.rcWeightDram      = LOADER.assertRowStable w1WeightValid (LOADER.dramRowOut w1Lo)
-    , RCU.rcWeightHC        = LOADER.assertRowStable w1WeightValid (LOADER.hcRowOut   w1Lo)
     , RCU.rcColumn          = xHatLatched
     }
 
-  w1DramChecked = rowResultChecker (tag P.++ "W1")
-    (RCU.rcRowDone w1Compute) w1RowIndex
-    (RCU.rcResult   w1Compute)
-    (RCU.rcResultHC w1Compute)
-
   w1Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
-    { OA.oaRowDone     = RCU.rcRowDone w1Compute
-    , OA.oaRowIndex    = w1RowIndex
-    , OA.oaRowResult   = w1DramChecked
-    , OA.oaRowResultHC = RCU.rcResultHC w1Compute
+    { OA.oaRowDone   = RCU.rcRowDone w1Compute
+    , OA.oaRowIndex  = w1RowIndex
+    , OA.oaRowResult = RCU.rcResult w1Compute
     }
 
-  -- Latch W1 output; apply SiLU
   gateRaw :: Signal dom (Vec HiddenDimension FixedPoint)
   gateRaw = regEn (repeat 0) w1OutputValid (OA.oaOutput w1Accum)
 
@@ -311,25 +237,15 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w3RowIndex
     , RCU.rcWeightDram      = LOADER.assertRowStable w3WeightValid (LOADER.dramRowOut w3Lo)
-    , RCU.rcWeightHC        = LOADER.assertRowStable w3WeightValid (LOADER.hcRowOut   w3Lo)
     , RCU.rcColumn          = xHatLatched
     }
 
-  w3DramChecked = rowResultChecker (tag P.++ "W3")
-    (RCU.rcRowDone w3Compute) w3RowIndex
-    (RCU.rcResult   w3Compute)
-    (RCU.rcResultHC w3Compute)
-
   w3Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
-    { OA.oaRowDone     = RCU.rcRowDone w3Compute
-    , OA.oaRowIndex    = w3RowIndex
-    , OA.oaRowResult   = w3DramChecked
-    , OA.oaRowResultHC = RCU.rcResultHC w3Compute
+    { OA.oaRowDone   = RCU.rcRowDone w3Compute
+    , OA.oaRowIndex  = w3RowIndex
+    , OA.oaRowResult = RCU.rcResult w3Compute
     }
 
-  -- Compute gate ⊙ up at the w3OutputValid cycle.
-  -- At that cycle oaOutput w3Accum holds the complete W3 result,
-  -- and gateSiLU holds the already-latched SiLU-activated W1 output.
   gateUpLatched :: Signal dom (Vec HiddenDimension FixedPoint)
   gateUpLatched = regEn (repeat 0) w3OutputValid
     (zipWith (*) <$> gateSiLU <*> OA.oaOutput w3Accum)
@@ -364,7 +280,6 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
       , OTC.otcConsumeSignal = w2ConsumeSignal
       }
 
-  -- Immediate self-consume: result is held in outputResult (registered below)
   w2OutputValid   = OTC.otcOutputValid w2OutputTxn
   w2ConsumeSignal = w2OutputValid
 
@@ -383,37 +298,23 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
     .&&. (not <$> w2OutputValid)
     .&&. (not <$> w2JustConsumed)
 
-  -- Column for W2 is gateUpLatched (SiLU(W1) ⊙ W3).
-  -- Both DRAM and HC paths use this same column; the checker validates W2 weights.
   w2Compute = RCU.rowComputeUnit cycleCounter RCU.RowComputeIn
     { RCU.rcInputValid      = w2EffInput
     , RCU.rcWeightValid     = w2WeightValid
     , RCU.rcDownStreamReady = readyIn
     , RCU.rcRowIndex        = w2RowIndex
     , RCU.rcWeightDram      = LOADER.assertRowStable w2WeightValid (LOADER.dramRowOut w2Lo)
-    , RCU.rcWeightHC        = LOADER.assertRowStable w2WeightValid (LOADER.hcRowOut   w2Lo)
     , RCU.rcColumn          = gateUpLatched
     }
 
-  w2DramChecked = rowResultChecker (tag P.++ "W2")
-    (RCU.rcRowDone w2Compute) w2RowIndex
-    (RCU.rcResult   w2Compute)
-    (RCU.rcResultHC w2Compute)
-
   w2Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
-    { OA.oaRowDone     = RCU.rcRowDone w2Compute
-    , OA.oaRowIndex    = w2RowIndex
-    , OA.oaRowResult   = w2DramChecked
-    , OA.oaRowResultHC = RCU.rcResultHC w2Compute
+    { OA.oaRowDone   = RCU.rcRowDone w2Compute
+    , OA.oaRowIndex  = w2RowIndex
+    , OA.oaRowResult = RCU.rcResult w2Compute
     }
 
-  w2OutFinal = ffnOutputChecker (tag P.++ "W2out") w2OutputValid
-                 (OA.oaOutput   w2Accum)
-                 (OA.oaOutputHC w2Accum)
-
-  -- Latch W2 output; held for the duration of FPDone state
   outputResult :: Signal dom (Vec ModelDimension FixedPoint)
-  outputResult = regEn (repeat 0) w2OutputValid w2OutFinal
+  outputResult = regEn (repeat 0) w2OutputValid (OA.oaOutput w2Accum)
 
   -------------------------------------------------------------------------
   -- Top-level handshaking

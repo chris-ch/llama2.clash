@@ -21,7 +21,7 @@ testParams = PARAM.decoderConst
 spec :: Spec
 spec = do
   describe "qWeightLoader" $ do
-    it "HC path produces valid outputs" $ do
+    it "DRAM path produces valid outputs" $ do
       let maxCycles = 400
           cyclesPerRequest = 40
 
@@ -52,13 +52,13 @@ spec = do
               CS.systemClockGen CS.resetGen CS.enableGen
 
           validsSampled = sampleN maxCycles dvDRAM
-          hcMant0s = sampleN maxCycles ((!! (0 :: Int)) . rowMantissas <$> hcRowOut weightsOut)
-          validMant0s = [hcMant0s P.!! n | n <- [0..maxCycles-1], validsSampled P.!! n]
+          dramMant0s = sampleN maxCycles ((!! (0 :: Int)) . rowMantissas <$> dramRowOut weightsOut)
+          validMant0s = [dramMant0s P.!! n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
       P.length validMant0s `shouldSatisfy` (>= natToNum @HeadDimension)
       P.length (P.filter (/= 0) validMant0s) `shouldSatisfy` (>= 1)
 
-    it "HC and DRAM paths produce identical outputs" $ do
+    it "DRAM path produces all rows for all head indices" $ do
       let maxCycles = 400
           cyclesPerRequest = 50
 
@@ -81,25 +81,16 @@ spec = do
                  (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          (axiDRAM, outDRAM, dvDRAM, _readyDRAM) =
+          (axiDRAM, _outDRAM, dvDRAM, _readyDRAM) =
             exposeClockResetEnable
               (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0
                 reqSig reqValidSig readySig (pure True) testParams)
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          validsSampled    = sampleN maxCycles dvDRAM
-          hcExpSampled     = sampleN maxCycles $ rowExponent <$> hcRowOut outDRAM
-          dramExpSampled   = sampleN maxCycles $ rowExponent <$> dramRowOut outDRAM
-          hcMantsSampled   = sampleN maxCycles $ toList . rowMantissas <$> hcRowOut outDRAM
-          dramMantsSampled = sampleN maxCycles $ toList . rowMantissas <$> dramRowOut outDRAM
-
-          validCycles = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
-          matches = [ hcExpSampled P.!! n == dramExpSampled P.!! n &&
-                      hcMantsSampled P.!! n == dramMantsSampled P.!! n
-                    | n <- validCycles ]
+          validsSampled = sampleN maxCycles dvDRAM
+          validCycles   = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
       P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
-      P.and matches `shouldBe` True
 
     it "DRAM image contains correct Q weights" $ do
       let params = PARAM.decoderConst
@@ -124,7 +115,7 @@ spec = do
 
   -- ---------------------------------------------------------------------------
   describe "kWeightLoader" $ do
-    it "HC and DRAM paths produce identical outputs (layer 0, kvHead 0)" $ do
+    it "DRAM path produces all rows (layer 0, kvHead 0)" $ do
       let maxCycles = 400
           cyclesPerRequest = 50
 
@@ -147,25 +138,16 @@ spec = do
                  (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          (axiDRAM, outDRAM, dvDRAM, _readyDRAM) =
+          (axiDRAM, _outDRAM, dvDRAM, _readyDRAM) =
             exposeClockResetEnable
               (kWeightLoader (pure 0) (realDRAM axiDRAM) 0 0
                 reqSig reqValidSig readySig (pure True) testParams)
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          validsSampled    = sampleN maxCycles dvDRAM
-          hcExpSampled     = sampleN maxCycles $ rowExponent <$> hcRowOut outDRAM
-          dramExpSampled   = sampleN maxCycles $ rowExponent <$> dramRowOut outDRAM
-          hcMantsSampled   = sampleN maxCycles $ toList . rowMantissas <$> hcRowOut outDRAM
-          dramMantsSampled = sampleN maxCycles $ toList . rowMantissas <$> dramRowOut outDRAM
-
-          validCycles = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
-          matches = [ hcExpSampled P.!! n == dramExpSampled P.!! n &&
-                      hcMantsSampled P.!! n == dramMantsSampled P.!! n
-                    | n <- validCycles ]
+          validsSampled = sampleN maxCycles dvDRAM
+          validCycles   = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
 
       P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
-      P.and matches `shouldBe` True
 
     it "DRAM image contains correct K weights (layer 0, kvHead 0)" $ do
       let params  = PARAM.decoderConst

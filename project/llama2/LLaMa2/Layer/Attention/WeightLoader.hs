@@ -15,7 +15,7 @@ module LLaMa2.Layer.Attention.WeightLoader
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, HiddenDimension, NumQueryHeads, NumLayers, NumKeyValueHeads, VocabularySize )
-import LLaMa2.Numeric.Quantization (RowI8E (..), MatI8E)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
@@ -31,8 +31,7 @@ data LoadState = LIdle | LFetching | LDone
 -- | Output bundle from a weight loader.  'numCols' is the column dimension
 -- of the weight matrix (ModelDimension for Q/K/V, HeadDimension for WO).
 data WeightLoaderOutput dom numCols = WeightLoaderOutput
-  { hcRowOut          :: Signal dom (RowI8E numCols)
-  , dramRowOut        :: Signal dom (RowI8E numCols)
+  { dramRowOut        :: Signal dom (RowI8E numCols)
   , dbgRequestedAddr  :: Signal dom (Unsigned 32)
   , dbgCapturedAddr   :: Signal dom (Unsigned 32)
   , dbgCapturedRowReq :: Signal dom Int             -- row index as Int
@@ -67,14 +66,10 @@ qWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool     -- ^ weightValid (level)
      , Signal dom Bool     -- ^ weightReady (level)
      )
-qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
+qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.QMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E HeadDimension ModelDimension
-  hcWeights =
-    PARAM.qMatrix
-      (PARAM.qHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx)
   tagStr = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
 -- | Weight loader for K matrices (numRows=HeadDimension, numCols=ModelDimension)
@@ -93,13 +88,10 @@ kWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed params =
+kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.KMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E HeadDimension ModelDimension
-  hcWeights = PARAM.kMatrix
-    (PARAM.kvHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! kvHeadIdx)
   tagStr = "[KWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
 
 -- | Weight loader for V matrices (numRows=HeadDimension, numCols=ModelDimension)
@@ -118,13 +110,10 @@ vWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed params =
+vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.VMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E HeadDimension ModelDimension
-  hcWeights = PARAM.vMatrix
-    (PARAM.kvHeads (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! kvHeadIdx)
   tagStr = "[VWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
 
 -- | Weight loader for WO output-projection matrices.
@@ -144,12 +133,10 @@ woWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed params =
+woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.WOMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E ModelDimension HeadDimension
-  hcWeights = PARAM.mWoQ (PARAM.multiHeadAttention (PARAM.modelLayers params !! layerIdx)) !! headIdx
   tagStr = "[WOWFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
 -- | Weight loader for W1 (gate) FFN matrices.
@@ -168,12 +155,10 @@ w1WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.W1Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E HiddenDimension ModelDimension
-  hcWeights = PARAM.fW1Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
   tagStr = "[W1WFU L" P.++ show layerIdx P.++ "] "
 
 -- | Weight loader for W3 (up) FFN matrices.
@@ -192,12 +177,10 @@ w3WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.W3Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E HiddenDimension ModelDimension
-  hcWeights = PARAM.fW3Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
   tagStr = "[W3WFU L" P.++ show layerIdx P.++ "] "
 
 -- | Weight loader for W2 (down) FFN matrices.
@@ -216,12 +199,10 @@ w2WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed params =
+w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.W2Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr
+                      rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
-  hcWeights :: MatI8E ModelDimension HiddenDimension
-  hcWeights = PARAM.fW2Q (PARAM.feedforwardNetwork (PARAM.modelLayers params !! layerIdx))
   tagStr = "[W2WFU L" P.++ show layerIdx P.++ "] "
 
 -- | Weight loader for vocabulary embedding rows (output/logits projection).
@@ -240,12 +221,9 @@ embWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed params =
+embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed _params =
   weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix 0 0
-                      rowReq rowReqValid downstreamReady dataConsumed hcWeights "[EMBWFU] "
- where
-  hcWeights :: MatI8E VocabularySize ModelDimension
-  hcWeights = PARAM.vocabularyQ (PARAM.modelEmbedding params)
+                      rowReq rowReqValid downstreamReady dataConsumed "[EMBWFU] "
 
 -- | Generic weight loader for any matrix type and dimensions.
 --
@@ -270,14 +248,13 @@ weightLoaderGeneric :: forall dom numRows numCols.
   -> Signal dom Bool                -- ^ rowReqValid (pulse)
   -> Signal dom Bool                -- ^ downstreamReady (level)
   -> Signal dom Bool                -- ^ dataConsumed (pulse)
-  -> MatI8E numRows numCols         -- ^ HC weights for cross-check
   -> String                         -- ^ Tag string for tracing
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom numCols
      , Signal dom Bool              -- ^ weightValid (level)
      , Signal dom Bool              -- ^ weightReady (level)
      )
-weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowReqValid downstreamReady dataConsumed hcWeights tagStr =
+weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowReqValid downstreamReady dataConsumed tagStr =
   (axiMaster, out, weightValid, weightReady)
  where
   -- Loader FSM
@@ -293,9 +270,6 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   -- Rising edge when a new row becomes valid to the downstream
   prevValid = register False weightValid
   dvRise    = weightValid .&&. (not <$> prevValid)
-
-  dvRiseD1 :: Signal dom Bool
-  dvRiseD1 = register False dvRise  -- one cycle delayed
 
   -- Live request and address (combinational)
   liveRow  :: Signal dom (Index numRows)
@@ -341,26 +315,6 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   dramRowCommitted :: Signal dom (RowI8E numCols)
   dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
 
-  -- Keep the words for diagnostics
-  fetchedWordsAssembled :: Signal dom (Vec (Layout.WordsPerRow numCols) (BitVector 512))
-  fetchedWordsAssembled = regEn (repeat 0) fetchValid fetchedWords
-
-  fetchedWordsCommitted :: Signal dom (Vec (Layout.WordsPerRow numCols) (BitVector 512))
-  fetchedWordsCommitted = regEn (repeat 0) dvRise fetchedWordsAssembled
-
-  -- HC rows aligned with commit
-  hcRowCommitted :: Signal dom (RowI8E numCols)
-  hcRowCommitted = regEn zeroRow dvRise ((!!) hcWeights . tRow <$> txnReg)
-
-  -- HC row captured at the same time as the fetch handshake (for assert text)
-  hcRowFromCapture :: Signal dom (RowI8E numCols)
-  hcRowFromCapture = regEn zeroRow actualFetchStart ((!!) hcWeights <$> liveRow)
-
-  -- Expected address recomputed from the captured row index
-  expectedAddrFromRow :: Signal dom (Unsigned 32)
-  expectedAddrFromRow =
-    Layout.rowAddressCalculator matrixType layerIdx headIdxInt . fromIntegral . tRow <$> txnReg
-
   dramRowWithTrace :: Signal dom (RowI8E numCols)
   dramRowWithTrace = traceRowIndicesGeneric
       cycleCounter
@@ -370,21 +324,6 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
       (tRow <$> txnReg)
       tagStr
       dramRowWithArCheck
-
-  -- COMMIT-TIME CHECK
-  dramRowAfterEqCheck :: Signal dom (RowI8E numCols)
-  dramRowAfterEqCheck =
-    assertRowsMatchOnCommitGeneric
-      cycleCounter
-      dvRiseD1
-      (tRow  <$> txnReg)
-      (tAddr <$> txnReg)
-      expectedAddrFromRow
-      dramRowWithTrace
-      hcRowCommitted
-      hcRowFromCapture
-      fetchedWordsCommitted
-      tagStr
 
   -- Loader FSM next-state
   nextState =
@@ -399,8 +338,7 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   -- Outputs
   out :: WeightLoaderOutput dom numCols
   out = WeightLoaderOutput
-    { hcRowOut          = hcRowCommitted
-    , dramRowOut        = dramRowAfterEqCheck
+    { dramRowOut        = dramRowWithTrace
     , dbgRequestedAddr  = liveAddr
     , dbgCapturedAddr   = tAddr <$> txnReg
     , dbgCapturedRowReq = fromIntegral . tRow <$> txnReg
@@ -445,74 +383,6 @@ assertArAddrMatchGeneric cyc arAccepted fetcherAddr loaderAddr rowIdx tagStr' ro
                                        else lAddr - fAddr)
     | otherwise = row
   check _ False _ _ _ row = row
-
-assertRowsMatchOnCommitGeneric
-  :: forall dom numRows n.
-     ( KnownNat n
-     , KnownNat (If (OrdCond (CmpNat n 63) 'True 'True 'False) 1 (1 + Div n 64) T.* 64)
-     )
-  => Signal dom (Unsigned 32)
-  -> Signal dom Bool
-  -> Signal dom (Index numRows)
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (RowI8E n)
-  -> Signal dom (RowI8E n)
-  -> Signal dom (RowI8E n)
-  -> Signal dom (Vec (Layout.WordsPerRow n) (BitVector 512))
-  -> String
-  -> Signal dom (RowI8E n)
-assertRowsMatchOnCommitGeneric cyc commitEdge capIdx capAddr expectedAddr
-                               dramRow hcRow hcRowCapture fetchedWords' tagStr' =
-  mux commitEdge
-      (check <$> cyc <*> capIdx <*> capAddr <*> expectedAddr
-             <*> dramRow <*> hcRow <*> hcRowCapture <*> fetchedWords')
-      dramRow
- where
-  check c ri ad expAd dr hr hrc words' =
-    let de = rowExponent dr
-        he = rowExponent hr
-        dm = rowMantissas dr
-        hm = rowMantissas hr
-        expMatch  = de == he
-        mantMatch = dm == hm
-        addrMatch = ad == expAd
-        nShow = 8 :: Int
-        showPrefix xs = P.take nShow (P.map show (toList xs))
-        parsedFromWords :: RowI8E n
-        parsedFromWords = Layout.multiWordRowParser words'
-        pw_exp = rowExponent parsedFromWords
-        pw_mants = rowMantissas parsedFromWords
-    in if expMatch && mantMatch
-         then dr
-         else
-           let dm0 = showPrefix dm
-               hm0 = showPrefix hm
-               hrc0 = showPrefix (rowMantissas hrc)
-               pw0 = showPrefix pw_mants
-               word0_hex = case toList words' of
-                             (w:_) -> show w
-                             _     -> "no words"
-           in P.error $
-                "@" P.++ show c P.++ " DRAM/HC mismatch at commit!"
-             P.++ "\n  *** LOCATION: " P.++ tagStr' P.++ " row=" P.++ show ri P.++ " ***"
-             P.++ "\n  capturedAddr=" P.++ show ad
-             P.++ "\n  expectedAddr=" P.++ show expAd
-             P.++ "\n  ADDR MATCH: " P.++ show addrMatch
-             P.++ (if not addrMatch
-                   then "\n  *** ADDRESS MISMATCH - BUG IN CAPTURE TIMING! ***"
-                   else "")
-             P.++ "\n  expMatch=" P.++ show expMatch
-             P.++ " mantMatch=" P.++ show mantMatch
-             P.++ "\n  dramExp=" P.++ show de
-             P.++ " hcExp=" P.++ show he
-             P.++ "\n  DRAM mant[0..7]=" P.++ show dm0
-             P.++ "\n  HC (committed) mant[0..7]=" P.++ show hm0
-             P.++ "\n  HC (at capture) mant[0..7]=" P.++ show hrc0
-             P.++ "\n  HC rows match: " P.++ show (hr == hrc)
-             P.++ "\n  Parsed from fetchedWords exp=" P.++ show pw_exp
-             P.++ "\n  Parsed from fetchedWords mant[0..7]=" P.++ show pw0
-             P.++ "\n  Raw word[0] (hex)=" P.++ word0_hex
 
 data Txn numRows = Txn
   { tRow  :: Index numRows

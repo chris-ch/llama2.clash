@@ -14,15 +14,13 @@ import TraceUtils (traceWhenC)
 -- Accumulates row results into output vector
 --------------------------------------------------------------------------------
 data OutputAccumIn dom numRows = OutputAccumIn
-  { oaRowDone     :: Signal dom Bool
-  , oaRowIndex    :: Signal dom (Index numRows)
-  , oaRowResult   :: Signal dom FixedPoint
-  , oaRowResultHC :: Signal dom FixedPoint
+  { oaRowDone   :: Signal dom Bool
+  , oaRowIndex  :: Signal dom (Index numRows)
+  , oaRowResult :: Signal dom FixedPoint
   } deriving (Generic)
 
-data OutputAccumOut dom numRows = OutputAccumOut
-  { oaOutput   :: Signal dom (Vec numRows FixedPoint)
-  , oaOutputHC :: Signal dom (Vec numRows FixedPoint)
+newtype OutputAccumOut dom numRows = OutputAccumOut
+  { oaOutput :: Signal dom (Vec numRows FixedPoint)
   } deriving (Generic)
 
 outputAccumulator :: forall dom numRows.
@@ -36,25 +34,15 @@ outputAccumulator :: forall dom numRows.
   -> OutputAccumOut dom numRows
 outputAccumulator cycleCounter layerIdx headIdx inputs =
   OutputAccumOut
-    { oaOutput   = qOut
-    , oaOutputHC = qOutHC
+    { oaOutput = qOut
     }
   where
     tag = "[OA L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
-    -- DRAM result accumulator
     qOut = register (repeat 0) nextOutput
 
-    -- Trace result value when rowDone fires
     resultTraced = traceWhenC cycleCounter (tag P.++ "result") (oaRowDone inputs) (oaRowResult inputs)
 
     nextOutput = mux (oaRowDone inputs)
                      (replace <$> oaRowIndex inputs <*> resultTraced <*> qOut)
                      qOut
-
-    -- HC reference accumulator
-    qOutHC = register (repeat 0) nextOutputHC
-
-    nextOutputHC = mux (oaRowDone inputs)
-                       (replace <$> oaRowIndex inputs <*> oaRowResultHC inputs <*> qOutHC)
-                       qOutHC

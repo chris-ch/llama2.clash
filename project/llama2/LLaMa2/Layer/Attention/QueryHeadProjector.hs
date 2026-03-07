@@ -23,7 +23,7 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as Row
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
-import TraceUtils (traceChangeC, traceEdgeC, traceChangeC)
+import TraceUtils (traceChangeC, traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -46,79 +46,6 @@ data QHeadDebugInfo dom = QHeadDebugInfo
   , qhWeightReady     :: Signal dom Bool
   , qhWeightValid     :: Signal dom Bool
   } deriving (Generic)
-
---------------------------------------------------------------------------------
--- BLOCK: RowResultChecker
--- Asserts DRAM and HC row results match when rowDone fires
---------------------------------------------------------------------------------
-rowResultChecker :: forall dom. HiddenClockResetEnable dom
-  => Signal dom Bool
-  -> Signal dom (Index HeadDimension)
-  -> Signal dom FixedPoint
-  -> Signal dom FixedPoint
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom (RowI8E ModelDimension)
-  -> Signal dom FixedPoint
-rowResultChecker rowDone rowIdx dramResult hcResult dramWeights hcWeights = result
-  where
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0 nextTokenCnt
-    nextTokenCnt = mux (rowDone .&&. (rowIdx .==. pure maxBound)) (tokenCnt + 1) tokenCnt
-
-    result = mux rowDone
-                 (check <$> tokenCnt <*> rowIdx <*> dramResult <*> hcResult <*> dramWeights <*> hcWeights)
-                 dramResult
-
-    check tok ri dr hr dramW hcW
-      | dr P.== hr = dr
-      | otherwise  = P.error $ "Row result mismatch at token " P.++ show tok
-                    P.++ " row " P.++ show ri P.++ ": DRAM=" P.++ show dr P.++ " HC=" P.++ show hr
-                    P.++ "\n  DRAM weight exp=" P.++ show (rowExponent dramW)
-                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas dramW)))
-                    P.++ "\n  HC weight exp=" P.++ show (rowExponent hcW)
-                    P.++ " mant[0]=" P.++ show (P.head (toList (rowMantissas hcW)))
-                    P.++ "\n  weights match=" P.++ show (rowExponent dramW P.== rowExponent hcW
-                                                         P.&& rowMantissas dramW P.== rowMantissas hcW)
-
---------------------------------------------------------------------------------
--- BLOCK: QOutputChecker
--- Compares final Q output vectors (X-safe version)
---------------------------------------------------------------------------------
-qOutputChecker :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
-  => Signal dom Bool
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-  -> Signal dom (Vec n FixedPoint)
-qOutputChecker outputValid dramOut hcOut = result
-  where
-    -- Capture on rising edge of outputValid (first cycle it fires).
-    -- Using prevOutputValid.&&.everValid caused a one-cycle late capture:
-    -- for the last head in round-robin, outputValid fires exactly at
-    -- consumeSignal, leaving no time for dramSampled to be captured before
-    -- qkvDone fires at T_all+1. Fix: latch on the FIRST cycle outputValid
-    -- is True, then compare one cycle later when qkvDone fires.
-    risingEdge = outputValid .&&. (not <$> register False outputValid)
-
-    dramSampled = register (repeat 0) (mux risingEdge dramOut dramSampled)
-    hcSampled   = register (repeat 0) (mux risingEdge hcOut hcSampled)
-
-    tokenCnt :: Signal dom (Unsigned 32)
-    tokenCnt = register 0 (mux risingEdge (tokenCnt + 1) tokenCnt)
-
-    -- checkTrigger fires ONE cycle after capture (when dramSampled is valid).
-    checkTrigger = register False risingEdge
-
-    result = mux checkTrigger (checkPure <$> tokenCnt <*> dramSampled <*> hcSampled) dramOut
-
-    checkPure tok dr hr =
-      let pairs = P.zip [0..] (P.zip (toList dr) (toList hr))
-          mismatches = P.filter (\(_, (d,h)) -> d P./= h) pairs
-      in if P.null mismatches then dr
-         else let (i, (d, h)) = P.head mismatches
-              in P.error $ "QHead output mismatch at token " P.++ show tok
-                        P.++ ": index " P.++ show (i :: Int)
-                        P.++ " (DRAM=" P.++ show d P.++ ", HC=" P.++ show h P.++ ")"
-                        P.++ " [total mismatches: " P.++ show (P.length mismatches) P.++ "]"
 
 --------------------------------------------------------------------------------
 -- QueryHeadCore
@@ -146,31 +73,25 @@ queryHeadCore :: forall dom.
 queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params =
   QueryHeadCoreOut
     { qhcAxiMaster   = WeightFetchUnit.wfAxiMaster weightFetch
-    , qhcResult      = qOutFinal
+    , qhcResult      = qOut
     , qhcOutputValid = OutputTransactionController.otcOutputValid outputTxn
     , qhcReady       = readyForInput
     , qhcDebug       = debugInfo
     }
   where
-    -- Trace tag for this instance
     tag = "[QHP L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
 
-    ----------------------------------------------------------------------------
-    -- Row Index Register
-    ----------------------------------------------------------------------------
     rowIndex :: Signal dom (Index HeadDimension)
     rowIndex = traceChangeC cycleCounter (tag P.++ "rowIndex") $ register 0 nextRowIndex
 
-    -- RowScheduler computes next index (combinatorial)
     rsIn = RowScheduler.RowSchedulerIn
-                   { rsRowDone       = rowDone
-                   , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
-                   , rsConsumeSignal = consumeSignal
-                   , rsCurrentIndex  = rowIndex
-                   }
-    
-    rowSched = RowScheduler.rowScheduler rsIn
-                 
+             { rsRowDone       = rowDone
+             , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
+             , rsConsumeSignal = consumeSignal
+             , rsCurrentIndex  = rowIndex
+             }
+
+    rowSched     = RowScheduler.rowScheduler rsIn
     nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
     inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx
@@ -183,26 +104,17 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
     inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
 
-    ----------------------------------------------------------------------------
-    -- Output Valid Latch
-    -- CLR has priority over SET (critical for correct handshake)
-    -- Uses consumeSignal for coordinated multi-head clearing
-    ----------------------------------------------------------------------------
     outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx headIdx
                   OutputTransactionController.OutputTransactionIn
                     { otcAllDone       = RowComputeUnit.rcAllDone compute
                     , otcConsumeSignal = consumeSignal
                     }
 
-    -- Compute effective row index that resets combinationally
     effectiveRowIndex :: Signal dom (Index HeadDimension)
-    effectiveRowIndex = mux (RowScheduler.rsOutputValid rsIn .&&. RowScheduler.rsConsumeSignal rsIn) 
-                            (pure 0) 
+    effectiveRowIndex = mux (RowScheduler.rsOutputValid rsIn .&&. RowScheduler.rsConsumeSignal rsIn)
+                            (pure 0)
                             rowIndex
 
-    ----------------------------------------------------------------------------
-    -- Weight Loader
-    ----------------------------------------------------------------------------
     weightFetch = WeightFetchUnit.weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params
                     WeightFetchUnit.WeightFetchIn
                       { wfRowIndex      = effectiveRowIndex
@@ -213,70 +125,39 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                       }
 
     currentRowDram = WeightFetchUnit.wfWeightDram weightFetch
-    currentRowHC   = WeightFetchUnit.wfWeightHC weightFetch
     weightValid    = WeightFetchUnit.wfWeightValid weightFetch
     weightReady    = WeightFetchUnit.wfIdleReady weightFetch
 
-    ----------------------------------------------------------------------------
-    -- Row Multiplier (FSM + parallel processor)
-    ----------------------------------------------------------------------------
-
-    -- Track if we just consumed (to prevent immediate restart)
     justConsumed :: Signal dom Bool
     justConsumed = register False consumeSignal
 
-    -- Don't allow compute to restart while outputValid is high OR just after consume
-    effectiveInputValid = inputValidLatched .&&. 
+    effectiveInputValid = inputValidLatched .&&.
                           (not <$> OutputTransactionController.otcOutputValid outputTxn) .&&.
                           (not <$> justConsumed)
 
     compute = RowComputeUnit.rowComputeUnit cycleCounter
             RowComputeUnit.RowComputeIn
-              { rcInputValid      = effectiveInputValid  -- ← Changed from inputValidLatched
+              { rcInputValid      = effectiveInputValid
               , rcWeightValid     = weightValid
               , rcDownStreamReady = downStreamReady
               , rcRowIndex        = rowIndex
-              , rcWeightHC        = currentRowHC
               , rcWeightDram      = currentRowDram
               , rcColumn          = xHat
               }
-    
+
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
-    ----------------------------------------------------------------------------
-    -- Row Done - simple edge trace
-    ----------------------------------------------------------------------------
     rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
-    ----------------------------------------------------------------------------
-    -- Row Result Checker
-    -- Compares DRAM-computed vs HC-computed results for live verification
-    ----------------------------------------------------------------------------
-    dramRowResultChecked = rowResultChecker
-      (RowComputeUnit.rcRowDone compute) rowIndex 
-      (RowComputeUnit.rcResult compute)    -- DRAM result
-      (RowComputeUnit.rcResultHC compute)  -- HC result
-      currentRowHC currentRowHC
-
-    ----------------------------------------------------------------------------
-    -- Result Accumulator
-    ----------------------------------------------------------------------------
     outputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx headIdx
                     OutputAccumulator.OutputAccumIn
-                      { oaRowDone     = RowComputeUnit.rcRowDone compute
-                      , oaRowIndex    = rowIndex
-                      , oaRowResult   = dramRowResultChecked   -- Checked DRAM result
-                      , oaRowResultHC = RowComputeUnit.rcResultHC compute
+                      { oaRowDone   = RowComputeUnit.rcRowDone compute
+                      , oaRowIndex  = rowIndex
+                      , oaRowResult = RowComputeUnit.rcResult compute
                       }
 
-    qOut   = OutputAccumulator.oaOutput outputAccum
-    qOutHC = OutputAccumulator.oaOutputHC outputAccum
+    qOut = OutputAccumulator.oaOutput outputAccum
 
-    qOutFinal = qOutputChecker (OutputTransactionController.otcOutputValid outputTxn) qOut qOutHC
-
-    ----------------------------------------------------------------------------
-    -- Debug Info
-    ----------------------------------------------------------------------------
     debugInfo = QHeadDebugInfo
       { qhRowIndex        = rowIndex
       , qhState           = RowComputeUnit.rcMultState compute
@@ -298,7 +179,6 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
 --------------------------------------------------------------------------------
 -- Top Level: queryHeadProjector
--- Wraps QueryHeadCore and applies rotary encoding
 --------------------------------------------------------------------------------
 queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -309,8 +189,8 @@ queryHeadProjector :: forall dom.
   -> Signal dom Bool                                                -- inputValid
   -> Signal dom Bool                                                -- downStreamReady
   -> Signal dom Bool                                                -- consumeSignal
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec (DRAM-fetched)
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec (DRAM-fetched)
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
   -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
@@ -328,6 +208,4 @@ queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStre
   )
   where
     core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params
-
-    -- Apply rotary encoding using DRAM-fetched cos/sin vectors
     qWithRotary = rotaryPositionEncoder <$> qhcResult core <*> cosVec <*> sinVec
