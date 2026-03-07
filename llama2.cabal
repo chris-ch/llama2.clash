@@ -108,6 +108,7 @@ library
       LLaMa2.Layer.Attention.AttentionHead
       LLaMa2.Layer.Attention.FSM
       LLaMa2.Layer.Attention.KVCache
+      LLaMa2.Layer.Attention.KVCacheBankController
       LLaMa2.Layer.Attention.KeyValueHeadProjector
       LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
       LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
@@ -140,6 +141,7 @@ library
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM
       LLaMa2.Memory.KVCacheBank
+      LLaMa2.Memory.KVCacheLayout
       LLaMa2.Memory.WeightsLayout
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization

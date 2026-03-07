@@ -4,6 +4,7 @@ module Simulation.DRAMBackedAxiSlave
   , createDRAMBackedAxiSlaveFromVec
   , createDRAMBackedAxiSlave
   , buildMemoryFromParams
+  , createKVCacheDRAMSlave
   ) where
 
 import Clash.Prelude
@@ -22,6 +23,7 @@ import LLaMa2.Types.ModelConfig
 import qualified Simulation.Parameters as PARAM
 import Clash.Sized.Vector (unsafeFromList)
 import qualified LLaMa2.Memory.WeightsLayout as Layout
+import qualified LLaMa2.Memory.KVCacheLayout as KVLayout
 
 -- | Timing configuration
 -- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
@@ -351,4 +353,19 @@ createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
 
     rdataSigTraced :: Signal dom AxiR
     rdataSigTraced = rdataSig
-  
+
+-- ============================================================================
+-- KV Cache DRAM (writable, all-zero initial contents)
+-- ============================================================================
+
+-- | Create an all-zero DRAM slave sized for the KV cache.
+-- This DRAM supports both reads and writes (for KV cache write-back and attention reads).
+createKVCacheDRAMSlave ::
+  forall dom.
+  HiddenClockResetEnable dom =>
+  Signal dom (Unsigned 32) ->  -- ^ cycleCounter for tracing
+  Master.AxiMasterOut dom ->
+  Slave.AxiSlaveIn dom
+createKVCacheDRAMSlave cycleCounter =
+  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig 1 0 1)
+    (repeat 0 :: Vec KVLayout.KvCacheWords WordData)

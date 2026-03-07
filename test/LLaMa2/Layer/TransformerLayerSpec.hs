@@ -7,10 +7,10 @@ import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize)
+import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize, NumKeyValueHeads)
 import LLaMa2.Layer.Attention.MultiHeadAttention (singleHeadController)
 import qualified Simulation.Parameters as PARAM
-import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec, DRAMConfig (..))
+import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec, DRAMConfig (..), createKVCacheDRAMSlave)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import LLaMa2.Types.LayerData (LayerData(..))
@@ -133,6 +133,15 @@ spec = do
               (createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) dramContents masterOut')
               systemClockGen resetGen enableGen
 
+          realKVDRAM :: Master.AxiMasterOut System -> Slave.AxiSlaveIn System
+          realKVDRAM kvMaster =
+            exposeClockResetEnable
+              (createKVCacheDRAMSlave (pure 0) kvMaster)
+              systemClockGen resetGen enableGen
+
+          kvDramSlaves = imap (\kvIx _ -> realKVDRAM (_kvMasters !! kvIx))
+                           (repeat () :: Vec NumKeyValueHeads ())
+
           -- Two different inputs
           testLayerData1 = LayerData
             { inputVector = repeat 1.0
@@ -164,12 +173,13 @@ spec = do
 
           seqPos = pure 0 :: Signal System (Index 512)
 
-          (_masterOut, _qProj, _kProj, _vProj, _attnOut, ffnOut,
+          (_masterOut, _kvMasters, _qProj, _kProj, _vProj, _attnOut, ffnOut,
            _qkvDone, _writeDone, attnDone, ffnDone, _qkvReady, _debugInfo, ffnArmed, ffnStageStart, ffnValidIn) =
             exposeClockResetEnable
               (transformerLayer
                 (pure 0)
                 (realDRAM masterOut)
+                kvDramSlaves
                 0  -- layer 0
                 params
                 seqPos

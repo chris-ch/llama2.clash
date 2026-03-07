@@ -1,4 +1,4 @@
--- File: LLaMa2/Layer/TransformerLayer.hs (add AXI threading)
+-- File: LLaMa2/Layer/TransformerLayer.hs
 module LLaMa2.Layer.TransformerLayer
   ( transformerLayer )
 where
@@ -17,6 +17,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import Simulation.Parameters (DecoderParameters(..))
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
@@ -43,15 +44,19 @@ ffnController cycleCounter dramSlaveIn layerIdx params inValid outReady inputVec
 
 transformerLayer ::
   forall dom.
-  (HiddenClockResetEnable dom)
+  ( HiddenClockResetEnable dom
+  , KnownNat (WordsPerFPVec HeadDimension)
+  )
    => Signal dom (Unsigned 32)
-   -> Slave.AxiSlaveIn dom                   -- DRAM interface
-   -> Index NumLayers                        -- layer index
+   -> Slave.AxiSlaveIn dom                              -- ^ weights DRAM
+   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)       -- ^ KV cache DRAM (one per KV head)
+   -> Index NumLayers
    -> PARAM.DecoderParameters
    -> Signal dom (Index SequenceLength)
    -> Signal dom LayerData
    -> Signal dom Bool
-   -> ( Master.AxiMasterOut dom -- AXI master out
+   -> ( Master.AxiMasterOut dom                         -- ^ weights AXI master
+      , Vec NumKeyValueHeads (Master.AxiMasterOut dom)  -- ^ KV cache AXI masters
       , Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
       , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
       , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
@@ -67,8 +72,9 @@ transformerLayer ::
       , Signal dom Bool
       , Signal dom Bool
       )
-transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
+transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos layerData validIn =
   ( axiMasterOut
+  , kvAxiMasters
   , qProj
   , kProj
   , vProj
@@ -86,10 +92,9 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
   )
   where
     layerParams = modelLayers params !! layerIdx
+    ffnParams   = PARAM.feedforwardNetwork layerParams
 
-    ffnParams = PARAM.feedforwardNetwork layerParams
-
-    -- Feed-forward stage
+    -- Feed-forward stage busy flag
     layerBusy = register False nextLayerBusy
       where
         nextLayerBusy = mux validInGated (pure True)
@@ -97,11 +102,11 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
 
     validInGated = validIn .&&. (not <$> layerBusy)
 
-    -- MHA uses its own DRAM slave (from 2-master arbiter)
-    (mhaAxiMaster, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
-      multiHeadAttentionStage cycleCounter mhaSlave layerIdx params seqPos layerData validInGated
+    -- MHA uses its own weights DRAM slave (from 2-master arbiter)
+    (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
+      multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx params seqPos layerData validInGated
 
-    -- 2-master arbiter: slot 0 = MHA, slot 1 = FFN
+    -- 2-master arbiter for weights DRAM: slot 0 = MHA, slot 1 = FFN
     (axiMasterOut, perLayerSlaves) =
       ARB.axiArbiterWithRouting cycleCounter dramSlaveIn
         (mhaAxiMaster :> ffnAxiMaster :> Nil)
@@ -112,22 +117,15 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
     ffnArmed :: Signal dom Bool
     ffnArmed = register False nextFfnArmed
       where
-        setArm = validInGated  -- Use gated version
+        setArm   = validInGated
         clearArm = ffnDone
         nextFfnArmed = mux setArm (pure True) (mux clearArm (pure False) ffnArmed)
 
-    -- ffnStageStart: only start FFN when attentionDone *and* we are armed for this layer
-    -- note: attentionDone is already a pulse; no extra risingEdge is required
     ffnStageStart :: Signal dom Bool
     ffnStageStart = attentionDone .&&. ffnArmed
 
     ffnInput = attentionOutput <$> layerData
 
-    -- Convert start pulse to sustained valid.
-    -- Clear on ffnDone (not on ffnInReady) to prevent the FFN from re-triggering:
-    -- when the processing FSM cycles DONE→IDLE, ffnInReady becomes True in the
-    -- same cycle that ffnValidIn is still True, causing a spurious re-start.
-    -- Clearing on ffnDone ensures ffnValidIn is already False when FSM reaches IDLE.
     ffnValidIn :: Signal dom Bool
     ffnValidIn = register False nextFFNValidIn
       where
@@ -138,7 +136,7 @@ transformerLayer cycleCounter dramSlaveIn layerIdx params seqPos layerData valid
             (mux clearFFNValid (pure False) ffnValidIn)
 
     ffnOutReady :: Signal dom Bool
-    ffnOutReady = pure True  -- always ready
+    ffnOutReady = pure True
 
     (ffnAxiMaster, ffnOutput, ffnValidOut, _ffnInReady) =
       ffnController cycleCounter ffnSlave layerIdx params ffnValidIn ffnOutReady ffnInput ffnParams

@@ -4,7 +4,7 @@ module LLaMa2.Decoder.LayerStack (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..))
-import LLaMa2.Types.ModelConfig (NumLayers, SequenceLength, ModelDimension, HeadDimension)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, SequenceLength, ModelDimension, HeadDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
@@ -12,6 +12,8 @@ import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
 import LLaMa2.Numeric.Operations (MultiplierState)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
+import Simulation.DRAMBackedAxiSlave (createKVCacheDRAMSlave)
 
 data LayerOutputs dom = LayerOutputs
   { axiMasterOuts  :: Vec NumLayers (Master.AxiMasterOut dom)
@@ -33,9 +35,11 @@ data LayerOutputs dom = LayerOutputs
   }
 
 activeLayerProcessor :: forall dom.
-  HiddenClockResetEnable dom
+  ( HiddenClockResetEnable dom
+  , KnownNat (WordsPerFPVec HeadDimension)
+  )
   =>  Signal dom (Unsigned 32)
-  -> Slave.AxiSlaveIn dom                     -- DRAM interface
+  -> Slave.AxiSlaveIn dom                     -- weights DRAM interface
   -> Signal dom (Index NumLayers)
   -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
@@ -190,16 +194,17 @@ activeLayerProcessor cycleCounter dramSlaveIn activeLayerIdx seqPos inputData in
         isThisLayer = activeLayerIdx .==. pure layerIdx
         validIn' = inputValid .&&. isThisLayer
 
-        ( axiMaster, qProj, kProj, vProj, attnOut, ffnOut
-          , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo, _, _ ,_ ) =
+        -- KV cache DRAM: one slave per KV head, wired to the KV AXI masters
+        -- (lazy evaluation resolves the circular dependency)
+        kvDramSlaves :: Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
+        kvDramSlaves = imap (\kvIx _ ->
+            createKVCacheDRAMSlave (pure 0) (kvAxiMasters !! kvIx)
+          ) (repeat () :: Vec NumKeyValueHeads ())
+
+        (axiMaster, kvAxiMasters, qProj, kProj, vProj, attnOut, ffnOut
+          , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo, _, _, _) =
           TransformerLayer.transformerLayer
-            cycleCounter
-            dramSlaveIn
-            layerIdx
-            params'
-            seqPos
-            inputData'
-            validIn'
+            cycleCounter dramSlaveIn kvDramSlaves layerIdx params' seqPos inputData' validIn'
 
         qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
                       <$> inputData' <*> qProj <*> kProj <*> vProj

@@ -8,10 +8,11 @@ import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
-import LLaMa2.Layer.Attention.KVCache (kvBankController)
+import LLaMa2.Layer.Attention.KVCache (kvBankControllerDRAM)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
 import LLaMa2.Layer.Attention.FSM (SingleHeadState (..), kvWriteControllerFSM)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
@@ -19,38 +20,41 @@ import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 import qualified LLaMa2.Layer.Attention.WOHeadProjector as WOHP
 
 multiHeadAttentionStage :: forall dom.
-  (HiddenClockResetEnable dom) =>
-  Signal dom (Unsigned 32) ->                     -- cycle counter  
-  Slave.AxiSlaveIn dom ->                     -- DRAM interface
-  Index NumLayers ->                          -- layer index
-  PARAM.DecoderParameters ->
-  Signal dom (Index SequenceLength) ->
-  Signal dom LayerData ->
-  Signal dom Bool ->  -- validIn
-  (
-    Master.AxiMasterOut dom,     -- AXI master out
-    Signal dom (Vec ModelDimension FixedPoint),
-    Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint)),
-    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
-    Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)),
-    Signal dom Bool,
-    Signal dom Bool,
-    Signal dom Bool,
-    Signal dom Bool     
-    , QHeadDebugInfo dom
+  ( HiddenClockResetEnable dom
+  , KnownNat (WordsPerFPVec HeadDimension)
+  ) =>
+  Signal dom (Unsigned 32)                ->  -- cycle counter
+  Slave.AxiSlaveIn dom                    ->  -- weights DRAM
+  Vec NumKeyValueHeads (Slave.AxiSlaveIn dom) ->  -- KV cache DRAM (one per KV head)
+  Index NumLayers                         ->
+  PARAM.DecoderParameters                 ->
+  Signal dom (Index SequenceLength)       ->
+  Signal dom LayerData                    ->
+  Signal dom Bool                         ->  -- validIn
+  ( Master.AxiMasterOut dom                   -- weights AXI master
+  , Vec NumKeyValueHeads (Master.AxiMasterOut dom)  -- KV cache AXI masters
+  , Signal dom (Vec ModelDimension FixedPoint)
+  , Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
+  , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+  , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+  , Signal dom Bool
+  , Signal dom Bool
+  , Signal dom Bool
+  , Signal dom Bool
+  , QHeadDebugInfo dom
   )
-multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerData validIn =
-  (axiMasterOut, xAfterAttn, q, k, v, qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
+multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos layerData validIn =
+  ( axiMasterOut, kvAxiMasters
+  , xAfterAttn, q, k, v
+  , qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
   where
-    -- Write-back controller
+    -- -----------------------------------------------------------------------
+    -- Write-back controller (same as before)
+    -- -----------------------------------------------------------------------
     allBanksDone = and <$> sequenceA perBankWriteDoneFlags
     (writeDone, writeReadyIn, writeEnable) =
-      kvWriteControllerFSM
-        qkvDone
-        (pure True)  -- always ready (?)
-        allBanksDone
+      kvWriteControllerFSM qkvDone (pure True) allBanksDone
 
-    -- Latch qkvDone across the whole write
     qkvDoneHandshake = qkvDone .&&. writeReadyIn
     qkvDoneLatchedForWrite =
       register False
@@ -59,7 +63,6 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
 
     writeEnableForBanks = writeEnable .&&. qkvDoneLatchedForWrite
 
-    -- Attend-stage local enable (independent of controller’s internal flag)
     writeDonePrev      = register False writeDone
     writeCompletePulse = writeDone .&&. (not <$> writeDonePrev)
 
@@ -72,7 +75,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
     input = inputVector <$> layerData
 
     -------------------------------------------------------------------------
-    -- Top-level 2-master AXI arbiter: splits dramSlaveIn → qkvSlave + woTopSlave
+    -- Top-level 2-master AXI arbiter for weights DRAM: QKV + WO
     -------------------------------------------------------------------------
     topAllMasters :: Vec 2 (Master.AxiMasterOut dom)
     topAllMasters = qkvAxiMaster :> woAxiMaster :> Nil
@@ -84,64 +87,78 @@ multiHeadAttentionStage cycleCounter dramSlaveIn layerIdx params seqPos layerDat
     woTopSlave = topAllSlaves !! (1 :: Index 2)
 
     -------------------------------------------------------------------------
-    -- QKV projection (DRAM-backed via qkvSlave)
+    -- QKV projection (weights DRAM)
     -------------------------------------------------------------------------
     (qkvAxiMaster, qkvProjected, qkvDone, qkvReady, debugInfo) =
       qkvProjectionController
-        cycleCounter
-        qkvSlave
-        layerIdx
-        validIn
-        writeReadyIn
-        input
-        params
-        seqPos
+        cycleCounter qkvSlave layerIdx validIn writeReadyIn input params seqPos
 
     (q, k, v) = unbundle qkvProjected
 
     -------------------------------------------------------------------------
-    -- Stage 2/3: attention scoring (KV bank controller)
+    -- KV cache banks (one per KV head, each with its own DRAM slave)
     -------------------------------------------------------------------------
-    initHeadOutputs = repeat (pure (repeat 0))
-    initHeadDone    = repeat (pure False)
-    initWriteDone   = repeat (pure False)
+    kvBankResultsVec :: Vec NumKeyValueHeads
+      ( Master.AxiMasterOut dom
+      , Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+      , Vec NumQueryHeads (Signal dom Bool)
+      , Signal dom Bool
+      )
+    kvBankResultsVec = imap (\kvIx _ ->
+        kvBankControllerDRAM
+          cycleCounter
+          (kvDramSlaves !! kvIx)
+          layerIdx seqPos layerData
+          qkvDoneLatchedForWrite
+          writeEnableForBanks
+          attendActive
+          kvIx
+      ) (repeat () :: Vec NumKeyValueHeads ())
 
-    (perHeadOutputs, perHeadDoneFlags, perBankWriteDoneFlags) =
-      foldl
-        ( kvBankController cycleCounter seqPos layerData
-                          qkvDoneLatchedForWrite
-                          writeEnableForBanks
-                          attendActive )
-        (initHeadOutputs, initHeadDone, initWriteDone)
-        indicesI
+    kvAxiMasters :: Vec NumKeyValueHeads (Master.AxiMasterOut dom)
+    kvAxiMasters = map (\(a,_,_,_) -> a) kvBankResultsVec
+
+    -- Combine non-overlapping per-bank outputs (sum for vectors, OR for bools)
+    allHeadOuts  = map (\(_,o,_,_) -> o) kvBankResultsVec
+    allHeadDones = map (\(_,_,d,_) -> d) kvBankResultsVec
+    allWriteDone = map (\(_,_,_,w) -> w) kvBankResultsVec
+
+    perHeadOutputs :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+    perHeadOutputs =
+      fold (zipWith (liftA2 (zipWith (+)))) allHeadOuts
+
+    perHeadDoneFlags :: Vec NumQueryHeads (Signal dom Bool)
+    perHeadDoneFlags =
+      fold (zipWith (liftA2 (||))) allHeadDones
+
+    perBankWriteDoneFlags :: Vec NumKeyValueHeads (Signal dom Bool)
+    perBankWriteDoneFlags = allWriteDone
 
     -------------------------------------------------------------------------
-    -- WO projection (DRAM-backed, one head per Q-head)
-    -- inputValid[i] fires when head i's attention output is ready.
-    -- consumeSignal is coordinated: all heads clear together when all done.
+    -- WO projection (weights DRAM, one projector per Q-head)
     -------------------------------------------------------------------------
     woConsumeSignal = woAllValid
 
     woResults :: Vec NumQueryHeads ( Master.AxiMasterOut dom
                                    , Signal dom (Vec ModelDimension FixedPoint)
-                                   , Signal dom Bool   -- outputValid
-                                   , Signal dom Bool   -- readyForInput
+                                   , Signal dom Bool
+                                   , Signal dom Bool
                                    )
     woResults = imap (\headIdx _ ->
         WOHP.woHeadProjector cycleCounter (perWOSlaves !! headIdx) layerIdx headIdx
-          (perHeadDoneFlags  !! headIdx)  -- inputValid: fires when this head's attention is done
-          (pure True)                     -- downStreamReady: no backpressure at WO level
-          woConsumeSignal                 -- coordinated clear when all WO heads done
-          (perHeadOutputs !! headIdx)     -- per-head attention output
+          (perHeadDoneFlags  !! headIdx)
+          (pure True)
+          woConsumeSignal
+          (perHeadOutputs !! headIdx)
           params
       ) (repeat () :: Vec NumQueryHeads ())
 
     woAxiMasterPer = map (\(axi, _, _, _) -> axi) woResults
-    woVecs         = map (\(_, v', _, _)   -> v')   woResults
+    woVecs         = map (\(_, v', _, _)  -> v')  woResults
     woValids       = map (\(_, _, va, _)  -> va)  woResults
 
     -------------------------------------------------------------------------
-    -- WO 8-master sub-arbiter (all 8 WO heads share woTopSlave)
+    -- WO 8-master sub-arbiter (weights DRAM)
     -------------------------------------------------------------------------
     (woAxiMaster, perWOSlaves) =
       ARB.axiArbiterWithRouting cycleCounter woTopSlave woAxiMasterPer

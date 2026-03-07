@@ -15,6 +15,7 @@ module LLaMa2.Memory.WeightsLayout
   , multiWordRowParser
   , multiWordRowPacker
   , fixedPointVecPacker
+  , fixedPointVecPackerVec
   , fixedPointVecParser
   , matrixMultiWordPacker
   , rowStrideBytesI8E
@@ -556,6 +557,36 @@ fixedPointVecPacker v = go 0
                    ) els
           allB = bytes P.++ P.replicate (64 - P.length bytes) (0 :: BitVector 8)
       in pack (unsafeFromList (P.take 64 allB) :: Vec 64 (BitVector 8))
+
+-- | Hardware-synthesizable version of fixedPointVecPacker.
+-- Packs a Vec n FixedPoint into Vec (WordsPerFPVec n) (BitVector 512),
+-- 16 FixedPoints (4 bytes each) per 64-byte word, little-endian.
+fixedPointVecPackerVec :: forall n.
+  ( KnownNat n
+  , KnownNat (WordsPerFPVec n)
+  )
+  => Vec n FixedPoint -> Vec (WordsPerFPVec n) (BitVector 512)
+fixedPointVecPackerVec v = imap packWord (repeat ())
+  where
+    nI :: Int
+    nI = natToNum @n
+
+    packWord :: Index (WordsPerFPVec n) -> () -> BitVector 512
+    packWord wIdx () =
+      let s = fromEnum wIdx * 16
+          bytes :: Vec 64 (BitVector 8)
+          bytes = imap (\byteIdx () ->
+                    let i      = fromEnum byteIdx
+                        elem'  = i `div` 4
+                        byteOff = i `mod` 4
+                        absIdx  = s + elem'
+                        fp      = if absIdx < nI
+                                  then v !! (fromIntegral absIdx :: Index n)
+                                  else (0 :: FixedPoint)
+                        bits    = pack fp :: BitVector 32
+                    in resize (bits `shiftR` (8 * byteOff)) :: BitVector 8
+                  ) (repeat ())
+      in pack bytes
 
 matrixMultiWordPacker :: forall rows cols. KnownNat cols
   => MatI8E rows cols -> [BitVector 512]
