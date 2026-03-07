@@ -1,5 +1,6 @@
 module LLaMa2.Layer.Attention.RotaryEncoding
   ( rotaryEncoder
+  , rotaryPositionEncoder
   ) where
     
 import Clash.Prelude

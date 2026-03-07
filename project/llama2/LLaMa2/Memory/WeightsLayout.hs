@@ -7,6 +7,8 @@ module LLaMa2.Memory.WeightsLayout
   , rmsFinalAddress
   , rmsAttAddress
   , rmsFfnAddress
+  , rotaryCosAddress
+  , rotarySinAddress
   , axiRowFetcher
   , axiNWordFetcher
   , axiMultiWordRowFetcher
@@ -220,6 +222,30 @@ embeddingRowAddress rowIdx =
 -- Sits immediately after the embedding table (before rotary and per-layer data).
 rmsFinalAddress :: Unsigned 32
 rmsFinalAddress = fromIntegral (natToNum @VocabularySize * wordsPerRowVal @ModelDimension * (64 :: Int))
+
+-- | Address of freqCosF[stepIdx] (Vec RotaryPED FixedPoint) in DRAM.
+-- Sits immediately after rmsFinal, before per-layer data.
+rotaryCosAddress :: Index SequenceLength -> Unsigned 32
+rotaryCosAddress stepIdx = fromIntegral (cosBase + fromEnum stepIdx * rowBytes)
+ where
+  bpw          = 64 :: Int
+  embeddingBytes = natToNum @VocabularySize * wordsPerRowVal @ModelDimension * bpw
+  rmsFinalBytes  = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  cosBase        = embeddingBytes + rmsFinalBytes
+  rowBytes       = wordsPerFixedPointVec @RotaryPositionalEmbeddingDimension * bpw
+
+-- | Address of freqSinF[stepIdx] (Vec RotaryPED FixedPoint) in DRAM.
+-- Sin section follows immediately after the full cos section.
+rotarySinAddress :: Index SequenceLength -> Unsigned 32
+rotarySinAddress stepIdx = fromIntegral (sinBase + fromEnum stepIdx * rowBytes)
+ where
+  bpw          = 64 :: Int
+  seqLen         = natToNum @SequenceLength :: Int
+  embeddingBytes = natToNum @VocabularySize * wordsPerRowVal @ModelDimension * bpw
+  rmsFinalBytes  = align64 (wordsPerFixedPointVec @ModelDimension * bpw)
+  rowBytes       = wordsPerFixedPointVec @RotaryPositionalEmbeddingDimension * bpw
+  cosBytes       = seqLen * rowBytes
+  sinBase        = embeddingBytes + rmsFinalBytes + cosBytes
 
 -- | Address of rmsAttF (Vec ModelDimension FixedPoint) for a given layer.
 -- rmsAttF is the first item in each layer section.

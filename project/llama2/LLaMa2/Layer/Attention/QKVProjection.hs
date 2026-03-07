@@ -138,17 +138,50 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
       (PARAM.rmsAttF mhaParams)
       ("[RmsAtt L" P.++ show layerIdx P.++ "] ")
 
-  -- Hold inputValidRise latch until rmsAtt fetch completes
+  ----------------------------------------------------------------------------
+  -- Serial cos/sin fetch: triggered once rmsAtt completes
+  ----------------------------------------------------------------------------
+  rmsAttDone :: Signal dom Bool
+  rmsAttDone = rmsAttValid .&&. (not <$> register False rmsAttValid)
+
+  cosTable = PARAM.freqCosF (PARAM.rotaryEncoding params)
+  sinTable = PARAM.freqSinF (PARAM.rotaryEncoding params)
+
+  (cosAxiMaster, cosVec, cosValid, cosBusy) =
+    FPVec.fpVecLoaderDyn cycleCounter dramSlaveIn
+      rmsAttDone
+      (Layout.rotaryCosAddress <$> seqPos)
+      ((cosTable !!) <$> seqPos)
+      "[RotaryCos] "
+
+  cosDone :: Signal dom Bool
+  cosDone = cosValid .&&. (not <$> register False cosValid)
+
+  (sinAxiMaster, sinVec, sinValid, sinBusy) =
+    FPVec.fpVecLoaderDyn cycleCounter dramSlaveIn
+      cosDone
+      (Layout.rotarySinAddress <$> seqPos)
+      ((sinTable !!) <$> seqPos)
+      "[RotarySin] "
+
+  -- Rising edge of sinValid: fires exactly once when sin fetch completes.
+  -- Using the rising edge (not the level) prevents immediate firing on token N+1
+  -- when sinValid is still True from token N's completed fetch.
+  sinDone :: Signal dom Bool
+  sinDone = sinValid .&&. (not <$> register False sinValid)
+
+  -- Hold latch until all three (rmsAtt + cos + sin) have been fetched for THIS token.
+  -- Cleared by sinDone (rising edge) so it stays False if sinValid is already True.
   pendingInput :: Signal dom Bool
   pendingInput = register False nextPendingInput
    where
     nextPendingInput =
-      mux (pendingInput .&&. rmsAttValid) (pure False) $
+      mux (pendingInput .&&. sinDone) (pure False) $
       mux inputValidRise (pure True)
       pendingInput
 
   effectiveInputValid :: Signal dom Bool
-  effectiveInputValid = pendingInput .&&. rmsAttValid
+  effectiveInputValid = pendingInput .&&. sinDone
 
   -- Pre-normalise with DRAM-fetched RMS weights
   xNorm = rmsNormFwFix <$> xVec <*> rmsAttVec
@@ -159,7 +192,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   ----------------------------------------------------------------------------
   -- AXI arbiter: Q + K + V masters all routed through a single arbiter.
   -- Total: NumQueryHeads + NumKeyValueHeads (K) + NumKeyValueHeads (V)
-  -- rmsAttMaster is muxed in with priority (mutually exclusive with Q/K/V).
+  -- rmsAtt/cos/sin fetches are serial and muxed in with priority.
   ----------------------------------------------------------------------------
   allAxiMasters :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Master.AxiMasterOut dom)
   allAxiMasters = qAxiMasters ++ (kAxiMasters ++ vAxiMasters)
@@ -167,8 +200,11 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   allSlaves :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Slave.AxiSlaveIn dom)
   (qkvAxiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
 
-  -- rmsAtt fetch has priority (finishes before Q/K/V start due to pendingInput gate)
-  axiMasterOut = Master.axiMasterMux rmsAttBusy rmsAttAxiMaster qkvAxiMasterOut
+  -- Serial pre-fetch masters have priority; at most one is busy at a time
+  axiMasterOut = Master.axiMasterMux rmsAttBusy rmsAttAxiMaster
+               $ Master.axiMasterMux cosBusy    cosAxiMaster
+               $ Master.axiMasterMux sinBusy    sinAxiMaster
+               qkvAxiMasterOut
 
   -- Split slaves: first NumQueryHeads for Q, next NumKeyValueHeads for K, last for V
   (perQSlaves, kvSlaves)   = splitAt (SNat @NumQueryHeads)    allSlaves
@@ -187,7 +223,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                         effectiveInputValid
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
-                        seqPos xNorm params
+                        cosVec sinVec xNorm params
     ) (repeat () :: Vec NumQueryHeads ())
 
   head0Debug  = head qDebugInfos
@@ -215,7 +251,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
         effectiveInputValid
         (pure True)             -- downStreamReady for FSM (always ready for next row)
         consumeSignal           -- consumeSignal for coordinated latch clearing
-        seqPos xNorm params
+        cosVec sinVec xNorm params
     ) (repeat () :: Vec NumKeyValueHeads ())
 
   kAxiMasters = map (\(k, _, _, _, _, _) -> k) kvResults

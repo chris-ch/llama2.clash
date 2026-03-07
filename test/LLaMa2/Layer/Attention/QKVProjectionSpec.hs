@@ -186,7 +186,9 @@ spec = do
           inputVec = repeat 1.0 :: Vec ModelDimension FixedPoint
           validIn = fromList ([False, True] P.++ P.replicate (maxCycles - 2) False) :: Signal System Bool
           downStreamReady = pure True :: Signal System Bool
-          stepCount = pure 0 :: Signal System (Index SequenceLength)
+          -- Identity rotation: cos=1, sin=0 (matches mockRotary in createTestParams)
+          cosVec = pure (repeat 1.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint)
+          sinVec = pure (repeat 0.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint)
           input = pure inputVec :: Signal System (Vec ModelDimension FixedPoint)
 
           (masterOut, _qOut, _validOut, _readyOut, debugInfo) =
@@ -199,7 +201,8 @@ spec = do
                   validIn
                   downStreamReady
                   (pure False)   -- consumeSignal: never consume; we only check rowDone pulses
-                  stepCount
+                  cosVec
+                  sinVec
                   input
                   paramsWL
               )
@@ -256,7 +259,10 @@ spec = do
             CS.systemClockGen CS.resetGen CS.enableGen
 
           (masterOut, _, _, _, debugInfo) = exposeClockResetEnable
-              (queryHeadProjector (pure 0) stubSlaveIn 0 0 validIn (pure True) (pure True) (pure 0) (pure (repeat 1.0)) params)
+              (queryHeadProjector (pure 0) stubSlaveIn 0 0 validIn (pure True) (pure True)
+                (pure (repeat 1.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint))
+                (pure (repeat 0.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint))
+                (pure (repeat 1.0)) params)
               CS.systemClockGen CS.resetGen CS.enableGen
 
           states = sampleN maxCycles (qhState debugInfo)

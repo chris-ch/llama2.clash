@@ -10,7 +10,7 @@ import qualified Prelude as P
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
-import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
+import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
 import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Numeric.Operations as OPS
@@ -306,11 +306,12 @@ queryHeadProjector :: forall dom.
   -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> Signal dom Bool                              -- inputValid
-  -> Signal dom Bool                              -- downStreamReady
-  -> Signal dom Bool                              -- consumeSignal
-  -> Signal dom (Index SequenceLength)            -- stepCount
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
+  -> Signal dom Bool                                                -- inputValid
+  -> Signal dom Bool                                                -- downStreamReady
+  -> Signal dom Bool                                                -- consumeSignal
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec (DRAM-fetched)
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec (DRAM-fetched)
+  -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom (Vec HeadDimension FixedPoint)
@@ -318,7 +319,7 @@ queryHeadProjector :: forall dom.
      , Signal dom Bool
      , QHeadDebugInfo dom
      )
-queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal stepCount xHat params =
+queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat params =
   ( qhcAxiMaster core
   , qWithRotary
   , qhcOutputValid core
@@ -328,5 +329,5 @@ queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStre
   where
     core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params
 
-    -- Apply rotary encoding to output
-    qWithRotary = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> qhcResult core
+    -- Apply rotary encoding using DRAM-fetched cos/sin vectors
+    qWithRotary = rotaryPositionEncoder <$> qhcResult core <*> cosVec <*> sinVec

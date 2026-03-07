@@ -176,8 +176,10 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     temperature' = realToFrac temperature :: FixedPoint
 
     -- Scale simulation steps by 1000x
-    simSteps = (stepCount + length promptTokens) * 1000
-    --simSteps = 250_000  -- Just 250K cycles to test boot completes
+    -- Each token takes ~38000 cycles (5 layers × ~7000 cycles/layer through DRAM arbiter).
+    -- Use 50000x multiplier so (stepCount + promptLen) * 50000 covers all tokens.
+    -- Note: run with --steps 1 for quick testing (~100k cycles = ~50 min).
+    simSteps = (stepCount + length promptTokens) * 50000
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 

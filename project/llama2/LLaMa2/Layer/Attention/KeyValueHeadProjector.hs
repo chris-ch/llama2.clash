@@ -9,10 +9,10 @@ import Clash.Debug (trace)
 
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads
-    , NumKeyValueHeads, SequenceLength )
+    , NumKeyValueHeads, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
-import LLaMa2.Layer.Attention.RotaryEncoding (rotaryEncoder)
+import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
 import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -139,9 +139,10 @@ keyValueHeadProjector :: forall dom.
   -> Index NumKeyValueHeads
   -> Signal dom Bool                               -- inputValid
   -> Signal dom Bool                               -- downStreamReady
-  -> Signal dom Bool                               -- consumeSignal (coordinated)
-  -> Signal dom (Index SequenceLength)             -- stepCount
-  -> Signal dom (Vec ModelDimension FixedPoint)    -- xHat
+  -> Signal dom Bool                                                -- consumeSignal (coordinated)
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec (DRAM-fetched)
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec (DRAM-fetched)
+  -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
   -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom                     -- K AXI master
      , Master.AxiMasterOut dom                     -- V AXI master
@@ -151,7 +152,7 @@ keyValueHeadProjector :: forall dom.
      , Signal dom Bool                             -- readyForInput
      )
 keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
-  inputValid downStreamReady consumeSignal stepCount xHat params =
+  inputValid downStreamReady consumeSignal cosVec sinVec xHat params =
   (kAxiMaster, vAxiMaster, kRoOut, vOut, outputValid, readyForInput)
  where
   -- Cast KV head index to QueryHead index for sub-module trace tags only.
@@ -269,8 +270,8 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
                    (OutputAccumulator.oaOutput   kOutputAccum)
                    (OutputAccumulator.oaOutputHC kOutputAccum)
 
-  -- Apply rotary encoding to K
-  kRoOut = (rotaryEncoder (PARAM.rotaryEncoding params) <$> stepCount) <*> kOutFinal
+  -- Apply rotary encoding using DRAM-fetched cos/sin vectors
+  kRoOut = rotaryPositionEncoder <$> kOutFinal <*> cosVec <*> sinVec
 
   -------------------------------------------------------------------------
   -- V PATH: mirrors queryHeadCore with vWeightLoader (no rotary)
