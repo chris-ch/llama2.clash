@@ -141,7 +141,7 @@ cabal exec -- clash --verilog \
   -fclash-inline-limit=20 \
   -fclash-spec-limit=10 \
   -fclash-clear \
-  project/llama2/LLaMa2/Top.hs
+  project/llama2/LLaMa2/Decoder/Decoder.hs
 ```
 
 ## Handshaking conventions

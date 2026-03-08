@@ -4,8 +4,7 @@ module LLaMa2.Decoder.Decoder (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
-import qualified Simulation.Parameters as PARAM (DecoderParameters (..), MultiHeadAttentionComponentQ (..), QueryHeadComponentQ (qMatrix))
-import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension, HeadDimension, SequenceLength)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension, HeadDimension, SequenceLength)
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
@@ -14,11 +13,9 @@ import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
-import qualified LLaMa2.Memory.AXI.Slave as Slave
-import qualified LLaMa2.Memory.AXI.Master as Master
-import Simulation.Parameters (DecoderParameters(..), TransformerLayerComponent (multiHeadAttention))
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..), axiMasterMux)
 import LLaMa2.Numeric.Operations (MultiplierState)
-import LLaMa2.Numeric.Quantization (RowI8E(..))
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -44,7 +41,6 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
   , layerData           :: Signal dom LayerData
   , loadTriggerActive   :: Signal dom Bool
-  , paramQ0Row0         :: Signal dom Mantissa
 
   -- Debug fields propagated from LayerOutputs
   , dbgRowIndex         :: Signal dom (Index HeadDimension)
@@ -53,9 +49,9 @@ data DecoderIntrospection dom = DecoderIntrospection
   , dbgRowResult        :: Signal dom FixedPoint
   , dbgRowDone          :: Signal dom Bool
   , dbgFetchValid       :: Signal dom Bool
-  , dbgFetchedWord       :: Signal dom (BitVector 512)
-  , seqPos       :: Signal dom (Index SequenceLength)
-  , cycleCount :: Signal dom (Unsigned 32)
+  , dbgFetchedWord      :: Signal dom (BitVector 512)
+  , seqPos              :: Signal dom (Index SequenceLength)
+  , cycleCount          :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
 
 -- | Layer AXI arbiter: select active layer's AXI request
@@ -75,8 +71,6 @@ layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
   , bready  = sel Master.bready
   }
  where
-  -- Helper that gathers a field from all masters into a Signal (Vec n a),
-  -- then selects the element at runtime using the Signal index.
   sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
   sel field =
     let fieldVec    :: Vec NumLayers (Signal dom a)
@@ -88,25 +82,25 @@ layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
 
 -- | Main decoder with AXI interface
 decoder :: forall dom. HiddenClockResetEnable dom
-  => Signal dom (Unsigned 32)  -- Cycle counter
-  -> Slave.AxiSlaveIn dom     -- DRAM interface
-  -> PARAM.DecoderParameters
+  => Signal dom (Unsigned 32)                                         -- Cycle counter
+  -> Slave.AxiSlaveIn dom                                             -- weights DRAM
+  -> Vec NumLayers (Vec NumKeyValueHeads (Slave.AxiSlaveIn dom))      -- KV cache DRAM
   -> Signal dom Token
   -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Master.AxiMasterOut dom   -- AXI master out
+  -> ( Master.AxiMasterOut dom                                         -- weights AXI master
+     , Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom)) -- KV cache AXI masters
      , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
-decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature seed =
-  (axiMasterOut, outputToken, readyPulse, introspection)
+decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken temperature seed =
+  (axiMasterOut, LayerStack.kvAxiMasterOuts layerOutputs, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
     controller = Controller.dataFlowController
-      cycleCounter
       layerFfnDone     -- Layer processing complete
       logitsValid      -- Classifier/token complete
 
@@ -128,9 +122,7 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
     -- LAYER PROCESSING (with AXI)
     -- =======================================================================
 
-    -- Trigger embedding fetch one cycle after token is stable:
-    --   • firstCycle: at cycle 0 outputToken = inputToken (forceInputToken)
-    --   • register False readyPulse: 1 cycle after readyPulse outputToken = new sampled token
+    -- Trigger embedding fetch one cycle after token is stable
     firstCycle :: Signal dom Bool
     firstCycle = register True (pure False)
 
@@ -139,7 +131,7 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
 
     (embAxiMaster, embeddedVector, embOutputValid, embBusy) =
       InputEmbedding.inputEmbedding
-        cycleCounter dramSlaveIn (PARAM.modelEmbedding params)
+        cycleCounter dramSlaveIn
         embFetchTrigger outputToken
 
     layerInput :: Signal dom LayerData
@@ -187,11 +179,11 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
     layerOutputs = LayerStack.activeLayerProcessor
       cycleCounter
       dramSlaveIn
+      kvDramSlavesPerLayer
       layerIdx
       seqPosition
       layerInput
       layerValidLatched
-      params
 
     -- AXI arbitration: embedding has priority while fetching
     layerAxiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
@@ -228,7 +220,6 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
       lastLayerComplete
       (pure True) -- always ready to consume
       logitsValid -- self-consuming: OTC clears on next cycle after outputValid
-      params
       ffnOutput
 
     sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
@@ -238,7 +229,7 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
     -- TOKEN EMBEDDING AND FEEDBACK
     -- =======================================================================
     outputToken = mux forceInputToken inputToken feedbackToken
-    
+
     -- =======================================================================
     -- INTROSPECTION
     -- =======================================================================
@@ -254,11 +245,6 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
       , loadTriggerActive   = loadTrigger
-      , paramQ0Row0         = let
-            mhaParams = multiHeadAttention $ head (modelLayers params)
-            qMat = PARAM.qMatrix (head (PARAM.qHeads mhaParams))
-            RowI8E {rowMantissas = mants, rowExponent =_exp} = qMat !! (0 :: Int)
-          in pure $ head mants
 
       -- Propagate debug fields from layerOutputs
       , dbgRowIndex         = LayerStack.dbgRowIndex layerOutputs
@@ -267,7 +253,7 @@ decoder cycleCounter dramSlaveIn params inputToken forceInputToken temperature s
       , dbgRowResult        = LayerStack.dbgRowResult layerOutputs
       , dbgRowDone          = LayerStack.dbgRowDone layerOutputs
       , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
-      , dbgFetchedWord       = LayerStack.dbgFetchedWord layerOutputs
-      , seqPos = seqPosition
-      , cycleCount = cycleCounter
+      , dbgFetchedWord      = LayerStack.dbgFetchedWord layerOutputs
+      , seqPos              = seqPosition
+      , cycleCount          = cycleCounter
       }

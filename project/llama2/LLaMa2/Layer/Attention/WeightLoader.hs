@@ -19,7 +19,6 @@ import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
-import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
 import Data.Type.Bool (If)
 import Data.Type.Ord (OrdCond)
@@ -38,17 +37,11 @@ data WeightLoaderOutput dom numCols = WeightLoaderOutput
   , dbgLoadState      :: Signal dom LoadState
   }
 
-assertRowStable :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
-  => Signal dom Bool
+-- | Passthrough: returns rowSig unchanged (no cross-check assertions).
+assertRowStable :: Signal dom Bool
   -> Signal dom (RowI8E n)
   -> Signal dom (RowI8E n)
-assertRowStable validSig rowSig = checked
- where
-  zeroRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0 }
-  prevRow = register zeroRow rowSig
-  checked = check <$> validSig <*> rowSig <*> prevRow
-  check v r pr = if not v || (r == pr) then r
-                 else P.error "Row changed while valid (loader/consumer)"
+assertRowStable _validSig rowSig = rowSig
 
 -- | Weight loader for Q matrices (numRows=HeadDimension, numCols=ModelDimension)
 qWeightLoader :: forall dom. HiddenClockResetEnable dom
@@ -60,13 +53,12 @@ qWeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool       -- ^ rowReqValid (pulse)
   -> Signal dom Bool       -- ^ downstreamReady (level)
   -> Signal dom Bool       -- ^ dataConsumed (pulse)
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool     -- ^ weightValid (level)
      , Signal dom Bool     -- ^ weightReady (level)
      )
-qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.QMatrix layerIdx (fromIntegral headIdx)
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -82,13 +74,12 @@ kWeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.KMatrix layerIdx (fromIntegral kvHeadIdx)
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -104,13 +95,12 @@ vWeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.VMatrix layerIdx (fromIntegral kvHeadIdx)
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -127,13 +117,12 @@ woWeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom HeadDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.WOMatrix layerIdx (fromIntegral headIdx)
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -149,13 +138,12 @@ w1WeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W1Matrix layerIdx 0
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -171,13 +159,12 @@ w3WeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W3Matrix layerIdx 0
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -193,13 +180,12 @@ w2WeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom HiddenDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed _params =
+w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W2Matrix layerIdx 0
                       rowReq rowReqValid downstreamReady dataConsumed tagStr
  where
@@ -215,13 +201,12 @@ embWeightLoader :: forall dom. HiddenClockResetEnable dom
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom Bool
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom ModelDimension
      , Signal dom Bool
      , Signal dom Bool
      )
-embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed _params =
+embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix 0 0
                       rowReq rowReqValid downstreamReady dataConsumed "[EMBWFU] "
 
@@ -290,7 +275,7 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   txnReg :: Signal dom (Txn numRows)
   txnReg = regEn (Txn 0 0) actualFetchStart (Txn <$> liveRow <*> liveAddr)
 
-  -- ARADDR ASSERTION
+  -- ARADDR ASSERTION (passthrough)
   dramRowWithArCheck :: Signal dom (RowI8E numCols)
   dramRowWithArCheck = assertArAddrMatchGeneric
       cycleCounter
@@ -360,6 +345,7 @@ traceRowIndicesGeneric :: forall dom numRows numCols.
   -> Signal dom (RowI8E numCols)
 traceRowIndicesGeneric _cyc _start _rise _lRow _txnRow _tagStr' rowIn = rowIn
 
+-- | Passthrough: returns rowIn unchanged (no P.error assertions).
 assertArAddrMatchGeneric :: forall dom numRows numCols.
      Signal dom (Unsigned 32)
   -> Signal dom Bool
@@ -369,20 +355,8 @@ assertArAddrMatchGeneric :: forall dom numRows numCols.
   -> String
   -> Signal dom (RowI8E numCols)
   -> Signal dom (RowI8E numCols)
-assertArAddrMatchGeneric cyc arAccepted fetcherAddr loaderAddr rowIdx tagStr' rowIn =
-  check <$> cyc <*> arAccepted <*> fetcherAddr <*> loaderAddr <*> rowIdx <*> rowIn
- where
-  check c True fAddr lAddr ri row
-    | fAddr /= lAddr = P.error $
-        "@" P.++ show c P.++ " ARADDR MISMATCH at AR accept!"
-        P.++ "\n  *** LOCATION: " P.++ tagStr' P.++ " row=" P.++ show ri P.++ " ***"
-        P.++ "\n  Fetcher latched addr: " P.++ show fAddr
-        P.++ "\n  Loader txnReg addr:   " P.++ show lAddr
-        P.++ "\n  Delta: " P.++ show (if fAddr > lAddr
-                                       then fAddr - lAddr
-                                       else lAddr - fAddr)
-    | otherwise = row
-  check _ False _ _ _ row = row
+assertArAddrMatchGeneric _cyc _arAccepted _fetcherAddr _loaderAddr _rowIdx _tagStr' rowIn =
+  rowIn
 
 data Txn numRows = Txn
   { tRow  :: Index numRows

@@ -10,7 +10,6 @@ import LLaMa2.Numeric.Quantization (RowI8E)
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
 
 import TraceUtils (traceEdgeC)
@@ -40,10 +39,9 @@ weightFetchUnit :: forall dom.
   ->  Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumQueryHeads
-  -> PARAM.DecoderParameters
   -> WeightFetchIn dom
   -> WeightFetchOut dom
-weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
+weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx inputs =
   WeightFetchOut
     { wfAxiMaster    = axiMaster
     , wfWeightDram   = currentRowDram
@@ -59,7 +57,6 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params inputs =
                           rowReqPulseTraced
                           (pure True)
                           (wfRowDone inputs)
-                          params
 
     weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
     weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw

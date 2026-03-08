@@ -11,7 +11,6 @@ import LLaMa2.Types.ModelConfig
     , NumKeyValueHeads, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
-import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -37,7 +36,6 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
   -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom                     -- K AXI master
      , Master.AxiMasterOut dom                     -- V AXI master
      , Signal dom (Vec HeadDimension FixedPoint)   -- K output (with rotary)
@@ -46,7 +44,7 @@ keyValueHeadProjector :: forall dom.
      , Signal dom Bool                             -- readyForInput
      )
 keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
-  inputValid downStreamReady consumeSignal cosVec sinVec xHat params =
+  inputValid downStreamReady consumeSignal cosVec sinVec xHat =
   (kAxiMaster, vAxiMaster, kRoOut, vOut, outputValid, readyForInput)
  where
   qTag :: Index NumQueryHeads
@@ -110,7 +108,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   (kAxiMaster, kWeightLoaderOut, kWeightValidRaw, kWeightReadyRaw) =
     LOADER.kWeightLoader cycleCounter kDramSlaveIn layerIdx kvHeadIdx
-      kEffectiveRowIndex kRowReqPulse (pure True) (RowComputeUnit.rcRowDone kCompute) params
+      kEffectiveRowIndex kRowReqPulse (pure True) (RowComputeUnit.rcRowDone kCompute)
 
   kWeightValid = traceEdgeC cycleCounter (kTag P.++ "weightValid") kWeightValidRaw
   kWeightReady = traceEdgeC cycleCounter (kTag P.++ "weightReady") kWeightReadyRaw
@@ -200,7 +198,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   (vAxiMaster, vWeightLoaderOut, vWeightValidRaw, vWeightReadyRaw) =
     LOADER.vWeightLoader cycleCounter vDramSlaveIn layerIdx kvHeadIdx
-      vEffectiveRowIndex vRowReqPulse (pure True) (RowComputeUnit.rcRowDone vCompute) params
+      vEffectiveRowIndex vRowReqPulse (pure True) (RowComputeUnit.rcRowDone vCompute)
 
   vWeightValid = traceEdgeC cycleCounter (vTag P.++ "weightValid") vWeightValidRaw
   vWeightReady = traceEdgeC cycleCounter (vTag P.++ "weightReady") vWeightReadyRaw

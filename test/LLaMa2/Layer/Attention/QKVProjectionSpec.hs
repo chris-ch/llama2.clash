@@ -204,7 +204,6 @@ spec = do
                   cosVec
                   sinVec
                   input
-                  paramsWL
               )
               CS.systemClockGen
               CS.resetGen
@@ -262,7 +261,7 @@ spec = do
               (queryHeadProjector (pure 0) stubSlaveIn 0 0 validIn (pure True) (pure True)
                 (pure (repeat 1.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint))
                 (pure (repeat 0.0) :: Signal System (Vec RotaryPositionalEmbeddingDimension FixedPoint))
-                (pure (repeat 1.0)) params)
+                (pure (repeat 1.0)))
               CS.systemClockGen CS.resetGen CS.enableGen
 
           states = sampleN maxCycles (qhState debugInfo)

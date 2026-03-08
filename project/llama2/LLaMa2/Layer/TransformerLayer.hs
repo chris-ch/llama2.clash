@@ -10,12 +10,10 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig
   ( HeadDimension, ModelDimension, NumKeyValueHeads, NumQueryHeads, SequenceLength, NumLayers)
-import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..), DecoderParameters)
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
-import Simulation.Parameters (DecoderParameters(..))
 import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
@@ -24,23 +22,21 @@ ffnController ::
   Signal dom (Unsigned 32) ->
   Slave.AxiSlaveIn dom ->
   Index NumLayers ->
-  PARAM.DecoderParameters ->
   Signal dom Bool ->
   Signal dom Bool ->
   Signal dom (Vec ModelDimension FixedPoint) ->
-  PARAM.FeedForwardNetworkComponentQ ->
   ( Master.AxiMasterOut dom
   , Signal dom (Vec ModelDimension FixedPoint)
   , Signal dom Bool
   , Signal dom Bool
   )
-ffnController cycleCounter dramSlaveIn layerIdx params inValid outReady inputVec ffnQ =
+ffnController cycleCounter dramSlaveIn layerIdx inValid outReady inputVec =
   (ffnAxiMaster, result, validOut, inReady)
   where
     (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
     (ffnAxiMaster, result, ffnSeqValid, _readyOut) =
       FeedForwardNetwork.feedForwardStage
-        cycleCounter dramSlaveIn layerIdx enable outReady ffnQ inputVec params
+        cycleCounter dramSlaveIn layerIdx enable outReady inputVec
 
 transformerLayer ::
   forall dom.
@@ -51,7 +47,6 @@ transformerLayer ::
    -> Slave.AxiSlaveIn dom                              -- ^ weights DRAM
    -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)       -- ^ KV cache DRAM (one per KV head)
    -> Index NumLayers
-   -> PARAM.DecoderParameters
    -> Signal dom (Index SequenceLength)
    -> Signal dom LayerData
    -> Signal dom Bool
@@ -72,7 +67,7 @@ transformerLayer ::
       , Signal dom Bool
       , Signal dom Bool
       )
-transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos layerData validIn =
+transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData validIn =
   ( axiMasterOut
   , kvAxiMasters
   , qProj
@@ -91,9 +86,6 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos la
   , ffnValidIn
   )
   where
-    layerParams = modelLayers params !! layerIdx
-    ffnParams   = PARAM.feedforwardNetwork layerParams
-
     -- Feed-forward stage busy flag
     layerBusy = register False nextLayerBusy
       where
@@ -104,11 +96,11 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos la
 
     -- MHA uses its own weights DRAM slave (from 2-master arbiter)
     (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
-      multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx params seqPos layerData validInGated
+      multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx seqPos layerData validInGated
 
     -- 2-master arbiter for weights DRAM: slot 0 = MHA, slot 1 = FFN
     (axiMasterOut, perLayerSlaves) =
-      ARB.axiArbiterWithRouting cycleCounter dramSlaveIn
+      ARB.axiArbiterWithRouting dramSlaveIn
         (mhaAxiMaster :> ffnAxiMaster :> Nil)
 
     mhaSlave = perLayerSlaves !! (0 :: Index 2)
@@ -139,7 +131,7 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos la
     ffnOutReady = pure True
 
     (ffnAxiMaster, ffnOutput, ffnValidOut, _ffnInReady) =
-      ffnController cycleCounter ffnSlave layerIdx params ffnValidIn ffnOutReady ffnInput ffnParams
+      ffnController cycleCounter ffnSlave layerIdx ffnValidIn ffnOutReady ffnInput
 
     ffnDone = risingEdge ffnValidOut
 

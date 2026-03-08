@@ -9,7 +9,6 @@ import qualified Prelude as P
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads )
 import LLaMa2.Numeric.Types (FixedPoint)
-import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -32,14 +31,13 @@ woHeadProjector :: forall dom.
   -> Signal dom Bool                              -- downStreamReady
   -> Signal dom Bool                              -- consumeSignal (coordinated)
   -> Signal dom (Vec HeadDimension FixedPoint)    -- per-head attention output
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom (Vec ModelDimension FixedPoint) -- WO projected output
      , Signal dom Bool                            -- outputValid
      , Signal dom Bool                            -- readyForInput
      )
 woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
-  inputValid downStreamReady consumeSignal headVec params =
+  inputValid downStreamReady consumeSignal headVec =
   (axiMaster, woOut, outputValid, readyForInput)
  where
   tag :: String
@@ -95,7 +93,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
 
   (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
     LOADER.woWeightLoader cycleCounter dramSlaveIn layerIdx headIdx
-      effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute) params
+      effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute)
 
   weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
   weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw

@@ -7,7 +7,6 @@ import qualified Prelude as P
 
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Types (FixedPoint)
-import qualified Simulation.Parameters as PARAM (DecoderParameters (..), EmbeddingComponentQ (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumLayers, NumQueryHeads)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -30,17 +29,14 @@ logitsProjector :: forall dom .
   -> Signal dom Bool                                 -- ^ inputValid (lastLayerComplete)
   -> Signal dom Bool                                 -- ^ downStreamReady
   -> Signal dom Bool                                 -- ^ consumeSignal
-  -> PARAM.DecoderParameters
   -> Signal dom (Vec ModelDimension FixedPoint)      -- ^ token embedding vector
   -> ( Master.AxiMasterOut dom
      , Signal dom (Vec VocabularySize FixedPoint)    -- ^ logits output
      , Signal dom Bool                               -- ^ outputValid
      )
-logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSignal params tokenVecSig =
+logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSignal tokenVecSig =
   (axiMasterOut, logitsOut, outputValid)
  where
-  emb = PARAM.modelEmbedding params
-
   inputValidRise :: Signal dom Bool
   inputValidRise = inputValid .&&. (not <$> register False inputValid)
 
@@ -48,8 +44,6 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
     FPVec.fpVecLoader cycleCounter dramSlaveIn
       inputValidRise
       (pure Layout.rmsFinalAddress)
-      (PARAM.rmsFinalWeightF emb)
-      "[RmsFinal] "
 
   pendingInput :: Signal dom Bool
   pendingInput = register False nextPendingInput
@@ -124,7 +118,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
 
   (logitsAxiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
     LOADER.embWeightLoader cycleCounter dramSlaveIn
-      effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute) params
+      effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute)
 
   weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
   weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw

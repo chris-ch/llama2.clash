@@ -16,17 +16,14 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
-import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import Simulation.Parameters (DecoderParameters(..))
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified LLaMa2.Memory.FPVecLoader as FPVec
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
 import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
-import qualified Prelude as P
 
 --------------------------------------------------------------------------------
 -- QKV projector
@@ -108,7 +105,6 @@ qkvProjector :: forall dom.
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
@@ -117,12 +113,9 @@ qkvProjector :: forall dom.
      , Signal dom Bool
      , QHP.QHeadDebugInfo dom
      )
-qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec params =
+qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec =
   (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
  where
-  layerParams = modelLayers params !! layerIdx
-  mhaParams   = PARAM.multiHeadAttention layerParams
-
   ----------------------------------------------------------------------------
   -- DRAM-backed rmsAttF fetch (once per inputValid; gates QKV start)
   ----------------------------------------------------------------------------
@@ -135,8 +128,6 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
     FPVec.fpVecLoader cycleCounter dramSlaveIn
       inputValidRise
       (pure (Layout.rmsAttAddress layerIdx))
-      (PARAM.rmsAttF mhaParams)
-      ("[RmsAtt L" P.++ show layerIdx P.++ "] ")
 
   ----------------------------------------------------------------------------
   -- Serial cos/sin fetch: triggered once rmsAtt completes
@@ -144,15 +135,10 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   rmsAttDone :: Signal dom Bool
   rmsAttDone = rmsAttValid .&&. (not <$> register False rmsAttValid)
 
-  cosTable = PARAM.freqCosF (PARAM.rotaryEncoding params)
-  sinTable = PARAM.freqSinF (PARAM.rotaryEncoding params)
-
   (cosAxiMaster, cosVec, cosValid, cosBusy) =
     FPVec.fpVecLoaderDyn cycleCounter dramSlaveIn
       rmsAttDone
       (Layout.rotaryCosAddress <$> seqPos)
-      ((cosTable !!) <$> seqPos)
-      "[RotaryCos] "
 
   cosDone :: Signal dom Bool
   cosDone = cosValid .&&. (not <$> register False cosValid)
@@ -161,8 +147,6 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
     FPVec.fpVecLoaderDyn cycleCounter dramSlaveIn
       cosDone
       (Layout.rotarySinAddress <$> seqPos)
-      ((sinTable !!) <$> seqPos)
-      "[RotarySin] "
 
   -- Rising edge of sinValid: fires exactly once when sin fetch completes.
   -- Using the rising edge (not the level) prevents immediate firing on token N+1
@@ -198,7 +182,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   allAxiMasters = qAxiMasters ++ (kAxiMasters ++ vAxiMasters)
 
   allSlaves :: Vec (NumQueryHeads + NumKeyValueHeads + NumKeyValueHeads) (Slave.AxiSlaveIn dom)
-  (qkvAxiMasterOut, allSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn allAxiMasters
+  (qkvAxiMasterOut, allSlaves) = ARB.axiArbiterWithRouting dramSlaveIn allAxiMasters
 
   -- Serial pre-fetch masters have priority; at most one is busy at a time
   axiMasterOut = Master.axiMasterMux rmsAttBusy rmsAttAxiMaster
@@ -223,7 +207,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                         effectiveInputValid
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
-                        cosVec sinVec xNorm params
+                        cosVec sinVec xNorm
     ) (repeat () :: Vec NumQueryHeads ())
 
   head0Debug  = head qDebugInfos
@@ -251,7 +235,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
         effectiveInputValid
         (pure True)             -- downStreamReady for FSM (always ready for next row)
         consumeSignal           -- consumeSignal for coordinated latch clearing
-        cosVec sinVec xNorm params
+        cosVec sinVec xNorm
     ) (repeat () :: Vec NumKeyValueHeads ())
 
   kAxiMasters = map (\(k, _, _, _, _, _) -> k) kvResults
@@ -276,7 +260,6 @@ qkvProjectionController ::
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Vec ModelDimension FixedPoint)
-  -> PARAM.DecoderParameters
   -> Signal dom (Index SequenceLength)
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
@@ -286,7 +269,7 @@ qkvProjectionController ::
      , Signal dom Bool
      , QHP.QHeadDebugInfo dom
      )
-qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input params seqPos =
+qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input seqPos =
   (axiMasterOut, result, outputValid, readyForInput, debugInfo)
  where
   (enable, outputValid, inReadyRaw) =
@@ -294,7 +277,7 @@ qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamR
 
   (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
     qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
-                 seqPos input params
+                 seqPos input
 
   projReadyOut_d = register True projReadyOut
   readyForInput  = inReadyRaw .&&. projReadyOut_d

@@ -5,18 +5,17 @@ where
 import Clash.Prelude
 
 import LLaMa2.Memory.AXI.Types (AxiR(..), AxiB (..), AxiAW (..), AxiW (..))
-import qualified LLaMa2.Memory.AXI.Slave as Slave
-import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 
 axiArbiterWithRouting :: forall dom n.
   (HiddenClockResetEnable dom, KnownNat n)
-  => Signal dom (Unsigned 32)            -- ^ Cycle counter for tracing
-  -> Slave.AxiSlaveIn dom                -- ^ Single DRAM slave
+  => Slave.AxiSlaveIn dom                -- ^ Single DRAM slave
   -> Vec n (Master.AxiMasterOut dom)     -- ^ Multiple masters (heads)
   -> ( Master.AxiMasterOut dom           -- ^ Combined master to DRAM
      , Vec n (Slave.AxiSlaveIn dom)      -- ^ Per-head slave interfaces
      )
-axiArbiterWithRouting cycleCounter slaveIn masters = (masterOut, perHeadSlaves)
+axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
   where
     arRequests :: Vec n (Signal dom Bool)
     arRequests = map Master.arvalid masters

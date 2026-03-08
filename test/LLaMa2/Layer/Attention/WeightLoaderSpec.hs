@@ -48,7 +48,7 @@ spec = do
           (axiDRAM, weightsOut, dvDRAM, _ready) =
             exposeClockResetEnable
               (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0
-                reqSig reqValidSig readySig (pure True) testParams)
+                reqSig reqValidSig readySig (pure True))
               CS.systemClockGen CS.resetGen CS.enableGen
 
           validsSampled = sampleN maxCycles dvDRAM
@@ -84,7 +84,7 @@ spec = do
           (axiDRAM, _outDRAM, dvDRAM, _readyDRAM) =
             exposeClockResetEnable
               (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0
-                reqSig reqValidSig readySig (pure True) testParams)
+                reqSig reqValidSig readySig (pure True))
               CS.systemClockGen CS.resetGen CS.enableGen
 
           validsSampled = sampleN maxCycles dvDRAM
@@ -141,7 +141,7 @@ spec = do
           (axiDRAM, _outDRAM, dvDRAM, _readyDRAM) =
             exposeClockResetEnable
               (kWeightLoader (pure 0) (realDRAM axiDRAM) 0 0
-                reqSig reqValidSig readySig (pure True) testParams)
+                reqSig reqValidSig readySig (pure True))
               CS.systemClockGen CS.resetGen CS.enableGen
 
           validsSampled = sampleN maxCycles dvDRAM

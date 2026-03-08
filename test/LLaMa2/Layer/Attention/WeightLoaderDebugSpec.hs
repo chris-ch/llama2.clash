@@ -385,7 +385,7 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
 
         (axiDRAM, outDRAM, dvDRAM, readyOut) =
           exposeClockResetEnable
-            (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig (pure True) params)
+            (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig (pure True))
             CS.systemClockGen CS.resetGen CS.enableGen
 
         -- Sample all debug signals
@@ -453,7 +453,7 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
 
           (axiMaster, outDRAM, dvDRAM, readyOut) =
             exposeClockResetEnable
-              (qWeightLoader (pure 0) (realDRAM axiMaster) 0 0 reqSig reqValidSig readySig (pure True) params)
+              (qWeightLoader (pure 0) (realDRAM axiMaster) 0 0 reqSig reqValidSig readySig (pure True))
               CS.systemClockGen CS.resetGen CS.enableGen
 
           -- Sample AXI AR channel

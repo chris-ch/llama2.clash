@@ -11,7 +11,6 @@ import LLaMa2.Numeric.Quantization (RowI8E)
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified Simulation.Parameters as PARAM
 import qualified Prelude as P
 
 import TraceUtils (traceEdgeC)
@@ -37,10 +36,9 @@ kWeightFetchUnit :: forall dom.
   -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumKeyValueHeads
-  -> PARAM.DecoderParameters
   -> WeightFetchIn dom
   -> WeightFetchOut dom
-kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
+kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
   WeightFetchOut
     { wfAxiMaster    = axiMaster
     , wfWeightDram   = currentRowDram
@@ -52,7 +50,7 @@ kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.kWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
                           (wfRowIndex inputs) rowReqPulseTraced
-                          (pure True) (wfRowDone inputs) params
+                          (pure True) (wfRowDone inputs)
     weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
     weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
@@ -71,10 +69,9 @@ vWeightFetchUnit :: forall dom.
   -> Slave.AxiSlaveIn dom
   -> Index NumLayers
   -> Index NumKeyValueHeads
-  -> PARAM.DecoderParameters
   -> WeightFetchIn dom
   -> WeightFetchOut dom
-vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
+vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
   WeightFetchOut
     { wfAxiMaster    = axiMaster
     , wfWeightDram   = currentRowDram
@@ -86,7 +83,7 @@ vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx params inputs =
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.vWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
                           (wfRowIndex inputs) rowReqPulseTraced
-                          (pure True) (wfRowDone inputs) params
+                          (pure True) (wfRowDone inputs)
     weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
     weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)

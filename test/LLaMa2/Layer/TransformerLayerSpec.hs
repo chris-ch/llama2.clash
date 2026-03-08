@@ -7,9 +7,8 @@ import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
-import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension, HiddenDimension, VocabularySize, NumKeyValueHeads)
+import LLaMa2.Types.ModelConfig (HeadDimension, NumKeyValueHeads)
 import LLaMa2.Layer.Attention.MultiHeadAttention (singleHeadController)
-import qualified Simulation.Parameters as PARAM
 import Simulation.DRAMBackedAxiSlave (WordData, createDRAMBackedAxiSlaveFromVec, DRAMConfig (..), createKVCacheDRAMSlave)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -66,61 +65,6 @@ spec = do
     context "processes two complete tokens through one layer" $ do
       let maxCycles = 3000  -- Need time for attention + FFN
 
-          -- Create test weights
-          testRow = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E ModelDimension
-          testRow' = RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: RowI8E HeadDimension
-          testQMatrix = repeat testRow :: MatI8E HeadDimension ModelDimension
-          testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
-
-          -- Global rotary (stored once)
-          mockRotary = PARAM.RotaryEncodingComponentF
-            { PARAM.freqCosF = repeat (repeat 1.0)
-            , PARAM.freqSinF = repeat (repeat 0.0)
-            }
-
-          -- Q heads (8 heads)
-          testQHead = PARAM.QueryHeadComponentQ
-            { PARAM.qMatrix = testQMatrix
-            }
-
-          -- KV heads (4 heads)
-          testKVHead = PARAM.KeyValueHeadComponentQ
-            { PARAM.kMatrix = testQMatrix
-            , PARAM.vMatrix = testQMatrix
-            }
-
-          mhaParams = PARAM.MultiHeadAttentionComponentQ
-            { PARAM.qHeads = repeat testQHead    -- NumQueryHeads (8)
-            , PARAM.kvHeads = repeat testKVHead  -- NumKeyValueHeads (4)
-            , PARAM.mWoQ = repeat testWOMatrix
-            , PARAM.rmsAttF = repeat 1.0 :< 0
-            }
-
-          -- FFN weights (all 1s for simplicity)
-          ffnW1 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-          ffnW2 = repeat RowI8E { rowMantissas = repeat 1, rowExponent = 0}  :: MatI8E ModelDimension HiddenDimension
-          ffnW3 = repeat testRow :: MatI8E HiddenDimension ModelDimension
-
-          ffnParams = PARAM.FeedForwardNetworkComponentQ
-            { PARAM.fW1Q = ffnW1
-            , PARAM.fW2Q = ffnW2
-            , PARAM.fW3Q = ffnW3
-            , PARAM.fRMSFfnF = repeat 1.0 :< 0
-            }
-
-          layerParams = PARAM.TransformerLayerComponent
-            { PARAM.multiHeadAttention = mhaParams
-            , PARAM.feedforwardNetwork = ffnParams
-            }
-
-          params = PARAM.DecoderParameters
-            { PARAM.modelEmbedding = PARAM.EmbeddingComponentQ
-                { PARAM.vocabularyQ = repeat testRow :: MatI8E VocabularySize ModelDimension
-                , PARAM.rmsFinalWeightF = repeat 1.0 :: Vec ModelDimension FixedPoint
-                }
-            , PARAM.modelLayers = repeat layerParams
-            , PARAM.rotaryEncoding = mockRotary  -- Global rotary
-            }
 
           -- All-zero DRAM: circuit reads zero weights, produces zero outputs,
           -- but control flow (FSM transitions) completes correctly regardless of data.
@@ -181,7 +125,6 @@ spec = do
                 (realDRAM masterOut)
                 kvDramSlaves
                 0  -- layer 0
-                params
                 seqPos
                 layerData
                 validIn)

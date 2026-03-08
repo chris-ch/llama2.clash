@@ -3,13 +3,11 @@ module LLaMa2.Embedding.InputEmbedding
 ) where
 import Clash.Prelude
 
-import qualified Prelude as P
 import LLaMa2.Types.ModelConfig
-    ( ModelDimension, VocabularySize )
+    ( ModelDimension )
 import LLaMa2.Types.LayerData ( Token )
 import LLaMa2.Numeric.Types ( FixedPoint, scalePow2F )
-import LLaMa2.Numeric.Quantization ( MatI8E, RowI8E (..) )
-import qualified Simulation.Parameters as PARAM (EmbeddingComponentQ (..))
+import LLaMa2.Numeric.Quantization ( RowI8E (..) )
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
@@ -34,8 +32,7 @@ deqRow RowI8E { rowMantissas = mant, rowExponent = e } =
 -- On each fetchTrigger pulse (outputToken must be stable):
 --   1. Issues an AXI multi-word burst to fetch the vocabulary row for tokenIdx.
 --   2. Parses and dequantizes the result.
---   3. Cross-checks against the HC ROM path (P.error on mismatch).
---   4. Holds the result until the next fetch.
+--   3. Holds the result until the next fetch.
 --
 -- outputValid: False until the first fetch completes; True thereafter.
 -- isBusy:      True while an AXI fetch is in flight.
@@ -44,7 +41,6 @@ inputEmbedding :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                       -- ^ cycleCounter
   -> Slave.AxiSlaveIn dom                           -- ^ DRAM
-  -> PARAM.EmbeddingComponentQ                      -- ^ HC params (cross-check)
   -> Signal dom Bool                                -- ^ fetchTrigger (1-cycle pulse)
   -> Signal dom Token                               -- ^ token index (stable when trigger fires)
   -> ( Master.AxiMasterOut dom
@@ -52,7 +48,7 @@ inputEmbedding :: forall dom.
      , Signal dom Bool                              -- ^ outputValid
      , Signal dom Bool                              -- ^ isBusy
      )
-inputEmbedding _cycleCounter dramSlaveIn embParams fetchTrigger tokenSig =
+inputEmbedding _cycleCounter dramSlaveIn fetchTrigger tokenSig =
   (axiMaster, outputVec, outputValid, isBusy)
  where
   -- -----------------------------------------------------------------------
@@ -94,34 +90,14 @@ inputEmbedding _cycleCounter dramSlaveIn embParams fetchTrigger tokenSig =
   dramVec :: Signal dom (Vec ModelDimension FixedPoint)
   dramVec = deqRow <$> dramRow
 
-  -- HC ROM cross-check: look up the same token in the elaboration-time table
-  hcVec :: Signal dom (Vec ModelDimension FixedPoint)
-  hcVec = (\tok -> deqRow (hcTable !! (fromIntegral tok :: Int))) <$> tokenSig
-   where
-    hcTable :: MatI8E VocabularySize ModelDimension
-    hcTable = PARAM.vocabularyQ embParams
-
   -- -----------------------------------------------------------------------
-  -- Output register: latch on rising edge of fetchDone (EmbFetching→EmbReady)
+  -- Output register: latch on rising edge of fetchDone (EmbFetching->EmbReady)
   -- -----------------------------------------------------------------------
   capturing :: Signal dom Bool
   capturing = state .==. pure EmbFetching .&&. fetchDone
 
   outputVec :: Signal dom (Vec ModelDimension FixedPoint)
-  outputVec = register (repeat 0) $ mux capturing checkedVec outputVec
-
-  -- Cross-check DRAM vs HC and yield DRAM result (P.error on mismatch)
-  checkedVec :: Signal dom (Vec ModelDimension FixedPoint)
-  checkedVec = checkPure <$> tokenSig <*> dramVec <*> hcVec
-   where
-    checkPure tok dv hv =
-      let pairs      = P.zip [0..] (P.zip (toList dv) (toList hv))
-          mismatches = P.filter (\(_, (d, h)) -> d P./= h) pairs
-      in if P.null mismatches then dv
-         else let (i, (d, h)) = P.head mismatches
-              in P.error $ "InputEmbedding DRAM/HC mismatch for token " P.++ show tok
-                        P.++ ": index " P.++ show (i :: Int)
-                        P.++ " DRAM=" P.++ show d P.++ " HC=" P.++ show h
+  outputVec = register (repeat 0) $ mux capturing dramVec outputVec
 
   outputValid :: Signal dom Bool
   outputValid = state .==. pure EmbReady .&&. (not <$> newFetchStarting)

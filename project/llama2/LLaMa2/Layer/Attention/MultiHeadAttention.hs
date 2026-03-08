@@ -3,7 +3,6 @@ module LLaMa2.Layer.Attention.MultiHeadAttention (
 ) where
 
 import Clash.Prelude
-import qualified Simulation.Parameters as PARAM (DecoderParameters)
 import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -27,7 +26,6 @@ multiHeadAttentionStage :: forall dom.
   Slave.AxiSlaveIn dom                    ->  -- weights DRAM
   Vec NumKeyValueHeads (Slave.AxiSlaveIn dom) ->  -- KV cache DRAM (one per KV head)
   Index NumLayers                         ->
-  PARAM.DecoderParameters                 ->
   Signal dom (Index SequenceLength)       ->
   Signal dom LayerData                    ->
   Signal dom Bool                         ->  -- validIn
@@ -43,7 +41,7 @@ multiHeadAttentionStage :: forall dom.
   , Signal dom Bool
   , QHeadDebugInfo dom
   )
-multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params seqPos layerData validIn =
+multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData validIn =
   ( axiMasterOut, kvAxiMasters
   , xAfterAttn, q, k, v
   , qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
@@ -81,7 +79,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params se
     topAllMasters = qkvAxiMaster :> woAxiMaster :> Nil
 
     topAllSlaves :: Vec 2 (Slave.AxiSlaveIn dom)
-    (axiMasterOut, topAllSlaves) = ARB.axiArbiterWithRouting cycleCounter dramSlaveIn topAllMasters
+    (axiMasterOut, topAllSlaves) = ARB.axiArbiterWithRouting dramSlaveIn topAllMasters
 
     qkvSlave   = topAllSlaves !! (0 :: Index 2)
     woTopSlave = topAllSlaves !! (1 :: Index 2)
@@ -91,7 +89,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params se
     -------------------------------------------------------------------------
     (qkvAxiMaster, qkvProjected, qkvDone, qkvReady, debugInfo) =
       qkvProjectionController
-        cycleCounter qkvSlave layerIdx validIn writeReadyIn input params seqPos
+        cycleCounter qkvSlave layerIdx validIn writeReadyIn input seqPos
 
     (q, k, v) = unbundle qkvProjected
 
@@ -150,7 +148,6 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params se
           (pure True)
           woConsumeSignal
           (perHeadOutputs !! headIdx)
-          params
       ) (repeat () :: Vec NumQueryHeads ())
 
     woAxiMasterPer = map (\(axi, _, _, _) -> axi) woResults
@@ -160,8 +157,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx params se
     -------------------------------------------------------------------------
     -- WO 8-master sub-arbiter (weights DRAM)
     -------------------------------------------------------------------------
-    (woAxiMaster, perWOSlaves) =
-      ARB.axiArbiterWithRouting cycleCounter woTopSlave woAxiMasterPer
+    (woAxiMaster, perWOSlaves) = ARB.axiArbiterWithRouting woTopSlave woAxiMasterPer
 
     woAllValid     = and <$> sequenceA woValids
     validProjected = woAllValid

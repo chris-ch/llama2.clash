@@ -11,7 +11,6 @@ import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
-import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Numeric.Operations as OPS
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -68,9 +67,8 @@ queryHeadCore :: forall dom.
   -> Signal dom Bool                              -- downStreamReady
   -> Signal dom Bool                              -- consumeSignal
   -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
-  -> PARAM.DecoderParameters
   -> QueryHeadCoreOut dom
-queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params =
+queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat =
   QueryHeadCoreOut
     { qhcAxiMaster   = WeightFetchUnit.wfAxiMaster weightFetch
     , qhcResult      = qOut
@@ -115,7 +113,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                             (pure 0)
                             rowIndex
 
-    weightFetch = WeightFetchUnit.weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx params
+    weightFetch = WeightFetchUnit.weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx
                     WeightFetchUnit.WeightFetchIn
                       { wfRowIndex      = effectiveRowIndex
                       , wfRowReqValid   = RowComputeUnit.rcFetchReq compute
@@ -192,14 +190,13 @@ queryHeadProjector :: forall dom.
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
   -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool
      , Signal dom Bool
      , QHeadDebugInfo dom
      )
-queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat params =
+queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat =
   ( qhcAxiMaster core
   , qWithRotary
   , qhcOutputValid core
@@ -207,5 +204,5 @@ queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStre
   , qhcDebug core
   )
   where
-    core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat params
+    core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal xHat
     qWithRotary = rotaryPositionEncoder <$> qhcResult core <*> cosVec <*> sinVec

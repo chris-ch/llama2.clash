@@ -9,7 +9,6 @@ import LLaMa2.Types.ModelConfig
     ( ModelDimension, HiddenDimension, NumLayers, NumQueryHeads )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
-import qualified Simulation.Parameters as PARAM
 
 import qualified LLaMa2.Memory.AXI.Slave  as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -71,13 +70,12 @@ ffnProjector :: forall dom.
   -> Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
   -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ xHat (RMS-normalised input)
-  -> PARAM.DecoderParameters
   -> ( Master.AxiMasterOut dom
      , Signal dom (Vec ModelDimension FixedPoint) -- ^ W2 output (before residual)
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
+ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   (axiMasterOut, outputResult, validOut, readyOut)
  where
   tag     = "[FFN L" P.++ show layerIdx P.++ "] "
@@ -87,7 +85,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
   -- 3-master AXI sub-arbiter: slot 0 = W1, slot 1 = W3, slot 2 = W2
   -------------------------------------------------------------------------
   (axiMasterOut, perPhaseSlaves) =
-    ARB.axiArbiterWithRouting cycleCounter dramSlaveIn
+    ARB.axiArbiterWithRouting dramSlaveIn
       (w1AxiMaster :> w3AxiMaster :> w2AxiMaster :> Nil)
 
   w1Slave = perPhaseSlaves !! (0 :: Index 3)
@@ -152,7 +150,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
 
   (w1AxiMaster, w1Lo, w1WeightValidRaw, w1WeightReadyRaw) =
     LOADER.w1WeightLoader cycleCounter w1Slave layerIdx
-      w1EffRow w1ReqPulse (pure True) (RCU.rcRowDone w1Compute) params
+      w1EffRow w1ReqPulse (pure True) (RCU.rcRowDone w1Compute)
 
   w1WeightValid = traceEdgeC cycleCounter (tag P.++ "w1wV") w1WeightValidRaw
   w1WeightReady = traceEdgeC cycleCounter (tag P.++ "w1wR") w1WeightReadyRaw
@@ -221,7 +219,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
 
   (w3AxiMaster, w3Lo, w3WeightValidRaw, w3WeightReadyRaw) =
     LOADER.w3WeightLoader cycleCounter w3Slave layerIdx
-      w3EffRow w3ReqPulse (pure True) (RCU.rcRowDone w3Compute) params
+      w3EffRow w3ReqPulse (pure True) (RCU.rcRowDone w3Compute)
 
   w3WeightValid = traceEdgeC cycleCounter (tag P.++ "w3wV") w3WeightValidRaw
   w3WeightReady = traceEdgeC cycleCounter (tag P.++ "w3wR") w3WeightReadyRaw
@@ -288,7 +286,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat params =
 
   (w2AxiMaster, w2Lo, w2WeightValidRaw, w2WeightReadyRaw) =
     LOADER.w2WeightLoader cycleCounter w2Slave layerIdx
-      w2EffRow w2ReqPulse (pure True) (RCU.rcRowDone w2Compute) params
+      w2EffRow w2ReqPulse (pure True) (RCU.rcRowDone w2Compute)
 
   w2WeightValid = traceEdgeC cycleCounter (tag P.++ "w2wV") w2WeightValidRaw
   w2WeightReady = traceEdgeC cycleCounter (tag P.++ "w2wR") w2WeightReadyRaw
