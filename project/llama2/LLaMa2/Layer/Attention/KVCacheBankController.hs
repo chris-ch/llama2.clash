@@ -234,9 +234,10 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     stepEn :: Signal dom Bool
     stepEn = state .==. pure KVBAttendStep
 
-    -- Clear softmax state on first attend row
+    -- Clear softmax state only on the very first attend row
+    -- (when entering KVBAttendK from KVBIdle, not from KVBAttendStep)
     clearSt :: Signal dom Bool
-    clearSt = risingEdge (pure KVBAttendK)
+    clearSt = (state .==. pure KVBAttendK) .&&. (prevState .==. pure KVBIdle)
 
     -- -----------------------------------------------------------------------
     -- Per-query attention heads (GQA: multiple Q heads per KV bank)
