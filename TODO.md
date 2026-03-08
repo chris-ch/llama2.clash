@@ -276,19 +276,17 @@ First batch: 100 units
     ✅ V matrices  — DRAM-backed via AXI; 4 KV heads, 4 masters in arbiter
     ✅ WO matrices — DRAM-backed via 2-level arbiter; 8 Q-heads, 8 masters
     ✅ W1/W2/W3 FFN matrices — DRAM-backed via FFNProjector (3-master sub-arbiter, sequential Gate→Up→Down)
+    ✅ rmsAttF  — Vec ModelDimension FixedPoint per layer (attention RMS norm weights); fetched via fpVecLoader
+    ✅ fRMSFfnF — Vec ModelDimension FixedPoint per layer (FFN RMS norm weights); fetched via fpVecLoader
+    ✅ rmsFinalWeightF — Vec ModelDimension FixedPoint (final output norm weights); fetched via fpVecLoader
+    ✅ rotaryEncoding — cos/sin tables fetched per step via fpVecLoaderDyn; sinDone deadlock fix applied
+    ✅ KV cache — DRAM-backed per-bank; FSM handles write (K then V) then attend (K, V, step) phases
     All AXI masters share a single DRAM slave via a 2-level arbiter tree:
       TransformerLayer top arbiter (2 masters): MHA sub-tree + FFN sub-arbiter (W1, W3, W2).
-    HC parallel path ran alongside DRAM for regression assertions during migration.
+    HC parallel path ran alongside DRAM for regression assertions during migration; removed in Phase 4 cleanup.
     OutputChecker stale-data bug found and fixed (rising-edge capture pattern).
     All 101 tests pass on branch `dram`.
     Fast simulation: MODEL_NANO config (ModelDimension=8, 2 layers) — `make test` runs in ~18s.
-
-### Remaining small parameters (low priority — not synthesis blockers at 260K scale)
-    ⬜ rmsAttF  — Vec 64 FixedPoint per layer (attention RMS norm weights)
-    ⬜ fRMSFfnF — Vec 64 FixedPoint per layer (FFN RMS norm weights)
-    ⬜ rmsFinalWeightF — Vec 64 FixedPoint (final output norm weights)
-    ⬜ rotaryEncoding — Vec SequenceLength (Vec 16 FixedPoint) cos/sin tables
-    These are tiny; can live in small BRAMs or stay as ROM constants.
 
 ## Final Checklist
 

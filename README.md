@@ -81,9 +81,7 @@ make test-full
 ```
 
 The nano model has tiny dimensions (ModelDimension=8, HeadDimension=2, 2 layers) so
-every DRAM fetch is a single beat and simulation finishes quickly. The HC cross-check
-assertions (`P.error` on DRAM/HC mismatch) still run in both modes, so correctness is
-verified regardless of which model is used.
+every DRAM fetch is a single beat and simulation finishes quickly.
 
 To run a single test by name:
 
@@ -179,105 +177,19 @@ cabal exec -- clash --verilog \
 | **Layer Strategy** | One at a time + prefetch | Fits in available memory, hides ROM latency |
 | **KV Cache** | External DDR4 | Too large for on-chip, needs fast random access |
 
-# Few first cycles
+# Simulation timing (260K model, all DRAM-backed)
 
-```text
-Prepending BOS to prompt tokens: [1,320,417]
-✅ model loaded successfully
-✅ Prompt: [1,320,417]
-Simulating 259000 cycles...
-This may take a moment...
+With all weight matrices fetched from DRAM via AXI, each transformer layer takes approximately
+7,000 simulation cycles. A complete token (5 layers + classifier) takes roughly 38,000 cycles.
 
-Loading: ./data/stories260K.bin
-✅ Simulation Model (FPGA wired) Loaded
+Layer-level norm reference values for `--temperature 0 --seed 123 "Hi"` (token 0, BOS):
 
-Cycle | Layer | DataStage      | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | LayerChg | norm(attn) | norm(out) |   Tok    |  SysState   | LayerValid
--------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    0 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     0.0000 |    0.0000 | "\n<s>\n" |     WSReady |       True
-    1 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     0.0000 |    0.0000 | "\n<s>\n" |     WSReady |       True
-   27 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     0.0000 |    0.0000 | "\n<s>\n" | WSStreaming |      False
-  226 |     0 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     3.0385 |    0.0000 | "\n<s>\n" | WSStreaming |      False
- 1587 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.0385 |    8.2357 | "\n<s>\n" |     WSReady |      False
- 1588 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.0385 |    8.2357 | "\n<s>\n" |     WSReady |       True
- 1614 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.0385 |    8.2357 | "\n<s>\n" | WSStreaming |      False
- 1813 |     1 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     9.1765 |    8.2357 | "\n<s>\n" | WSStreaming |      False
- 3174 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     9.1765 |   10.3825 | "\n<s>\n" |     WSReady |      False
- 3175 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     9.1765 |   10.3825 | "\n<s>\n" |     WSReady |       True
- 3201 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     9.1765 |   10.3825 | "\n<s>\n" | WSStreaming |      False
- 3400 |     2 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    11.2580 |   10.3825 | "\n<s>\n" | WSStreaming |      False
- 4761 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    11.2580 |   12.2522 | "\n<s>\n" |     WSReady |      False
- 4762 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    11.2580 |   12.2522 | "\n<s>\n" |     WSReady |       True
- 4788 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    11.2580 |   12.2522 | "\n<s>\n" | WSStreaming |      False
- 4987 |     3 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    14.7369 |   12.2522 | "\n<s>\n" | WSStreaming |      False
- 6348 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    14.7369 |   16.0392 | "\n<s>\n" |     WSReady |      False
- 6349 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    14.7369 |   16.0392 | "\n<s>\n" |     WSReady |       True
- 6375 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    14.7369 |   16.0392 | "\n<s>\n" | WSStreaming |      False
- 6574 |     4 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    16.4430 |   16.0392 | "\n<s>\n" | WSStreaming |      False
- 7935 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    16.4430 |   18.7545 | "\n<s>\n" |     WSReady |      False
- 9472 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |    16.4430 |   18.7545 | "\n<s>\n" |     WSReady |      False
- 9473 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    16.4430 |   18.7545 |     " H" |     WSReady |       True
- 9499 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    16.4430 |   18.7545 |     " H" | WSStreaming |      False
- 9699 |     0 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     2.7743 |   18.7545 |     " H" | WSStreaming |      False
-10000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.7743 |   18.7545 |     " H" | WSStreaming |      False
-11060 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.7743 |    3.8518 |     " H" |     WSReady |      False
-11061 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.7743 |    3.8518 |     " H" |     WSReady |       True
-11087 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.7743 |    3.8518 |     " H" | WSStreaming |      False
-11287 |     1 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     4.5273 |    3.8518 |     " H" | WSStreaming |      False
-12648 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     4.5273 |    5.3427 |     " H" |     WSReady |      False
-12649 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     4.5273 |    5.3427 |     " H" |     WSReady |       True
-12675 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     4.5273 |    5.3427 |     " H" | WSStreaming |      False
-12875 |     2 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     6.4987 |    5.3427 |     " H" | WSStreaming |      False
-14236 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     6.4987 |    6.8089 |     " H" |     WSReady |      False
-14237 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     6.4987 |    6.8089 |     " H" |     WSReady |       True
-14263 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     6.4987 |    6.8089 |     " H" | WSStreaming |      False
-14463 |     3 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     8.5103 |    6.8089 |     " H" | WSStreaming |      False
-15824 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     8.5103 |    9.4203 |     " H" |     WSReady |      False
-15825 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     8.5103 |    9.4203 |     " H" |     WSReady |       True
-15851 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     8.5103 |    9.4203 |     " H" | WSStreaming |      False
-16051 |     4 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     9.9178 |    9.4203 |     " H" | WSStreaming |      False
-17412 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     9.9178 |   13.6559 |     " H" |     WSReady |      False
-18949 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |     9.9178 |   13.6559 |     " H" |     WSReady |      False
-18950 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     9.9178 |   13.6559 |      "i" |     WSReady |       True
-18976 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     9.9178 |   13.6559 |      "i" | WSStreaming |      False
-19177 |     0 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     2.7815 |   13.6559 |      "i" | WSStreaming |      False
-20000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.7815 |   13.6559 |      "i" |     WSReady |      False
-20538 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.7815 |    2.8229 |      "i" |     WSReady |      False
-20539 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.7815 |    2.8229 |      "i" |     WSReady |       True
-20565 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.7815 |    2.8229 |      "i" | WSStreaming |      False
-20766 |     1 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     3.2277 |    2.8229 |      "i" | WSStreaming |      False
-22127 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.2277 |    4.6433 |      "i" |     WSReady |      False
-22128 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.2277 |    4.6433 |      "i" |     WSReady |       True
-22154 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.2277 |    4.6433 |      "i" | WSStreaming |      False
-22355 |     2 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     5.5058 |    4.6433 |      "i" | WSStreaming |      False
-23716 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     5.5058 |    6.1808 |      "i" |     WSReady |      False
-23717 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     5.5058 |    6.1808 |      "i" |     WSReady |       True
-23743 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     5.5058 |    6.1808 |      "i" | WSStreaming |      False
-23944 |     3 | ProcessingLayer |   False |   False |     True |   False |    False |    False |     7.5363 |    6.1808 |      "i" | WSStreaming |      False
-25305 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     7.5363 |    9.7465 |      "i" |     WSReady |      False
-25306 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     7.5363 |    9.7465 |      "i" |     WSReady |       True
-25332 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     7.5363 |    9.7465 |      "i" | WSStreaming |      False
-25533 |     4 | ProcessingLayer |   False |   False |     True |   False |    False |    False |    10.3030 |    9.7465 |      "i" | WSStreaming |      False
-26894 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    10.3030 |   12.8257 |      "i" |     WSReady |      False
-28431 |     4 | Classifier     |    True |   False |    False |   False |    False |    False |    10.3030 |   12.8257 |      "i" |     WSReady |      False
-28432 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |     True |    10.3030 |   12.8257 |      "b" |     WSReady |       True
-28458 |     0 | ProcessingLayer |   False |    True |    False |   False |     True |    False |    10.3030 |   12.8257 |      "b" | WSStreaming |      False
-28660 |     0 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     2.8134 |   12.8257 |      "b" | WSStreaming |      False
-30000 |     0 | ProcessingLayer |   False |   False |    False |   False |    False |    False |     2.8134 |   12.8257 |      "b" |     WSReady |      False
-30021 |     0 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     2.8134 |    2.9711 |      "b" |     WSReady |      False
-30022 |     1 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     2.8134 |    2.9711 |      "b" |     WSReady |       True
-30048 |     1 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     2.8134 |    2.9711 |      "b" | WSStreaming |      False
-30250 |     1 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     3.4127 |    2.9711 |      "b" | WSStreaming |      False
-31611 |     1 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     3.4127 |    4.1652 |      "b" |     WSReady |      False
-31612 |     2 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     3.4127 |    4.1652 |      "b" |     WSReady |       True
-31638 |     2 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     3.4127 |    4.1652 |      "b" | WSStreaming |      False
-31840 |     2 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     4.9870 |    4.1652 |      "b" | WSStreaming |      False
-33201 |     2 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     4.9870 |    6.6421 |      "b" |     WSReady |      False
-33202 |     3 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     4.9870 |    6.6421 |      "b" |     WSReady |       True
-33228 |     3 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     4.9870 |    6.6421 |      "b" | WSStreaming |      False
-33430 |     3 | ProcessingLayer |   False |   False |     True |   False |     True |    False |     8.1826 |    6.6421 |      "b" | WSStreaming |      False
-34791 |     3 | ProcessingLayer |   False |   False |    False |    True |    False |    False |     8.1826 |    9.7846 |      "b" |     WSReady |      False
-34792 |     4 | ProcessingLayer |   False |   False |    False |   False |    False |     True |     8.1826 |    9.7846 |      "b" |     WSReady |       True
-34818 |     4 | ProcessingLayer |   False |    True |    False |   False |     True |    False |     8.1826 |    9.7846 |      "b" | WSStreaming |      False
-35020 |     4 | ProcessingLayer |   False |   False |     True |   False |     True |    False |    10.1876 |    9.7846 |      "b" | WSStreaming |      False
-36381 |     4 | ProcessingLayer |   False |   False |    False |    True |    False |    False |    10.1876 |   11.5531 |      "b" |     WSReady |      False
-```
+| Layer | norm(attn) | norm(output) |
+|-------|-----------|--------------|
+| 0     | 3.0385    | 8.2357       |
+| 1     | 9.1765    | 10.3825      |
+| 2     | 11.2580   | 12.2522      |
+| 3     | 14.7369   | 16.0392      |
+| 4     | 16.4430   | 18.7545      |
+
+Generated tokens: " H", "i", "b" … (matching gold standard " Hibo and Anna…" output).
