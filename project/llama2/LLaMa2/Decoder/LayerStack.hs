@@ -1,112 +1,224 @@
 module LLaMa2.Decoder.LayerStack (
-  processActiveLayer, prepareLayerInput, LayerOutput(..)
+  activeLayerProcessor, layerInputStage, LayerOutputs(..)
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState)
-import LLaMa2.Types.ModelConfig (NumLayers, ModelDimension)
+import LLaMa2.Types.LayerData (LayerData(..))
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, SequenceLength, ModelDimension, HeadDimension)
 import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerLayer)
-import LLaMa2.Numeric.Types (FixedPoint)
-import qualified Simulation.Parameters as PARAM (TransformerLayerComponent)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo (..))
+import LLaMa2.Numeric.Operations (MultiplierState)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
-data LayerOutput dom = LayerOutput
-  { outputData   :: Signal dom LayerData
-  , writeDone    :: Signal dom Bool
-  , attnDone     :: Signal dom Bool
-  , qkvDone      :: Signal dom Bool
-  , ffnDone      :: Signal dom Bool
+data LayerOutputs dom = LayerOutputs
+  { axiMasterOuts    :: Vec NumLayers (Master.AxiMasterOut dom)
+  , kvAxiMasterOuts  :: Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
+  , qkvOutput        :: Signal dom LayerData
+  , attnOutput       :: Signal dom LayerData
+  , ffnOutput        :: Signal dom LayerData
+  , writeDone        :: Signal dom Bool
+  , attnDone         :: Signal dom Bool
+  , qkvDone          :: Signal dom Bool
+  , ffnDone          :: Signal dom Bool
+  , qkvReady         :: Signal dom Bool
+  , dbgRowIndex      :: Signal dom (Index HeadDimension)
+  , dbgState         :: Signal dom MultiplierState
+  , dbgFirstMant     :: Signal dom Mantissa
+  , dbgRowResult     :: Signal dom FixedPoint
+  , dbgRowDone       :: Signal dom Bool
+  , dbgFetchValid    :: Signal dom Bool
+  , dbgFetchedWord   :: Signal dom (BitVector 512)
   }
 
-processActiveLayer :: forall dom.
-  HiddenClockResetEnable dom
-  => Signal dom ProcessingState
+activeLayerProcessor :: forall dom.
+  ( HiddenClockResetEnable dom
+  , KnownNat (WordsPerFPVec HeadDimension)
+  )
+  =>  Signal dom (Unsigned 32)
+  -> Slave.AxiSlaveIn dom                                           -- weights DRAM interface
+  -> Vec NumLayers (Vec NumKeyValueHeads (Slave.AxiSlaveIn dom))   -- KV cache DRAM per layer
   -> Signal dom (Index NumLayers)
+  -> Signal dom (Index SequenceLength)
   -> Signal dom LayerData
-  -> Signal dom QKVProjectionWeightBuffer
   -> Signal dom Bool
-  -> Vec NumLayers PARAM.TransformerLayerComponent
-  -> Signal dom Bool  -- enableQKV (global)
-  -> Signal dom Bool  -- enableWriteKV (global)
-  -> Signal dom Bool  -- enableAttend (global)
-  -> Signal dom Bool  -- enableFFN (global)
-  -> Signal dom Bool  -- enableClassifier (global)
-  -> LayerOutput dom
-processActiveLayer processingState activeLayerIdx inputData weightBuffer useRAM layers
-                   enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
-  LayerOutput
-    { outputData = outputLayerData
-    , writeDone  = selectedWriteDone
-    , attnDone   = selectedAttnDone
-    , qkvDone    = selectedQkvDone
-    , ffnDone    = selectedFfnDone
+  -> LayerOutputs dom
+activeLayerProcessor cycleCounter dramSlaveIn kvDramSlavesPerLayer activeLayerIdx seqPos inputData inputValid =
+  LayerOutputs
+    { axiMasterOuts    = layerAxiMasters
+    , kvAxiMasterOuts  = layerKvAxiMasters
+    , qkvOutput        = selectedQkvOutput
+    , attnOutput       = selectedAttnOutput
+    , ffnOutput        = selectedFfnOutput
+    , writeDone        = selectedWriteDone
+    , attnDone         = selectedAttnDone
+    , qkvDone          = selectedQkvDone
+    , ffnDone          = selectedFfnDone
+    , qkvReady         = selectedQkvReady
+    , dbgRowIndex      = selectedDbgRowIndex
+    , dbgState         = selectedDbgState
+    , dbgFirstMant     = selectedDbgFirstMant
+    , dbgRowResult     = selectedDbgRowResult
+    , dbgRowDone       = selectedDbgRowDone
+    , dbgFetchValid    = selectedDbgFetchValid
+    , dbgFetchedWord   = selectedDbgFetchedWord
     }
   where
-    -- Create outputs for all layers
-    layerOutputs = imap (createLayerOutput inputData) layers
-    
-    -- Select outputs from the active layer
-    (outputLayerData, selectedWriteDone, selectedAttnDone, selectedQkvDone, selectedFfnDone) =
-      unbundle $ selectActiveLayer activeLayerIdx layerOutputs
+    -- Run all layers in parallel
+    layerOutputs :: Vec NumLayers (Master.AxiMasterOut dom, Vec NumKeyValueHeads (Master.AxiMasterOut dom),
+      Signal dom LayerData, Signal dom LayerData, Signal dom LayerData,
+      Signal dom Bool, Signal dom Bool,
+      Signal dom Bool, Signal dom Bool, Signal dom Bool, QHeadDebugInfo dom)
+    layerOutputs = map (layerPipeline inputData) indicesI
 
-    createLayerOutput :: Signal dom LayerData
-                      -> Index NumLayers
-                      -> PARAM.TransformerLayerComponent
-                      -> ( Signal dom LayerData
-                         , Signal dom Bool
-                         , Signal dom Bool
-                         , Signal dom Bool
-                         , Signal dom Bool
-                         )
-    createLayerOutput inputData' layerIdx layerParams =
-      ( outputData'
-      , writeDone'
-      , attnDone'
-      , qkvDone'
-      , ffnDone'
-      )
+    -- Extract AXI masters and other outputs
+    layerAxiMasters :: Vec NumLayers (Master.AxiMasterOut dom)
+    layerAxiMasters = map (\(axi, _, _, _, _, _, _, _, _, _, _) -> axi) layerOutputs
+
+    layerKvAxiMasters :: Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
+    layerKvAxiMasters = map (\(_, kv, _, _, _, _, _, _, _, _, _) -> kv) layerOutputs
+
+    -- Extract vectors of each signal type
+    qkvOutputs :: Vec NumLayers (Signal dom LayerData)
+    qkvOutputs = map (\(_, _, qkv, _, _, _, _, _, _, _, _) -> qkv) layerOutputs
+
+    attnOutputs :: Vec NumLayers (Signal dom LayerData)
+    attnOutputs = map (\(_, _, _, attn, _, _, _, _, _, _, _) -> attn) layerOutputs
+
+    ffnOutputs :: Vec NumLayers (Signal dom LayerData)
+    ffnOutputs = map (\(_, _, _, _, ffn, _, _, _, _, _, _) -> ffn) layerOutputs
+
+    qkvDones :: Vec NumLayers (Signal dom Bool)
+    qkvDones = map (\(_, _, _, _, _, qkvD, _, _, _, _, _) -> qkvD) layerOutputs
+
+    writeDones :: Vec NumLayers (Signal dom Bool)
+    writeDones = map (\(_, _, _, _, _, _, writeD, _, _, _, _) -> writeD) layerOutputs
+
+    attnDones :: Vec NumLayers (Signal dom Bool)
+    attnDones = map (\(_, _, _, _, _, _, _, attnD, _, _, _) -> attnD) layerOutputs
+
+    ffnDones :: Vec NumLayers (Signal dom Bool)
+    ffnDones = map (\(_, _, _, _, _, _, _, _, ffnD, _, _) -> ffnD) layerOutputs
+
+    qkvReadys :: Vec NumLayers (Signal dom Bool)
+    qkvReadys = map (\(_, _, _, _, _, _, _, _, _, qkvR, _) -> qkvR) layerOutputs
+
+    dbgInfos :: Vec NumLayers (QHeadDebugInfo dom)
+    dbgInfos = map (\(_, _, _, _, _, _, _, _, _, _, dbg) -> dbg) layerOutputs
+
+    -- Extract debug info fields into separate vectors
+    dbgRowIndexes :: Vec NumLayers (Signal dom (Index HeadDimension))
+    dbgRowIndexes = map qhRowIndex dbgInfos
+
+    dbgStates :: Vec NumLayers (Signal dom MultiplierState)
+    dbgStates = map qhState dbgInfos
+
+    dbgFirstMants :: Vec NumLayers (Signal dom Mantissa)
+    dbgFirstMants = map qhFirstMant dbgInfos
+
+    dbgRowResults :: Vec NumLayers (Signal dom FixedPoint)
+    dbgRowResults = map qhRowResult dbgInfos
+
+    dbgRowDones :: Vec NumLayers (Signal dom Bool)
+    dbgRowDones = map qhRowDone dbgInfos
+
+    dbgFetchValids :: Vec NumLayers (Signal dom Bool)
+    dbgFetchValids = map qhFetchValid dbgInfos
+
+    dbgFetchedWords :: Vec NumLayers (Signal dom (BitVector 512))
+    dbgFetchedWords = map qhFetchedWord dbgInfos
+
+    -- Select outputs for the active layer
+    selectedQkvOutput :: Signal dom LayerData
+    selectedQkvOutput = selectActive activeLayerIdx qkvOutputs
+
+    selectedAttnOutput :: Signal dom LayerData
+    selectedAttnOutput = selectActive activeLayerIdx attnOutputs
+
+    selectedFfnOutput :: Signal dom LayerData
+    selectedFfnOutput = selectActive activeLayerIdx ffnOutputs
+
+    selectedQkvDone :: Signal dom Bool
+    selectedQkvDone = selectActive activeLayerIdx qkvDones
+
+    selectedWriteDone :: Signal dom Bool
+    selectedWriteDone = selectActive activeLayerIdx writeDones
+
+    selectedAttnDone :: Signal dom Bool
+    selectedAttnDone = selectActive activeLayerIdx attnDones
+
+    selectedFfnDone :: Signal dom Bool
+    selectedFfnDone = selectActive activeLayerIdx ffnDones
+
+    selectedQkvReady :: Signal dom Bool
+    selectedQkvReady = selectActive activeLayerIdx qkvReadys
+
+    -- Select debug signals for the active layer
+    selectedDbgRowIndex :: Signal dom (Index HeadDimension)
+    selectedDbgRowIndex = selectActive activeLayerIdx dbgRowIndexes
+
+    selectedDbgState :: Signal dom MultiplierState
+    selectedDbgState = selectActive activeLayerIdx dbgStates
+
+    selectedDbgFirstMant :: Signal dom Mantissa
+    selectedDbgFirstMant = selectActive activeLayerIdx dbgFirstMants
+
+    selectedDbgRowResult :: Signal dom FixedPoint
+    selectedDbgRowResult = selectActive activeLayerIdx dbgRowResults
+
+    selectedDbgRowDone :: Signal dom Bool
+    selectedDbgRowDone = selectActive activeLayerIdx dbgRowDones
+
+    selectedDbgFetchValid :: Signal dom Bool
+    selectedDbgFetchValid = selectActive activeLayerIdx dbgFetchValids
+
+    selectedDbgFetchedWord :: Signal dom (BitVector 512)
+    selectedDbgFetchedWord = selectActive activeLayerIdx dbgFetchedWords
+
+    layerPipeline :: Signal dom LayerData
+                  -> Index NumLayers
+                  -> ( Master.AxiMasterOut dom
+                     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
+                     , Signal dom LayerData
+                     , Signal dom LayerData
+                     , Signal dom LayerData
+                     , Signal dom Bool
+                     , Signal dom Bool
+                     , Signal dom Bool
+                     , Signal dom Bool
+                     , Signal dom Bool
+                     , QHeadDebugInfo dom
+                     )
+    layerPipeline inputData' layerIdx =
+      ( axiMaster, kvAxiMasters, qkvData, attnData, ffnData
+      , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo )
       where
-        -- NEW: Gate enables for this specific layer
         isThisLayer = activeLayerIdx .==. pure layerIdx
-        
-        enableQKVThisLayer = enableQKV .&&. isThisLayer
-        enableWriteKVThisLayer = enableWriteKV .&&. isThisLayer
-        enableAttendThisLayer = enableAttend .&&. isThisLayer
-        enableFFNThisLayer = enableFFN .&&. isThisLayer
-        
-        ( outputData', writeDone', attnDone', qkvDone', ffnDone' ) =
+        validIn' = inputValid .&&. isThisLayer
+
+        kvDramSlaves :: Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
+        kvDramSlaves = kvDramSlavesPerLayer !! layerIdx
+
+        (axiMaster, kvAxiMasters, qProj, kProj, vProj, attnOut, ffnOut
+          , qkvDone', writeDone', attnDone', ffnDone', qkvReady, qHeadDebugInfo, _, _, _) =
           TransformerLayer.transformerLayer
-            layerParams
-            layerIdx
-            processingState
-            inputData'
-            weightBuffer
-            useRAM
-            enableQKVThisLayer       -- Now layer-specific!
-            enableWriteKVThisLayer
-            enableAttendThisLayer
-            enableFFNThisLayer
-            enableClassifier
+            cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos inputData' validIn'
 
-    selectActiveLayer :: Signal dom (Index NumLayers)
-                      -> Vec NumLayers ( Signal dom LayerData
-                                       , Signal dom Bool
-                                       , Signal dom Bool
-                                       , Signal dom Bool
-                                       , Signal dom Bool
-                                       )
-                      -> Signal dom ( LayerData
-                                    , Bool
-                                    , Bool
-                                    , Bool
-                                    , Bool
-                                    )
-    selectActiveLayer idx outputs = (!!) <$> traverse bundle outputs <*> idx
+        qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
+                      <$> inputData' <*> qProj <*> kProj <*> vProj
+        attnData = (\d attn -> d { attentionOutput = attn }) <$> inputData' <*> attnOut
+        ffnData  = (\d ffn -> d { feedForwardOutput = ffn }) <$> inputData' <*> ffnOut
 
-prepareLayerInput :: Index NumLayers
+    -- Helper function to select from a vector of signals based on dynamic index
+    selectActive :: Signal dom (Index NumLayers) -> Vec NumLayers (Signal dom a) -> Signal dom a
+    selectActive idx vec = (!!) <$> sequenceA vec <*> idx
+
+layerInputStage :: Index NumLayers
                   -> LayerData
                   -> Vec ModelDimension FixedPoint
                   -> LayerData
-prepareLayerInput idx currentData embedding
+layerInputStage idx currentData embedding
   | idx == 0  = currentData { inputVector = embedding }
   | otherwise = currentData { inputVector = feedForwardOutput currentData }

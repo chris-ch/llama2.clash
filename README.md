@@ -63,10 +63,34 @@ cabal run llama2 --flag model-260k -- --temperature 0 --seed 123 "Hi"
  Hibo and Anna, Anna, Anna, came to visit her. She saw a big box and asked Anna. [...]
 ```
 
-## Running a single test
+## Testing
+
+The test suite supports two model configurations:
+
+| Command | Model | Time | When to use |
+|---------|-------|------|-------------|
+| `make test` | nano (ModelDim=8) | ~18 s | Day-to-day development |
+| `make test-full` | 260K | ~10 min | Pre-merge / numeric validation |
 
 ```shell
-cabal test --test-show-details=direct --test-options='--match "Layer 0 output norm"'
+# Fast tests (nano model — all unit + integration tests)
+make test
+
+# Full numeric validation (260K model — checks exact layer norms vs Python reference)
+make test-full
+```
+
+The nano model has tiny dimensions (ModelDimension=8, HeadDimension=2, 2 layers) so
+every DRAM fetch is a single beat and simulation finishes quickly.
+
+To run a single test by name:
+
+```shell
+make test ARGS='--test-options="--match \"Layer 0 output norm\""'
+# or directly:
+cabal test llama2-test -f model-nano -f -model-260k \
+  --test-show-details=direct \
+  --test-options='--match "Layer 0 output norm"'
 ```
 
 ## C Version
@@ -117,7 +141,7 @@ cabal exec -- clash --verilog \
   -fclash-inline-limit=20 \
   -fclash-spec-limit=10 \
   -fclash-clear \
-  project/llama2/LLaMa2/Top.hs
+  project/llama2/LLaMa2/Decoder/Decoder.hs
 ```
 
 ## Handshaking conventions
@@ -125,8 +149,8 @@ cabal exec -- clash --verilog \
 | Signal        | Direction | Purpose                        | Behavior                                                                                                 |
 | ------------- | --------- | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | **Ready Out** | Output    | Indicates consumer readiness   | Asserted (high) when the consumer can accept/process data; deasserted when busy (e.g., stalled or full). |
-| **Valid Out** | Output    | Indicates valid output data    | Asserted (high) for one clock cycle (pulse) when new data is available; deasserted otherwise.            |
-| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data (keeps `validOut` high) only when `readyIn` is high; holds data if low.          |
+| **Valid Out** | Output    | Indicates valid output data    | Asserted (high, level) when new data is available; held high until the transaction completes (i.e., until `readyIn` is also high). |
+| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data only when `readyIn` is high; holds `validOut` and data stable if `readyIn` is low. |
 | **Valid In**  | Input     | Indicates valid input data     | Consumer processes `dataIn` only when `validIn` is high and it asserts `readyOut`.                       |
 
 ## SUMMARY OF TOKEN FLOW
@@ -146,96 +170,26 @@ cabal exec -- clash --verilog \
 
 | Aspect | Choice | Rationale |
 |--------|--------|-----------|
-| **Weight Storage** | NVMe SSD (ROM) | Non-volatile, reprogrammable, 10× cheaper than RAM |
+| **Weight Storage** | eMMC 5.1 | Non-volatile, reprogrammable, high-density embedded storage |
 | **Weight Format** | I8E (8-bit + 7-bit exp) | 4× compression vs FixedPoint, minimal quality loss |
 | **Compute Format** | FixedPoint (SFixed 12 20) | Native FPGA arithmetic, good precision |
 | **Working Memory** | DDR4 DRAM | Fast random access for KV cache, affordable |
 | **Layer Strategy** | One at a time + prefetch | Fits in available memory, hides ROM latency |
 | **KV Cache** | External DDR4 | Too large for on-chip, needs fast random access |
 
-# Few first cycles
+# Simulation timing (260K model, all DRAM-backed)
 
-```text
-Prepending BOS to prompt tokens: [1,320,417]
-✅ model loaded successfully
-✅ Prompt: [1,320,417]
-Simulating 259000 cycles...
-This may take a moment...
+With all weight matrices fetched from DRAM via AXI, each transformer layer takes approximately
+7,000 simulation cycles. A complete token (5 layers + classifier) takes roughly 38,000 cycles.
 
-Cycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | WgtSmpl | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid
--------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Loading: ./data/stories260K.bin
-✅ Simulation Model (FPGA wired) Loaded
-    0 |     0 | Stage1_ProjectQKV  |   False |    False |     True |    False |    False |    False |       0 |       0.0 | "\n<s>\n" |     WSReady |     False |     False |     False
-    1 |     0 | Stage1_ProjectQKV  |   False |    False |     True |    False |    False |    False |       0 |       0.0 | "\n<s>\n" |     WSReady |     False |     False |     False
-   27 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 |       0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
-   28 |     0 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 |       0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
-  227 |     0 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |       0 |       0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
-  423 |     0 | Stage4_FeedForward |   False |    False |     True |    False |     True |    False |       0 |       0.0 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 1588 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 |  8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
- 1589 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 |  8.235682 | "\n<s>\n" |     WSReady |     False |     False |     False
- 1615 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 |  8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 1616 |     1 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 |  8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 1815 |     1 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |       0 |  8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 2011 |     1 | Stage4_FeedForward |   False |    False |     True |    False |     True |    False |       0 |  8.235682 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3176 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 | 10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
- 3177 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 | 10.382461 | "\n<s>\n" |     WSReady |     False |     False |     False
- 3203 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3204 |     2 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3403 |     2 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |       0 | 10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 3599 |     2 | Stage4_FeedForward |   False |    False |     True |    False |     True |    False |       0 | 10.382461 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 4764 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 | 12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
- 4765 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 | 12.252162 | "\n<s>\n" |     WSReady |     False |     False |     False
- 4791 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 4792 |     3 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 4991 |     3 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |       0 | 12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 5187 |     3 | Stage4_FeedForward |   False |    False |     True |    False |     True |    False |       0 | 12.252162 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6352 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |     -42 | 16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
- 6353 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |     -42 | 16.039158 | "\n<s>\n" |     WSReady |     False |     False |     False
- 6379 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6380 |     4 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6579 |     4 | Stage3_Attend      |   False |    False |     True |    False |     True |    False |       0 | 16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 6775 |     4 | Stage4_FeedForward |   False |    False |     True |    False |     True |    False |       0 | 16.039158 | "\n<s>\n" | WSStreaming |     False |     False |     False
- 7940 |     4 | Stage4_FeedForward |    True |    False |    False |     True |    False |    False |       0 | 18.754534 | "\n<s>\n" |     WSReady |     False |     False |     False
- 7941 |     0 | Stage5_Classifier  |   False |    False |    False |    False |    False |     True |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
- 9505 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
- 9506 |     0 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
- 9706 |     0 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
- 9902 |     0 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
-10000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |    False |    False |       0 | 18.754534 |     " H" |     WSReady |     False |     False |     False
-11067 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 | 3.8518157 |     " H" |     WSReady |     False |     False |     False
-11068 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 | 3.8518157 |     " H" |     WSReady |     False |     False |     False
-11094 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 3.8518157 |     " H" | WSStreaming |     False |     False |     False
-11095 |     1 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 3.8518157 |     " H" | WSStreaming |     False |     False |     False
-11295 |     1 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 | 3.8518157 |     " H" | WSStreaming |     False |     False |     False
-11491 |     1 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 | 3.8518157 |     " H" | WSStreaming |     False |     False |     False
-12656 |     1 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 | 5.3426757 |     " H" |     WSReady |     False |     False |     False
-12657 |     2 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 | 5.3426757 |     " H" |     WSReady |     False |     False |     False
-12683 |     2 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 5.3426757 |     " H" | WSStreaming |     False |     False |     False
-12684 |     2 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 5.3426757 |     " H" | WSStreaming |     False |     False |     False
-12884 |     2 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 | 5.3426757 |     " H" | WSStreaming |     False |     False |     False
-13080 |     2 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 | 5.3426757 |     " H" | WSStreaming |     False |     False |     False
-14245 |     2 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 | 6.8089294 |     " H" |     WSReady |     False |     False |     False
-14246 |     3 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 | 6.8089294 |     " H" |     WSReady |     False |     False |     False
-14272 |     3 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 | 6.8089294 |     " H" | WSStreaming |     False |     False |     False
-14273 |     3 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 6.8089294 |     " H" | WSStreaming |     False |     False |     False
-14473 |     3 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 | 6.8089294 |     " H" | WSStreaming |     False |     False |     False
-14669 |     3 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 | 6.8089294 |     " H" | WSStreaming |     False |     False |     False
-15834 |     3 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       8 |   9.42028 |     " H" |     WSReady |     False |     False |     False
-15835 |     4 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       8 |   9.42028 |     " H" |     WSReady |     False |     False |     False
-15861 |     4 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 |   9.42028 |     " H" | WSStreaming |     False |     False |     False
-15862 |     4 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 |   9.42028 |     " H" | WSStreaming |     False |     False |     False
-16062 |     4 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 |   9.42028 |     " H" | WSStreaming |     False |     False |     False
-16258 |     4 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 |   9.42028 |     " H" | WSStreaming |     False |     False |     False
-17423 |     4 | Stage4_FeedForward |    True |    False |    False |     True |    False |    False |       0 | 13.655915 |     " H" |     WSReady |     False |     False |     False
-17424 |     0 | Stage5_Classifier  |   False |    False |    False |    False |    False |     True |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-18988 |     0 | Stage1_ProjectQKV  |   False |     True |    False |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-18989 |     0 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-19190 |     0 | Stage3_Attend      |   False |    False |     True |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-19386 |     0 | Stage4_FeedForward |   False |    False |     True |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-20000 |     0 | Stage4_FeedForward |   False |    False |    False |    False |    False |    False |       0 | 13.655915 |      "i" |     WSReady |     False |     False |     False
-20551 |     0 | Stage4_FeedForward |   False |    False |    False |     True |    False |    False |       0 |  2.822887 |      "i" |     WSReady |     False |     False |     False
-20552 |     1 | Stage1_ProjectQKV  |   False |    False |    False |    False |    False |     True |       0 |  2.822887 |      "i" |     WSReady |     False |     False |     False
-20578 |     1 | Stage1_ProjectQKV  |   False |     True |    False |    False |     True |    False |       0 |  2.822887 |      "i" | WSStreaming |     False |     False |     False
-20579 |     1 | Stage2_WriteKV     |   False |     True |    False |    False |    False |    False |       0 |  2.822887 |      "i" | WSStreaming |     False |     False |     False
-```
+Layer-level norm reference values for `--temperature 0 --seed 123 "Hi"` (token 0, BOS):
+
+| Layer | norm(attn) | norm(output) |
+|-------|-----------|--------------|
+| 0     | 3.0385    | 8.2357       |
+| 1     | 9.1765    | 10.3825      |
+| 2     | 11.2580   | 12.2522      |
+| 3     | 14.7369   | 16.0392      |
+| 4     | 16.4430   | 18.7545      |
+
+Generated tokens: " H", "i", "b" … (matching gold standard " Hibo and Anna…" output).

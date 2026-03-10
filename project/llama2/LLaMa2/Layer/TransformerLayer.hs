@@ -1,3 +1,4 @@
+-- File: LLaMa2/Layer/TransformerLayer.hs
 module LLaMa2.Layer.TransformerLayer
   ( transformerLayer )
 where
@@ -6,159 +7,136 @@ import Clash.Prelude
 import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData
-  ( CycleStage (..),
-    LayerData (..),
-    ProcessingState (..),
-  )
+import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Types.ModelConfig
-  ( HeadDimension,
-    ModelDimension,
-    NumKeyValueHeads,
-    NumLayers,
-    NumQueryHeads,
-  )
-import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ, TransformerLayerComponent (..))
+  ( HeadDimension, ModelDimension, NumKeyValueHeads, NumQueryHeads, SequenceLength, NumLayers)
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..))
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Arbiter as ARB
+import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
 ffnController ::
   (HiddenClockResetEnable dom) =>
+  Signal dom (Unsigned 32) ->
+  Slave.AxiSlaveIn dom ->
+  Index NumLayers ->
   Signal dom Bool ->
   Signal dom Bool ->
   Signal dom (Vec ModelDimension FixedPoint) ->
-  PARAM.FeedForwardNetworkComponentQ ->
-  ( Signal dom (Vec ModelDimension FixedPoint),
-    Signal dom Bool,
-    Signal dom Bool
+  ( Master.AxiMasterOut dom
+  , Signal dom (Vec ModelDimension FixedPoint)
+  , Signal dom Bool
+  , Signal dom Bool
   )
-ffnController inValid outReady inputVec ffnQ = (result, validOut, inReady)
+ffnController cycleCounter dramSlaveIn layerIdx inValid outReady inputVec =
+  (ffnAxiMaster, result, validOut, inReady)
   where
     (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
-    (result, ffnSeqValid, ready) =
-      FeedForwardNetwork.feedForwardStage enable outReady ffnQ inputVec
+    (ffnAxiMaster, result, ffnSeqValid, _readyOut) =
+      FeedForwardNetwork.feedForwardStage
+        cycleCounter dramSlaveIn layerIdx enable outReady inputVec
 
 transformerLayer ::
   forall dom.
-  (HiddenClockResetEnable dom)
-   => PARAM.TransformerLayerComponent
+  ( HiddenClockResetEnable dom
+  , KnownNat (WordsPerFPVec HeadDimension)
+  )
+   => Signal dom (Unsigned 32)
+   -> Slave.AxiSlaveIn dom                              -- ^ weights DRAM
+   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)       -- ^ KV cache DRAM (one per KV head)
    -> Index NumLayers
-   -> Signal dom ProcessingState
+   -> Signal dom (Index SequenceLength)
    -> Signal dom LayerData
-   -> Signal dom QKVProjectionWeightBuffer
    -> Signal dom Bool
-   -> Signal dom Bool  -- enableQKV (layer-specific)
-   -> Signal dom Bool  -- enableWriteKV (layer-specific)
-   -> Signal dom Bool  -- enableAttend (layer-specific)
-   -> Signal dom Bool  -- enableFFN (layer-specific)
-   -> Signal dom Bool  -- enableClassifier (layer-specific)
-   -> ( Signal dom LayerData,
-        Signal dom Bool,
-        Signal dom Bool,
-        Signal dom Bool,
-        Signal dom Bool
+   -> ( Master.AxiMasterOut dom                         -- ^ weights AXI master
+      , Vec NumKeyValueHeads (Master.AxiMasterOut dom)  -- ^ KV cache AXI masters
+      , Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
+      , Signal dom (Vec ModelDimension FixedPoint)
+      , Signal dom (Vec ModelDimension FixedPoint)
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
+      , QHeadDebugInfo dom
+      , Signal dom Bool
+      , Signal dom Bool
+      , Signal dom Bool
       )
-transformerLayer layer layerIndex processingState layerData weightBuffer useRAM
-                 enableQKV enableWriteKV enableAttend enableFFN enableClassifier =
-  ( nextLayerData,
-    writeDone,
-    attentionDone,
-    qkvDone,
-    ffnValidOut
+transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData validIn =
+  ( axiMasterOut
+  , kvAxiMasters
+  , qProj
+  , kProj
+  , vProj
+  , xAfterAttn
+  , ffnOutput
+  , qkvDone
+  , writeDone
+  , attentionDone
+  , ffnDone
+  , qkvReady
+  , debugInfo
+  , ffnArmed
+  , ffnStageStart
+  , ffnValidIn
   )
   where
-    mha = PARAM.multiHeadAttention layer
-    ffn = PARAM.feedforwardNetwork layer
+    -- Feed-forward stage busy flag
+    layerBusy = register False nextLayerBusy
+      where
+        nextLayerBusy = mux validInGated (pure True)
+                       (mux ffnDone (pure False) layerBusy)
 
-    seqPos = sequencePosition <$> processingState
+    validInGated = validIn .&&. (not <$> layerBusy)
 
-    -- Enables are already layer-specific from LayerStack
-    (attentionDone, xAfterAttn, qProj, kProj, vProj, qkvInReady, writeDone, qkvDone) =
-      multiHeadAttentionStage mha seqPos layerData weightBuffer useRAM
-                              enableQKV enableWriteKV enableAttend 
+    -- MHA uses its own weights DRAM slave (from 2-master arbiter)
+    (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
+      multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx seqPos layerData validInGated
 
-    layerDataAfterAttention :: Signal dom LayerData
-    layerDataAfterAttention =
-      (layerDataAttnDone layerIndex <$> processingState)
-        <*> layerData
-        <*> xAfterAttn
-        <*> attentionDone
+    -- 2-master arbiter for weights DRAM: slot 0 = MHA, slot 1 = FFN
+    (axiMasterOut, perLayerSlaves) =
+      ARB.axiArbiterWithRouting dramSlaveIn
+        (mhaAxiMaster :> ffnAxiMaster :> Nil)
 
-    baseNextLayerData :: Signal dom LayerData
-    baseNextLayerData =
-      updateLayerDataForStage layerIndex <$> processingState <*> layerData <*> qProj <*> kProj <*> vProj
+    mhaSlave = perLayerSlaves !! (0 :: Index 2)
+    ffnSlave = perLayerSlaves !! (1 :: Index 2)
 
-    -- FFN stage - enableFFN is already layer-specific
-    ffnInput = attentionOutput <$> layerDataAfterAttention
+    ffnArmed :: Signal dom Bool
+    ffnArmed = register False nextFfnArmed
+      where
+        setArm   = validInGated
+        clearArm = ffnDone
+        nextFfnArmed = mux setArm (pure True) (mux clearArm (pure False) ffnArmed)
 
-    -- FFN output ready when:
-    -- - Next layer is starting QKV (need to check which layer is active)
-    -- - Or we're at last layer and classifier is starting
+    ffnStageStart :: Signal dom Bool
+    ffnStageStart = attentionDone .&&. ffnArmed
+
+    ffnInput = attentionOutput <$> layerData
+
+    ffnValidIn :: Signal dom Bool
+    ffnValidIn = register False nextFFNValidIn
+      where
+        setFFNValid   = ffnStageStart
+        clearFFNValid = ffnValidIn .&&. ffnDone
+        nextFFNValidIn =
+          mux setFFNValid (pure True)
+            (mux clearFFNValid (pure False) ffnValidIn)
+
     ffnOutReady :: Signal dom Bool
-    ffnOutReady =
-      let currentLayer = processingLayer <$> processingState
-      in (enableQKV .&&. (currentLayer .==. pure (layerIndex + 1)))
-        .||.
-        (enableClassifier .&&. (currentLayer .==. pure maxBound))
+    ffnOutReady = pure True
 
-    (ffnOutput, ffnValidOut, ffnInReady) =
-      ffnController
-        enableFFN
-        ffnOutReady
-        ffnInput
-        ffn
+    (ffnAxiMaster, ffnOutput, ffnValidOut, _ffnInReady) =
+      ffnController cycleCounter ffnSlave layerIdx ffnValidIn ffnOutReady ffnInput
 
-    nextLayerData :: Signal dom LayerData
-    nextLayerData =
-      (layerDataWithFFN layerIndex <$> processingState)
-        <*> baseNextLayerData
-        <*> xAfterAttn
-        <*> attentionDone
-        <*> ffnOutput
-        <*> ffnValidOut
+    ffnDone = risingEdge ffnValidOut
 
--- Helper functions remain unchanged
-layerDataWithFFN ::
-  Index NumLayers ->
-  ProcessingState ->
-  LayerData ->
-  Vec ModelDimension FixedPoint ->
-  Bool ->
-  Vec ModelDimension FixedPoint ->
-  Bool ->
-  LayerData
-layerDataWithFFN layerIndex ps baseData attnOut attnDone ffnOut ffnValid =
-  let withAttn = layerDataAttnDone layerIndex ps baseData attnOut attnDone
-   in if processingLayer ps == layerIndex
-        && processingStage ps == Stage4_FeedForward
-        && ffnValid
-        then withAttn {feedForwardOutput = ffnOut}
-        else withAttn
-
-layerDataAttnDone ::
-  Index NumLayers ->
-  ProcessingState ->
-  LayerData ->
-  Vec ModelDimension FixedPoint ->
-  Bool ->
-  LayerData
-layerDataAttnDone layerIndex state cur attOut attnDone =
-  if processingLayer state == layerIndex
-    && processingStage state == Stage3_Attend
-    && attnDone
-    then cur {attentionOutput = attOut}
-    else cur
-
-updateLayerDataForStage :: Index NumLayers
-  -> ProcessingState
-  -> LayerData 
-  -> Vec NumQueryHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-  -> LayerData
-updateLayerDataForStage layerIndex ps idata qs ks vs
-  | processingLayer ps /= layerIndex = idata
-  | otherwise = case processingStage ps of
-      Stage1_ProjectQKV ->
-        idata {queryVectors = qs, keyVectors = ks, valueVectors = vs}
-      _ -> idata
+--------------------------------------------------------------------------------
+-- Helper
+--------------------------------------------------------------------------------
+risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
+risingEdge sig = sig .&&. (not <$> register False sig)

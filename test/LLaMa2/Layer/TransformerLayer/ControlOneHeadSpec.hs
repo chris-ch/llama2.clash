@@ -7,8 +7,8 @@ import Test.Hspec
 import qualified Prelude as P
 
 import LLaMa2.Types.ModelConfig (ModelDimension, HeadDimension)
-import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E, dequantRowToF)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
+import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..), dequantRowToF)
 import LLaMa2.Numeric.FixedPoint (dotProductF)
 import LLaMa2.Layer.Attention.MultiHeadAttention (singleHeadController)
 
@@ -22,8 +22,7 @@ makeWO :: MatI8E ModelDimension HeadDimension
 makeWO = 
   let rowMant :: Vec HeadDimension Mantissa
       rowMant = map (fromIntegral . (1 +) . fromEnum) (indicesI @HeadDimension)
-      oneRow :: (Vec HeadDimension Mantissa, Exponent)
-      oneRow = (rowMant, 0)
+      oneRow = RowI8E { rowMantissas = rowMant, rowExponent = 0}
   in repeat oneRow
 
 -- Deterministic head vector: x_j = 1/(j+1)

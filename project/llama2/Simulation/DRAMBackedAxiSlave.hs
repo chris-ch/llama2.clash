@@ -1,414 +1,371 @@
-{-# LANGUAGE DerivingVia #-}
 module Simulation.DRAMBackedAxiSlave
-  ( createDRAMBackedAxiSlave
-  , createDRAMBackedAxiSlaveFromVec
-  , buildMemoryFromParams
+  ( DRAMConfig(..)
   , WordData
-  , DRAMConfig(..)
+  , createDRAMBackedAxiSlaveFromVec
+  , createDRAMBackedAxiSlave
+  , buildMemoryFromParams
+  , createKVCacheDRAMSlave
   ) where
 
 import Clash.Prelude
-import Data.Maybe (fromMaybe, isJust)
-
-import LLaMa2.Memory.AXI.Types
-import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified LLaMa2.Memory.AXI.Slave  as Slave
 import qualified Prelude as P
 
-import qualified Simulation.Parameters as PARAM
+import LLaMa2.Memory.AXI.Types
+    ( AxiW(wdata),
+      AxiAW(AxiAW, awid, awaddr, awlen),
+      AxiR(..),
+      AxiAR(AxiAR, arid, arlen, araddr),
+      AxiB(AxiB) )
+import qualified LLaMa2.Memory.AXI.Slave as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
 import LLaMa2.Types.ModelConfig
-  ( NumLayers, ModelDimension, HeadDimension, HiddenDimension
-  , NumQueryHeads, NumKeyValueHeads )
-import LLaMa2.Memory.LayerAddressing (LayerSeg(..))
-import LLaMa2.Numeric.Quantization (RowI8E)
-import LLaMa2.Numeric.Types (Mantissa)
-import Simulation.Parameters (DecoderParameters)
+    ( NumKeyValueHeads, NumQueryHeads, NumLayers )
+import qualified Simulation.Parameters as PARAM
+import Clash.Sized.Vector (unsafeFromList)
+import qualified LLaMa2.Memory.WeightsLayout as Layout
+import qualified LLaMa2.Memory.KVCacheLayout as KVLayout
 
--- ===============================================================
--- Configuration
--- ===============================================================
-
+-- | Timing configuration
+-- First field is EXTRA read latency (beyond the inherent 1-cycle RAM).
 data DRAMConfig = DRAMConfig
-  { readLatency  :: Int
-  , writeLatency :: Int
-  , numBanks     :: Int
-  } deriving (Generic, NFDataX, Show, Eq)
+  { rValidDelay  :: Int  -- extra cycles from AR accept to first RVALID
+  , arReadyDelay :: Int  -- cycles before accepting next AR
+  , rBeatDelay   :: Int  -- extra cycles between R beats
+  } deriving (Show, Eq)
 
-type WordData = BitVector 512
+type WordData = BitVector 512  -- 64 bytes per beat
 
--- ===============================================================
--- Smart DRAM that understands model structure
--- ===============================================================
+-- ============================================================================
+-- Top-level constructors
+-- ============================================================================
 
-beatsFromLen :: Unsigned 8 -> Unsigned 9
-beatsFromLen l = resize l + 1
-
-incrAddr64B :: Unsigned 32 -> Unsigned 32
-incrAddr64B a = a + 64
-
-toRamIx :: Unsigned 32 -> Unsigned 16
-toRamIx = truncateB
-
--- ===============================================================
--- Top-level
--- ===============================================================
-
+-- | Convenience constructor keeping the historical default 64Ki-word depth.
+-- Use 'createDRAMBackedAxiSlaveFromVec' for any other depth.
 createDRAMBackedAxiSlave ::
   forall dom.
   HiddenClockResetEnable dom =>
-  DecoderParameters ->
+  Signal dom (Unsigned 32) ->  -- ^ cycleCounter for tracing
+  PARAM.DecoderParameters ->
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlave params = createDRAMBackedAxiSlaveFromVec defaultCfg initMem
+createDRAMBackedAxiSlave cycleCounter params =
+  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig 1 0 1) (buildMemoryFromParams @65536 params)
+
+-- ============================================================================
+-- Build a DRAM image (generic depth)
+-- ============================================================================
+
+-- | Build a DRAM image from model parameters, trimmed/padded to n words.
+--   Section order MUST match rowAddressCalculator in WeightsLayout.
+buildMemoryFromParams :: forall n. KnownNat n => PARAM.DecoderParameters -> Vec n WordData
+buildMemoryFromParams params =
+  let nI = natToNum @n :: Int
+  in unsafeFromList $ P.take nI $ allWords P.++ P.repeat 0
   where
-    defaultCfg = DRAMConfig { readLatency = 1, writeLatency = 0, numBanks = 1 }
-    
-    -- Convert to address-indexed memory
-    initMem = buildMemoryFromParams params
+    allWords = embeddingWords
+            P.++ rmsFinalWords
+            P.++ rotaryWords
+            P.++ P.concatMap layerWords [0..numLayers-1]
 
--- | Build a Vec 65536 WordData from parsed DecoderParameters
---   Maps hardware addresses to weight data in streaming format
-buildMemoryFromParams :: PARAM.DecoderParameters -> Vec 65536 WordData
-buildMemoryFromParams params = map addressToWord indicesI
-  where
-    -- Calculate address for a specific layer/segment/row
-    -- Format: [layer][segment][head/row]
-    -- Each layer: rmsAtt(1) + Q(nQ*hDim) + K(nKV*hDim) + V(nKV*hDim) + 
-    --             WO(nQ*mDim) + rmsFfn(1) + W1(hDim) + W2(mDim) + W3(hDim)
-    
-    numLayers = natToNum @NumLayers
-    modelDim = natToNum @ModelDimension
-    headDim = natToNum @HeadDimension
-    hiddenDim = natToNum @HiddenDimension
-    numQHeads = natToNum @NumQueryHeads
-    numKVHeads = natToNum @NumKeyValueHeads
-    
-    -- Rows per segment (matches rowsInSeg from LayerAddressing)
-    rowsPerSeg :: LayerSeg -> Int
-    rowsPerSeg seg = case seg of
-      SegRmsAtt -> 1
-      SegQ      -> numQHeads * headDim
-      SegK      -> numKVHeads * headDim
-      SegV      -> numKVHeads * headDim
-      SegWO     -> numQHeads * modelDim
-      SegRmsFfn -> 1
-      SegW1     -> hiddenDim
-      SegW2     -> modelDim
-      SegW3     -> hiddenDim
-    
-    -- Total rows per layer
-    rowsPerLayer = sum $ P.map rowsPerSeg [minBound .. maxBound]
-    
-    -- Bytes per row: (ModelDimension or HeadDimension or HiddenDimension) mantissas + 1 exponent
-    -- For simplicity, assume max dimension rows are packed to 64-byte boundaries
-    -- One RowI8E = Vec n (Signed 8) + Signed 8 exponent
-    -- Pack into 64 bytes (one 512-bit word)
-    
-    addressToWord :: Index 65536 -> WordData
-    addressToWord addr =
-      let addrInt = fromEnum addr :: Int
-          
-          -- Determine which layer
-          layerIdx = addrInt `div` rowsPerLayer
-          rowInLayer = addrInt `mod` rowsPerLayer
-          
-      in if layerIdx >= numLayers
-         then 0  -- Beyond valid layers
-         else packRowToWord (getRowForLayerOffset layerIdx rowInLayer)
+    numLayers  = natToNum @NumLayers :: Int
+    numQHeads  = natToNum @NumQueryHeads :: Int
+    numKVHeads = natToNum @NumKeyValueHeads :: Int
 
-    getRowForLayerOffset :: Int -> Int -> RowI8E ModelDimension
-    getRowForLayerOffset layerIdx offset =
-      let layer = PARAM.modelLayers params !! layerIdx
-          mha = PARAM.multiHeadAttention layer
-          ffn = PARAM.feedforwardNetwork layer
-          
-          -- Segment boundaries within layer
-          rmsAttEnd = 1
-          qEnd = rmsAttEnd + numQHeads * headDim
-          kEnd = qEnd + numKVHeads * headDim  
-          vEnd = kEnd + numKVHeads * headDim
-          woEnd = vEnd + numQHeads * modelDim
-          rmsFfnEnd = woEnd + 1
-          w1End = rmsFfnEnd + hiddenDim
-          w2End = w1End + modelDim
-          w3End = w2End + hiddenDim
-          
-      in if offset < rmsAttEnd
-         then packRmsToRow (PARAM.rmsAttF mha)
-         else if offset < qEnd
-         then let qOffset = offset - rmsAttEnd
-                  headIdx = qOffset `div` headDim
-                  rowIdx = qOffset `mod` headDim
-                  idx = fromIntegral headIdx :: Index NumQueryHeads
-                  qMat = PARAM.wqHeadQ (PARAM.headsQ mha !! idx)
-              in padRow (qMat !! rowIdx)
-         else if offset < kEnd
-         then let kOffset = offset - qEnd
-                  headIdx = kOffset `div` headDim
-                  rowIdx = kOffset `mod` headDim
-                  queryHeadsPerKV = numQHeads `div` numKVHeads
-                  qHeadIdx = headIdx * queryHeadsPerKV
-                  kMat = PARAM.wkHeadQ (PARAM.headsQ mha !! qHeadIdx)
-              in padRow (kMat !! rowIdx)
-         else if offset < vEnd
-         then let vOffset = offset - kEnd
-                  headIdx = vOffset `div` headDim
-                  rowIdx = vOffset `mod` headDim
-                  queryHeadsPerKV = numQHeads `div` numKVHeads
-                  qHeadIdx = headIdx * queryHeadsPerKV
-                  vMat = PARAM.wvHeadQ (PARAM.headsQ mha !! qHeadIdx)
-              in padRow (vMat !! rowIdx)
-         else if offset < woEnd
-         then let woOffset = offset - vEnd
-                  headIdx = woOffset `div` modelDim
-                  rowIdx = woOffset `mod` modelDim
-                  woMat = PARAM.mWoQ mha !! headIdx
-              in padRow (woMat !! rowIdx)
-         else if offset < rmsFfnEnd
-         then packRmsToRow (PARAM.fRMSFfnF ffn)
-         else if offset < w1End
-         then let rowIdx = offset - rmsFfnEnd
-                  w1Mat = PARAM.fW1Q ffn
-              in w1Mat !! rowIdx  -- Already ModelDimension wide
-         else if offset < w2End
-         then let rowIdx = offset - w1End
-                  w2Mat = PARAM.fW2Q ffn
-              in padRow (w2Mat !! rowIdx)
-         else if offset < w3End
-         then let rowIdx = offset - w2End
-                  w3Mat = PARAM.fW3Q ffn
-              in w3Mat !! rowIdx  -- Already ModelDimension wide
-         else (repeat 0, 0)  -- Padding
-    
-    -- Pad a smaller row to ModelDimension by zero-filling
-    padRow :: forall n. KnownNat n => RowI8E n -> RowI8E ModelDimension
-    padRow (mantissas, expon) = 
-      let buildVec = imap (\i _ -> 
-            if fromEnum i < natToNum @n 
-            then mantissas !! (toEnum (fromEnum i) :: Index n)
-            else 0) (repeat 0 :: Vec ModelDimension Mantissa)
-      in (buildVec, expon)
-      
-    packRmsToRow :: Vec ModelDimension (SFixed 12 20) -> RowI8E ModelDimension
-    packRmsToRow _weights =
-      -- TODO: Implement proper quantization
-      -- For now, return zeros (RMS weights handled separately in hardware)
-      (repeat 0, 0)
-    
-    -- Pack a RowI8E into a 512-bit word (64 bytes)
-    packRowToWord :: RowI8E ModelDimension -> WordData
-    packRowToWord (mantissas, expon) =
-      let -- Pack mantissas (ModelDimension signed 8-bit values)
-          mantissaBits = foldl
-            (\acc m -> (acc `shiftL` 8) .|. resize (pack m))
-            (0 :: BitVector 512)
-            mantissas
-          -- Pack exponent in last byte
-          expBits = resize (pack expon) :: BitVector 512
-          -- Combine (exponent in LSB for simplicity)
-      in (mantissaBits `shiftL` 8) .|. expBits
+    embedding       = PARAM.modelEmbedding params
+    embeddingWords  = Layout.matrixMultiWordPacker (PARAM.vocabularyQ embedding)
+    rmsFinalWords   = Layout.fixedPointVecPacker (PARAM.rmsFinalWeightF embedding)
 
--- Original Vec-based implementation for compatibility
-createDRAMBackedAxiSlaveFromVec ::
-  forall dom.
-  HiddenClockResetEnable dom =>
-  DRAMConfig ->
-  Vec 65536 WordData ->
-  Master.AxiMasterOut dom ->
-  Slave.AxiSlaveIn dom
-createDRAMBackedAxiSlaveFromVec ramConfig initMem masterOut = slaveIn
- where
-  writePathData = writePath masterOut
-  readPathData  = readPath masterOut initMem ramConfig (writeOperation writePathData)
+    rotaryWords =
+      let rotary   = PARAM.rotaryEncoding params  -- Get from top level
+          cosWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqCosF rotary))
+          sinWords = P.concatMap Layout.fixedPointVecPacker (toList (PARAM.freqSinF rotary))
+          totalB   = (P.length cosWords + P.length sinWords) * 64
+          padW     = (Layout.align64 totalB - totalB) `div` 64
+      in cosWords P.++ sinWords P.++ P.replicate padW 0
 
-  slaveIn = Slave.AxiSlaveIn
-    { arready = addressReadReady readPathData
-    , rvalid  = readValid readPathData
-    , rdata   = readData readPathData
-    , awready = addressWriteReady writePathData
-    , wready  = writeReady writePathData
-    , bvalid  = writeResponseValid writePathData
-    , bdata   = writeResponseData writePathData
+    layerWords li =
+      let layer = PARAM.modelLayers params !! li
+          mha   = PARAM.multiHeadAttention layer
+          ffn   = PARAM.feedforwardNetwork layer
+          
+          -- Q matrices: all 8 Q heads
+          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker 
+                    (PARAM.qMatrix (PARAM.qHeads mha !! h)))
+                  [0..numQHeads-1]
+          
+          -- K matrices: directly from 4 KV heads (NO MAPPING!)
+          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+                    (PARAM.kMatrix (PARAM.kvHeads mha !! kvh)))
+                  [0..numKVHeads-1]
+          
+          -- V matrices: directly from 4 KV heads (NO MAPPING!)
+          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+                    (PARAM.vMatrix (PARAM.kvHeads mha !! kvh)))
+                  [0..numKVHeads-1]
+          
+          -- WO still per Q head
+          woWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.mWoQ mha !! h))
+                    [0..numQHeads-1]
+      in
+        Layout.fixedPointVecPacker
+          (PARAM.rmsAttF mha)
+          P.++ qWords P.++ kWords P.++ vWords P.++ woWords
+          P.++ Layout.fixedPointVecPacker (PARAM.fRMSFfnF ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW1Q ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW2Q ffn)
+          P.++ Layout.matrixMultiWordPacker (PARAM.fW3Q ffn)
+
+-- ============================================================================
+-- AXI Slave (depth-generic)
+-- ============================================================================
+
+data ReadState  = RIdle | RProcessing (Index 256) (Index 256)
+  deriving (Generic, NFDataX, Show, Eq)
+
+data WriteState = WIdle | WProcessing (Index 256) (Index 256)
+  deriving (Generic, NFDataX, Show, Eq)
+
+-- | Generic-depth DRAM-backed AXI slave (read+write for tests; writes optional in HW).
+createDRAMBackedAxiSlaveFromVec :: forall dom n.
+  (HiddenClockResetEnable dom, KnownNat n)
+  => Signal dom (Unsigned 32)  -- ^ cycleCounter for tracing
+  -> DRAMConfig
+  -> Vec n WordData
+  -> Master.AxiMasterOut dom
+  -> Slave.AxiSlaveIn dom
+createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
+  Slave.AxiSlaveIn
+    { arready = arreadySigTraced
+    , rvalid  = rvalidSig
+    , rdata   = rdataSigTraced
+    , awready = awreadySig
+    , wready  = wreadySig
+    , bvalid  = bvalidSig
+    , bdata   = bdataSig
     }
+  where
+    -- ==================== Shared RAM (generic depth) ====================
+    ramReadAddr :: Signal dom (Index n)
+    ramReadAddr = readAddrIdx
 
--- ===============================================================
--- Read path
--- ===============================================================
+    writeData :: Signal dom WordData
+    writeData = wdata <$> Master.wdata masterIn
 
-data ReadPathData dom = ReadPathData
-  { addressReadReady :: Signal dom Bool
-  , readValid :: Signal dom Bool
-  , readData :: Signal dom AxiR
-  }
+    writeM :: Signal dom (Maybe (Index n, WordData))
+    writeM = mux wHandshake (Just <$> bundle (writeAddrIdx, writeData))
+                            (pure Nothing)
 
-readPath ::
+    ramOut :: Signal dom WordData
+    ramOut = blockRam initVec ramReadAddr writeM
+
+    readAddrEn  :: Signal dom Bool
+    readAddrEn  = (\case RProcessing{} -> True; _ -> False) <$> readState
+    ramOutValid :: Signal dom Bool
+    ramOutValid = register False readAddrEn
+
+    nWordsU32 :: Unsigned 32
+    nWordsU32 = fromIntegral (natToNum @n :: Int)
+
+    readState :: Signal dom ReadState
+    readState = register RIdle nextReadState
+
+    capturedAR :: Signal dom AxiAR
+    capturedAR = regEn (AxiAR 0 0 0 0 0) arAccepted (Master.ardata masterIn)
+
+    arDelayCounter :: Signal dom (Index 16)
+    arDelayCounter = register 0 nextARDelay
+
+    rDelayCounter :: Signal dom (Index 16)
+    rDelayCounter = register 0 nextRDelay
+
+    arreadySig :: Signal dom Bool
+    arreadySig = (readState .==. pure RIdle) .&&. (arDelayCounter .==. pure 0)
+
+    arAccepted :: Signal dom Bool
+    arAccepted = Master.arvalid masterIn .&&. arreadySig
+
+    -- Trace AR accepted with cycle counter
+    arreadySigTraced :: Signal dom Bool
+    arreadySigTraced = arreadySig
+
+    currentBeat :: Signal dom (Index 256)
+    currentBeat = (\case RProcessing b _ -> b; _ -> 0) <$> readState
+
+    rHandshake :: Signal dom Bool
+    rHandshake = rvalidSig .&&. Master.rready masterIn
+
+    nextReadState :: Signal dom ReadState
+    nextReadState =
+      mux arAccepted
+          ((\ar -> RProcessing 0 (fromInteger $ toInteger $ arlen ar :: Index 256))
+            <$> Master.ardata masterIn)
+      $ mux (isProc <$> readState .&&. rHandshake)
+          (advance <$> readState)
+          readState
+      where
+        isProc (RProcessing _ _) = True
+        isProc _                 = False
+        advance (RProcessing b l) | b >= l    = RIdle
+                                  | otherwise = RProcessing (b+1) l
+        advance s = s
+
+    beatOffsetBytes :: Signal dom (Unsigned 32)
+    beatOffsetBytes = (`shiftL` 6) . fromIntegral <$> currentBeat
+
+    currentAddress :: Signal dom (Unsigned 32)
+    currentAddress = (+) <$> (araddr <$> capturedAR) <*> beatOffsetBytes
+
+    addrWordU :: Signal dom (Unsigned 32)
+    addrWordU = (`shiftR` 6) <$> currentAddress
+
+    readAddrIdx :: Signal dom (Index n)
+    readAddrIdx =
+      (fromIntegral :: Unsigned 32 -> Index n) <$> ((`mod` nWordsU32) <$> addrWordU)
+
+    rvalidSig :: Signal dom Bool
+    rvalidSig = (\s del ok -> case s of
+                    RProcessing{} -> (del == 0) && ok
+                    _             -> False)
+                <$> readState <*> rDelayCounter <*> ramOutValid
+
+    rdataSig :: Signal dom AxiR
+    rdataSig = (\s ar dat ->
+                  let isLast = case s of
+                                 RProcessing b l -> b >= l
+                                 _               -> False
+                  in AxiR dat 0 isLast (arid ar)
+               ) <$> readState <*> capturedAR <*> ramOut
+
+    nextARDelay :: Signal dom (Index 16)
+    nextARDelay =
+      mux arAccepted
+          (pure (fromIntegral (arReadyDelay config)))
+      $ mux (arDelayCounter .>. pure 0)
+          (arDelayCounter - 1)
+          arDelayCounter
+
+    -- Load exactly rValidDelay/rBeatDelay (BRAM already gives +1)
+    nextRDelay :: Signal dom (Index 16)
+    nextRDelay =
+      let loadAfterAR   = fromIntegral (rValidDelay config)
+          loadAfterBeat = fromIntegral (rBeatDelay  config)
+          processing    = (\case RProcessing{} -> True; _ -> False) <$> readState
+      in mux arAccepted
+            (pure loadAfterAR)
+       $ mux (rHandshake .&&. processing)
+            (pure loadAfterBeat)
+       $ mux (rDelayCounter .>. pure 0)
+            (rDelayCounter - 1)
+            rDelayCounter
+
+    writeState :: Signal dom WriteState
+    writeState = register WIdle nextWriteState
+
+    capturedAW :: Signal dom AxiAW
+    capturedAW = regEn (AxiAW 0 0 0 0 0) awAccepted (Master.awdata masterIn)
+
+    awreadySig :: Signal dom Bool
+    awreadySig = writeState .==. pure WIdle
+
+    awAccepted :: Signal dom Bool
+    awAccepted = Master.awvalid masterIn .&&. awreadySig
+
+    -- Accept W either when already processing or in SAME cycle as AW is accepted
+    wreadySig :: Signal dom Bool
+    wreadySig = ((\case WProcessing{} -> True; _ -> False) <$> writeState) .||. awAccepted
+
+    wBeat :: Signal dom (Index 256)
+    wBeat = (\case WProcessing b _ -> b; _ -> 0) <$> writeState
+
+    writeBaseAddr :: Signal dom (Unsigned 32)
+    writeBaseAddr = mux awAccepted (awaddr <$> Master.awdata masterIn)
+                                 (awaddr <$> capturedAW)
+
+    writeBeatIdx :: Signal dom (Index 256)
+    writeBeatIdx = mux awAccepted (pure 0) wBeat
+
+    writeAddress :: Signal dom (Unsigned 32)
+    writeAddress = (+) <$> writeBaseAddr <*> ((`shiftL` 6) . fromIntegral <$> writeBeatIdx)
+
+    writeAddrIdx :: Signal dom (Index n)
+    writeAddrIdx =
+      (fromIntegral :: Unsigned 32 -> Index n)
+      <$> ((`mod` nWordsU32) <$> ( (`shiftR` 6) <$> writeAddress ))
+
+    wHandshake :: Signal dom Bool
+    wHandshake = wreadySig .&&. Master.wvalid masterIn
+
+    firstBeatAccepted :: Signal dom Bool
+    firstBeatAccepted = awAccepted .&&. Master.wvalid masterIn
+
+    -- QUALIFY last-beat-by-length with WProcessing to avoid early BVALID
+    wProcessing :: Signal dom Bool
+    wProcessing = (\case WProcessing{} -> True; _ -> False) <$> writeState
+
+    isLastWBeat :: Signal dom Bool
+    isLastWBeat = (\case
+        WProcessing b l -> b >= l
+        _ -> False) <$> writeState
+
+    nextWriteState :: Signal dom WriteState
+    nextWriteState =
+      mux awAccepted
+          ((\aw fb ->
+              let l :: Index 256
+                  l = fromInteger $ toInteger $ awlen aw
+                  b0 = if fb then 1 else 0
+              in WProcessing b0 l) <$> Master.awdata masterIn <*> firstBeatAccepted)
+      $ mux (isProc <$> writeState .&&. wHandshake)
+          (advance <$> writeState)
+          writeState
+      where
+        isProc (WProcessing _ _) = True
+        isProc _                 = False
+        advance (WProcessing b l) | b >= l    = WIdle
+                                  | otherwise = WProcessing (b+1) l
+        advance s = s
+
+    bvalidReg :: Signal dom Bool
+    bvalidReg = register False nextBValid
+
+    bvalidSig :: Signal dom Bool
+    bvalidSig = bvalidReg
+
+    -- AW+W same-cycle last-beat only for single-beat writes (len==0)
+    singleBeatNow :: Signal dom Bool
+    singleBeatNow = firstBeatAccepted .&&. ((\aw -> awlen aw == 0) <$> Master.awdata masterIn)
+
+    lastBeatAccepted :: Signal dom Bool
+    lastBeatAccepted =
+      -- Only allow the length-based path while in WProcessing
+      (wHandshake .&&. wProcessing .&&. isLastWBeat) .||. singleBeatNow
+
+    nextBValid :: Signal dom Bool
+    nextBValid =
+      mux lastBeatAccepted
+          (pure True)
+      $ mux (bvalidReg .&&. Master.bready masterIn)
+          (pure False)
+          bvalidReg
+
+    bdataSig :: Signal dom AxiB
+    bdataSig = AxiB 0 . awid <$> capturedAW
+
+    rdataSigTraced :: Signal dom AxiR
+    rdataSigTraced = rdataSig
+
+-- ============================================================================
+-- KV Cache DRAM (writable, all-zero initial contents)
+-- ============================================================================
+
+-- | Create an all-zero DRAM slave sized for the KV cache.
+-- This DRAM supports both reads and writes (for KV cache write-back and attention reads).
+createKVCacheDRAMSlave ::
   forall dom.
   HiddenClockResetEnable dom =>
+  Signal dom (Unsigned 32) ->  -- ^ cycleCounter for tracing
   Master.AxiMasterOut dom ->
-  Vec 65536 WordData ->
-  DRAMConfig ->
-  Signal dom (Maybe (Unsigned 16, WordData)) ->
-  ReadPathData dom
-readPath masterOut initMem ramConfig ramOp = ReadPathData
-  { addressReadReady = arReady
-  , readValid = rValidReg
-  , readData = rData
-  }
-  where
-    ram :: Signal dom (Unsigned 16)
-        -> Signal dom (Maybe (Unsigned 16, WordData))
-        -> Signal dom WordData
-    ram = blockRamPow2 initMem
-
-    arValid = Master.arvalid masterOut
-    arData  = Master.ardata  masterOut
-    rReady  = Master.rready  masterOut
-
-    rActive     = register False rActiveN
-    rBeatsLeft  = register 0     rBeatsLeftN
-    rAddr       = register 0     rAddrN
-    rIDReg      = register 0     rIDRegN
-    rIssuedAddr = register 0     rIssuedAddrN
-    rWaitCnt    = register 0     rWaitCntN
-    rValidReg   = register False rValidRegN
-    rLastReg    = register False rLastRegN
-
-    arReady    = not <$> rActive
-    arAccepted = arValid .&&. arReady
-    rHandsh    = rValidReg .&&. rReady
-    moreBeats  = (> 1) <$> rBeatsLeft
-    launchBeat = arAccepted .||. (rHandsh .&&. moreBeats)
-
-    nextIssueAddr =
-      mux arAccepted (araddr <$> arData)
-                     (incrAddr64B <$> rAddr)
-    rIssuedAddrN = mux launchBeat nextIssueAddr rIssuedAddr
-
-    readLatU :: Unsigned 16
-    readLatU = fromIntegral (max 0 (readLatency ramConfig))
-
-    waiting = rWaitCnt ./=. pure 0
-    rWaitCntN =
-      mux launchBeat
-        (pure readLatU)
-      $ mux (waiting .&&. not <$> rValidReg)
-        (rWaitCnt - 1)
-        rWaitCnt
-
-    rValidRise = rActive .&&. (rWaitCnt .==. 1) .&&. not <$> rValidReg
-    rValidRegN =
-      mux rHandsh   (pure False) $
-      mux rValidRise (pure True) rValidReg
-
-    newBeatsVal = beatsFromLen . arlen <$> arData
-    rBeatsLeftN =
-      mux arAccepted newBeatsVal $
-      mux rHandsh   (rBeatsLeft - 1) rBeatsLeft
-
-    rAddrN =
-      mux arAccepted (araddr <$> arData) $
-      mux rHandsh    (incrAddr64B <$> rAddr) rAddr
-
-    rActiveN =
-      mux arAccepted (pure True) $
-      mux (rHandsh .&&. (rBeatsLeft .==. 1)) (pure False) rActive
-
-    rIDRegN =
-      mux arAccepted (arid <$> arData) rIDReg
-
-    rLastRegN =
-      mux rValidReg (rBeatsLeft .==. 1) (pure False)
-
-    readIx  = toRamIx <$> rIssuedAddr
-    ramData = ram readIx ramOp
-
-    wJust      = isJust <$> ramOp
-    wIdxData   = fromMaybe (0, 0) <$> ramOp
-    lastWIdx   = regEn 0 wJust (fst <$> wIdxData)
-    lastWData  = regEn 0 wJust (snd <$> wIdxData)
-
-    pendingBypass = register False pendingBypassN
-    hitForwardNow = pendingBypass .&&. (readIx .==. lastWIdx)
-    consumeFwd    = hitForwardNow .&&. rHandsh
-
-    pendingBypassN =
-      mux wJust
-        (pure True)
-      $ mux consumeFwd
-        (pure False)
-        pendingBypass
-
-    rPayload = mux hitForwardNow lastWData ramData
-
-    rData = AxiR
-          <$> rPayload
-          <*> pure 0
-          <*> rLastReg
-          <*> rIDReg
-
--- ===============================================================
--- Write path
--- ===============================================================
-
-data WritePathData dom = WritePathData
-  { addressWriteReady :: Signal dom Bool
-  , writeReady        :: Signal dom Bool
-  , writeResponseValid :: Signal dom Bool
-  , writeResponseData  :: Signal dom AxiB
-  , writeOperation     :: Signal dom (Maybe (Unsigned 16, WordData))
-  }
-
-writePath ::
-  forall dom.
-  HiddenClockResetEnable dom =>
-  Master.AxiMasterOut dom ->
-  WritePathData dom
-writePath masterOut = WritePathData
-  { addressWriteReady = awReady
-  , writeReady        = wReadyS
-  , writeResponseValid  = bValidReg
-  , writeResponseData   = bData
-  , writeOperation      = writeOp
-  }
-  where
-    awValid = Master.awvalid masterOut
-    awData  = Master.awdata  masterOut
-    wValid  = Master.wvalid  masterOut
-    wData   = Master.wdata   masterOut
-    bReady  = Master.bready  masterOut
-
-    wActive    = register False wActiveN
-    wBeatsLeft = register 0     wBeatsLeftN
-    wAddrReg   = register 0     wAddrRegN
-    wIDReg     = register 0     wIDRegN
-
-    awReady    = not <$> wActive
-    awAccepted = awValid .&&. awReady
-
-    wReadyS     = wActive .||. awAccepted
-    wHandshSame = wReadyS .&&. wValid
-
-    beatsOnAw     = beatsFromLen . awlen <$> awData
-    preBeatsLeft  = mux awAccepted beatsOnAw wBeatsLeft
-    postBeatsLeft = mux wHandshSame (preBeatsLeft - 1) preBeatsLeft
-
-    preAddr  = mux awAccepted (awaddr <$> awData) wAddrReg
-    postAddr = mux wHandshSame (incrAddr64B <$> preAddr) preAddr
-
-    wBeatsLeftN = postBeatsLeft
-    wAddrRegN   = postAddr
-    wIDRegN     = mux awAccepted (awid <$> awData) wIDReg
-    wActiveN    = postBeatsLeft ./=. 0
-
-    writeIxThisBeat = toRamIx <$> preAddr
-    wWord           = wdata <$> wData
-    writeOp         = mux wHandshSame (Just <$> bundle (writeIxThisBeat, wWord))
-                                     (pure Nothing)
-
-    bValidPulse = wHandshSame .&&. (postBeatsLeft .==. 0)
-    bValidReg   = register False bValidRegN
-    bValidRegN  =
-      mux (bValidReg .&&. not <$> bReady) (pure True) $
-      mux bValidPulse (pure True) (pure False)
-
-    bData = AxiB 0 <$> wIDReg
+  Slave.AxiSlaveIn dom
+createKVCacheDRAMSlave cycleCounter =
+  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig 1 0 1)
+    (repeat 0 :: Vec KVLayout.KvCacheWords WordData)

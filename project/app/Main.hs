@@ -13,18 +13,17 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import LLaMa2.Types.LayerData ( Token, Temperature, Seed, ProcessingState (..), LayerData (..) )
+import LLaMa2.Types.LayerData ( Token, Temperature, Seed, LayerData (..) )
 
-import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension )
+import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension, NumQueryHeads, NumKeyValueHeads, NumLayers, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
 import LLaMa2.Numeric.Types (FixedPoint)
 import Control.Monad (when)
-import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified LLaMa2.Memory.AXI.Slave as Slave
-import qualified Simulation.DRAMBackedAxiSlave as DRAM
 import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
+import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
+import qualified TraceUtils
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -151,6 +150,14 @@ generateTokensSimAutoregressive
   -> Seed
   -> IO Int
 generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature seed = do
+  putStrLn $ "Vocabulary size: " ++ show (C.natToNum @VocabularySize :: Int)
+  putStrLn $ "Model dimension: " ++ show (C.natToNum @ModelDimension :: Int)
+  putStrLn $ "Hidden dimension: " ++ show (C.natToNum @HiddenDimension :: Int)
+  putStrLn $ "Rotary Positional Embedding dimension: " ++ show (C.natToNum @RotaryPositionalEmbeddingDimension :: Int)
+  putStrLn $ "Sequence length: " ++ show (C.natToNum @SequenceLength :: Int)
+  putStrLn $ "# Query heads: " ++ show (C.natToNum @NumQueryHeads :: Int)
+  putStrLn $ "# Key-Value heads: " ++ show (C.natToNum @NumKeyValueHeads :: Int)
+  putStrLn $ "# Layers: " ++ show (C.natToNum @NumLayers :: Int)
   putStrLn $ "✅ Prompt: " ++ show promptTokens
   hFlush stdout
 
@@ -168,36 +175,35 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     temperature' = realToFrac temperature :: FixedPoint
 
     -- Scale simulation steps by 1000x
-    simSteps = (stepCount + length promptTokens) * 1000
-    --simSteps = 250_000  -- Just 250K cycles to test boot completes
+    -- Each token takes ~38000 cycles (5 layers × ~7000 cycles/layer through DRAM arbiter).
+    -- Use 50000x multiplier so (stepCount + promptLen) * 50000 covers all tokens.
+    -- Note: run with --steps 1 for quick testing (~100k cycles = ~50 min).
+    simSteps = (stepCount + length promptTokens) * 50000
 
     inputSignals = C.fromList (DL.zip4 inputTokens inputValidFlags (repeat temperature') (repeat seed))
 
-    (coreOutputsSignal, ddrMaster, ddrSlave, introspection) = bundledOutputs inputSignals
-
-    -- Sample DDR write signals
-    ddrWValidSampled = C.sampleN simSteps (Master.wvalid ddrMaster)
-    ddrWReadySampled = C.sampleN simSteps (Slave.wready ddrSlave)
-    ddrBValidSampled = C.sampleN simSteps (Slave.bvalid ddrSlave)
+    (coreOutputsSignal, introspection) = bundledOutputs inputSignals
 
     -- Sample core outputs
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
     -- Sample introspection fields separately
-    statesSampled         = C.sampleN simSteps (Decoder.state introspection)
     layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
+    layerValidInsSampled        = C.sampleN simSteps (Decoder.layerValidIn introspection)
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
-    weightValidSampled = C.sampleN simSteps (Decoder.weightStreamValid introspection)
-    weightSampleSampled = C.sampleN simSteps (Decoder.parsedWeightSample introspection)
     layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
-    sysStateSampled = C.sampleN simSteps (Decoder.sysState introspection)
     layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
     layerDataSampled :: [LayerData]
     layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
+    loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
+
+    dbgRowIndexSampled  = C.sampleN simSteps (Decoder.dbgRowIndex introspection)
+    dbgStateSampled     = C.sampleN simSteps (Decoder.dbgState introspection)
+    dbgRowDoneSampled   = C.sampleN simSteps (Decoder.dbgRowDone introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -216,52 +222,51 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Stage              | Tok Rdy | QKVDone  | AttnDone  | FFNDone  | WgtValid | LayerChg | norm(attn) | norm(out) |    Tok    |   SsyState  | ddrWValid | ddrWReady | ddrBValid"
-  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | norm(attn) | norm(out) |     Tok     | LayerValid | loadTriggerActive | dbgRowIdx  |     dbgState    | dbgFetchValid"
+  putStrLn "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
-  let printCycle (cycleIdx, token') = do
+  let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
+  let printCycle (ioIdx, token') = do
+        let hwCycle = fromIntegral $ cycleCountSampled !! ioIdx
         let
 
           attnOut :: C.Vec ModelDimension FixedPoint
-          attnOut = attentionOutput (layerDataSampled !! cycleIdx)
+          attnOut = attentionOutput (layerDataSampled !! hwCycle)
 
-          li     = fromIntegral (layerIndicesSampled !! cycleIdx) :: Int
-          ps     = processingStage (statesSampled !! cycleIdx)
-          rdy    = readiesSampled !! cycleIdx
-          qkv    = qkvDonesSampled !! cycleIdx
-          attn    = attnDonesSampled !! cycleIdx
-          ffn    = ffnDonesSampled !! cycleIdx
-          wValid = weightValidSampled !! cycleIdx
-          layChg = layerChangeSampled !! cycleIdx
-          wSample = weightSampleSampled !! cycleIdx
-          layerOutputNorm = normVec $ layerOutputSampled !! cycleIdx
+          li     = fromIntegral (layerIndicesSampled !! hwCycle) :: Int
+          rdy    = readiesSampled !! hwCycle
+          qkv    = qkvDonesSampled !! hwCycle
+          attn    = attnDonesSampled !! hwCycle
+          ffn    = ffnDonesSampled !! hwCycle
+          layChg = layerChangeSampled !! hwCycle
+          layerOutputNorm = normVec $ layerOutputSampled !! hwCycle
           attnOutNorm = normVec attnOut
-          token  = coreOutputs !! cycleIdx
-          sysSt  = sysStateSampled !! cycleIdx
-          ddrWValid = ddrWValidSampled !! cycleIdx
-          ddrWReady = ddrWReadySampled !! cycleIdx
-          ddrBValid = ddrBValidSampled !! cycleIdx
+          token  = coreOutputs !! hwCycle
+          layerValidIn = layerValidInsSampled !! hwCycle
+          loadTriggerActive = loadTriggerActiveSampled !! hwCycle
 
-        when (cycleIdx `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg) $
+          dbgRowIdx      = dbgRowIndexSampled !! hwCycle
+          dbgSt          = dbgStateSampled !! hwCycle
+          dbgRowDone     = dbgRowDoneSampled !! hwCycle
+
+        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone) $
           putStrLn $
-            printf "%5d | %5d | %-18s | %7s | %8s | %8s | %8s | %8s | %8s | %10s | %10s | %8s | %11s | %9s | %9s | %9s"
-              cycleIdx
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %10s | %16s"
+              hwCycle
               li
-              (show ps)
               (show rdy)
               (show qkv)
               (show attn)
               (show ffn)
-              (show wValid)
               (show layChg)
-              (show attnOutNorm)
-              (show layerOutputNorm)
+              attnOutNorm
+              layerOutputNorm
               (show $ decodeToken tokenizer (fst token))
-              (show sysSt)
-              (show ddrWValid)
-              (show ddrWReady)
-              (show ddrBValid)
+              (show layerValidIn)
+              (show loadTriggerActive)
+              (show dbgRowIdx)
+              (show dbgSt)
 
   mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
 
@@ -273,31 +278,43 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 bundledOutputs
   :: C.Signal C.System (Token, Bool, Temperature, Seed)
   -> ( C.Signal C.System (Token, Bool)
-     , Master.AxiMasterOut C.System
-     , Slave.AxiSlaveIn C.System
      , Decoder.DecoderIntrospection C.System
      )
 bundledOutputs bundledInputs =
-  (C.bundle (tokenOut, validOut), ddrMaster, ddrSlave, introspection)
+  (C.bundle (tokenOut, validOut), introspection)
  where
   (token, isValid, temperature, seed) = C.unbundle bundledInputs
 
-  powerOn = C.pure True
-
   params :: DecoderParameters
   params = PARAM.decoderConst
+  
+-- Instantiate cycle counter with explicit clock/reset/enable
+  cycleCounter :: C.Signal C.System (C.Unsigned 32)
+  cycleCounter =
+    C.exposeClockResetEnable
+      TraceUtils.makeCycleCounter
+      C.systemClockGen
+      C.resetGen
+      C.enableGen
 
-  -- For DDR: also serve from file (simulating that boot already copied data there)
-  ddrSlave = C.exposeClockResetEnable
-    (DRAM.createDRAMBackedAxiSlave params ddrMaster)
+  -- Create weights DDR simulator
+  dramSlaveIn = C.exposeClockResetEnable
+    (DRAMSlave.createDRAMBackedAxiSlave cycleCounter params ddrMaster)
     C.systemClockGen
     C.resetGen
     C.enableGen
 
-  -- Create the feedback loop: masters drive slaves, slaves feed back to decoder
-  (tokenOut, validOut, ddrMaster, introspection) =
+  -- KV cache DRAM slaves (lazy circular dependency with decoder's KV masters)
+  kvDramSlavesPerLayer = C.exposeClockResetEnable
+    (C.map (C.map (\m -> DRAMSlave.createKVCacheDRAMSlave cycleCounter m)) kvMasters)
+    C.systemClockGen
+    C.resetGen
+    C.enableGen
+
+  -- Decoder with AXI feedback loop
+  (ddrMaster, kvMasters, tokenOut, validOut, introspection) =
     C.exposeClockResetEnable
-      (Decoder.decoder ddrSlave powerOn params token isValid temperature seed)
+      (Decoder.decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer token isValid temperature seed)
       C.systemClockGen
       C.resetGen
       C.enableGen

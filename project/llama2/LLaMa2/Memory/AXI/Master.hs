@@ -1,6 +1,7 @@
 module LLaMa2.Memory.AXI.Master
-(AxiMasterOut(..))
-where
+( AxiMasterOut(..)
+, axiMasterMux
+) where
 
 import Clash.Prelude
 import qualified LLaMa2.Memory.AXI.Types as AXITypes (AxiAR, AxiAW, AxiW)
@@ -24,4 +25,21 @@ data AxiMasterOut dom = AxiMasterOut
   
     -- Write Response Channel
   , bready  :: Signal dom Bool
+  }
+
+-- | Field-by-field Bool mux of two AXI master outputs.
+-- When sel=True, master 'a' drives the bus; when sel=False, master 'b' drives.
+axiMasterMux :: forall dom. Signal dom Bool
+             -> AxiMasterOut dom
+             -> AxiMasterOut dom
+             -> AxiMasterOut dom
+axiMasterMux sel a b = AxiMasterOut
+  { arvalid = mux sel (arvalid a) (arvalid b)
+  , ardata  = mux sel (ardata  a) (ardata  b)
+  , rready  = mux sel (rready  a) (rready  b)
+  , awvalid = mux sel (awvalid a) (awvalid b)
+  , awdata  = mux sel (awdata  a) (awdata  b)
+  , wvalid  = mux sel (wvalid  a) (wvalid  b)
+  , wdata   = mux sel (wdata   a) (wdata   b)
+  , bready  = mux sel (bready  a) (bready  b)
   }

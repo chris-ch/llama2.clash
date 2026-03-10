@@ -30,16 +30,24 @@ flag model-15m
   default: False
   manual: True
 
+flag model-nano
+  description: Build with MODEL_NANO configuration (tiny dims, fast simulation tests)
+  default: False
+  manual: True
+
 -- package-wide defaults
 common project-defaults
   default-language: Haskell2010
   default-extensions:
+    AllowAmbiguousTypes
     BangPatterns
     DataKinds
     DeriveAnyClass
     DeriveGeneric
+    DerivingVia
     DoAndIfThenElse
     FlexibleContexts
+    FlexibleInstances
     GeneralizedNewtypeDeriving
     ImplicitParams
     InstanceSigs
@@ -94,30 +102,47 @@ library
   exposed-modules:
       LLaMa2.Decoder.Decoder
       LLaMa2.Decoder.LayerStack
-      LLaMa2.Decoder.SequenceController
+      LLaMa2.Decoder.DataFlowController
       LLaMa2.Embedding.InputEmbedding
       LLaMa2.Embedding.OutputProjection
       LLaMa2.Layer.Attention.AttentionHead
       LLaMa2.Layer.Attention.FSM
       LLaMa2.Layer.Attention.KVCache
+      LLaMa2.Layer.Attention.KVCacheBankController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowComputeUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowScheduler
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController
       LLaMa2.Layer.Attention.MultiHeadAttention
+      LLaMa2.Layer.Attention.WOHeadProjector
       LLaMa2.Layer.Attention.QKVProjection
+      LLaMa2.Layer.Attention.QueryHeadProjector
+      LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
+      LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler
+      LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
+      LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit
+      LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
+      LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
       LLaMa2.Layer.Attention.RotaryEncoding
-      LLaMa2.Layer.Attention.QKVProjectionWeightBuffer
+      LLaMa2.Layer.Attention.WeightLoader
       LLaMa2.Layer.FeedForward.Activation
+      LLaMa2.Layer.FeedForward.FFNProjector
       LLaMa2.Layer.FeedForward.FeedForwardNetwork
-      LLaMa2.Layer.FeedForward.FeedForwardNetworkWithRAM
       LLaMa2.Layer.TransformerLayer
+      LLaMa2.Memory.AXI.Arbiter
       LLaMa2.Memory.AXI.Master
+      LLaMa2.Memory.FPVecLoader
       LLaMa2.Memory.AXI.Slave
       LLaMa2.Memory.AXI.Types
       LLaMa2.Memory.AxiReadMaster
       LLaMa2.Memory.AxiWriteMaster
       LLaMa2.Memory.DualPortRAM
-      LLaMa2.Memory.I8EDynamicRower
       LLaMa2.Memory.KVCacheBank
-      LLaMa2.Memory.LayerAddressing
-      LLaMa2.Memory.WeightLoader
+      LLaMa2.Memory.KVCacheLayout
+      LLaMa2.Memory.WeightsLayout
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
@@ -133,14 +158,16 @@ library
       Simulation.Parameters
       Simulation.ParametersQuantization
       Tokenizer
+      TraceUtils
   hs-source-dirs:
       project/llama2
-  if flag(model-260k)
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  elif flag(model-260k)
     ghc-options: -DMODEL_260K
-  if flag(model-15m)
+  elif flag(model-15m)
     ghc-options: -DMODEL_15M
-  if !flag(model-260k) && !flag(model-15m)
-    ghc-options: -DMODEL_260K
+  else
     buildable: False
 
 executable llama2
@@ -161,19 +188,18 @@ test-suite llama2-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      LLaMa2.Decoder.MultiTokenSpec
-      LLaMa2.Decoder.TimingValidationSpec
-      LLaMa2.Layer.Attention.LayerWeightBufferSpec
+      LLaMa2.Decoder.DecoderSpec
+      LLaMa2.Layer.Attention.QKVProjectionSpec
+      LLaMa2.Layer.Attention.WeightLoaderSpec
+      LLaMa2.Layer.Attention.WeightLoaderDebugSpec
       LLaMa2.Layer.TransformerLayerSpec
       LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
-      LLaMa2.Decoder.EnableAttentionTimingSpec
+      LLaMa2.Memory.WeightsLayoutSpec
+      LLaMa2.Memory.WeightsLayoutRoundtripSpec
       LLaMa2.Numeric.OperationsSpec
       Simulation.AxiWriteMasterSpec
-      Simulation.ControllerSpec
       Simulation.DRAMBackedAxiSlaveSpec
-      Simulation.SingleLayerOutputSpec
-      Simulation.WeightLoadingDiagnosticSpec
-      Simulation.WeightLoaderSpec
+      Simulation.DynamicMatMulSpec
   hs-source-dirs:
       test
   build-depends:
@@ -186,6 +212,9 @@ test-suite llama2-test
     -Wall
     -threaded
     -rtsopts
-    -with-rtsopts=-N
+    "-with-rtsopts=-N -K64m"
     -main-is Spec.main
-    -DMODEL_260K
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  else
+    ghc-options: -DMODEL_260K

@@ -4,119 +4,67 @@ module LLaMa2.Layer.FeedForward.FeedForwardNetwork (
 
 import Clash.Prelude
 import LLaMa2.Numeric.FixedPoint ( rmsNormFwFix )
-import LLaMa2.Types.ModelConfig 
-    ( ModelDimension, ModelDimension, HiddenDimension )
-import LLaMa2.Numeric.Types ( FixedPoint, FixedPoint )
+import LLaMa2.Types.ModelConfig
+    ( ModelDimension, NumLayers )
+import LLaMa2.Numeric.Types ( FixedPoint )
 
-import LLaMa2.Numeric.Operations (parallelRowMatrixMultiplier)
-import LLaMa2.Layer.FeedForward.Activation (sigmoidLinearUnit)
-import qualified Simulation.Parameters as PARAM (FeedForwardNetworkComponentQ (..))
-
+import LLaMa2.Layer.FeedForward.FFNProjector (ffnProjector)
+import qualified LLaMa2.Memory.AXI.Slave  as Slave
+import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.WeightsLayout as Layout
+import qualified LLaMa2.Memory.FPVecLoader as FPVec
 feedForwardStage
   :: HiddenClockResetEnable dom
-  => Signal dom Bool                              -- ^ validIn
-  -> Signal dom Bool                              -- ^ readyIn (from downstream)
-  -> PARAM.FeedForwardNetworkComponentQ
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ input vector
-  -> ( Signal dom (Vec ModelDimension FixedPoint) -- ^ output vector
+  => Signal dom (Unsigned 32)                      -- ^ cycle counter
+  -> Slave.AxiSlaveIn dom                          -- ^ DRAM slave
+  -> Index NumLayers                               -- ^ layer index
+  -> Signal dom Bool                               -- ^ validIn
+  -> Signal dom Bool                               -- ^ readyIn (from downstream)
+  -> Signal dom (Vec ModelDimension FixedPoint)    -- ^ input vector
+  -> ( Master.AxiMasterOut dom
+     , Signal dom (Vec ModelDimension FixedPoint)  -- ^ output vector (residual added)
      , Signal dom Bool                             -- ^ validOut
      , Signal dom Bool                             -- ^ readyOut (to upstream)
      )
-feedForwardStage validIn readyIn ffn inputVector =
-  (outputVector, validOut, readyOut)
+feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
+  (axiMasterOut, outputVector, validOut, readyOut)
   where
-    -- Pre-normalize the input (combinational)
-    xHat = rmsNormFwFix <$> inputVector <*> pure (PARAM.fRMSFfnF ffn)
+    --------------------------------------------------------------------------
+    -- DRAM-backed fRMSFfnF fetch (once per inputValid; gates FFN start)
+    --------------------------------------------------------------------------
+    -- Rising edge: fpVecLoader needs a one-shot trigger (processingControllerFSM
+    -- keeps 'enable' high for the entire PROCESSING_RUN state).
+    validInRise = validIn .&&. (not <$> register False validIn)
 
-    -- Sequential FFN core with handshaking
-    (ffnCore, coreValidOut, coreReadyOut) =
-      feedForwardCore validIn readyIn ffn xHat
+    (rmsFfnAxiMaster, rmsFfnVec, rmsFfnValid, rmsFfnBusy) =
+      FPVec.fpVecLoader cycleCounter dramSlaveIn
+        validInRise
+        (pure (Layout.rmsFfnAddress layerIdx))
 
-    -- Add residual connection when core output is valid
-    -- Register the residual to align with FFN output timing
+    -- Hold validInRise latch until fRMSFfn fetch completes
+    pendingInput = register False nextPendingInput
+     where
+      nextPendingInput =
+        mux (pendingInput .&&. rmsFfnValid) (pure False) $
+        mux validInRise (pure True)
+        pendingInput
+
+    effectiveValidIn = pendingInput .&&. rmsFfnValid
+
+    -- Pre-normalize with DRAM-fetched RMS weights
+    xHat = rmsNormFwFix <$> inputVector <*> rmsFfnVec
+
+    --------------------------------------------------------------------------
+    -- DRAM-backed FFN core: W1 (gate) -> W3 (up) -> W2 (down)
+    --------------------------------------------------------------------------
+    (ffnAxiMaster, ffnCore, coreValidOut, readyOut) =
+      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn readyIn xHat
+
+    -- rmsAtt fetch has priority (finishes before FFN starts due to pendingInput gate)
+    axiMasterOut = Master.axiMasterMux rmsFfnBusy rmsFfnAxiMaster ffnAxiMaster
+
+    -- Residual connection: register inputVector aligned with core output timing
     inputVectorDelayed = regEn (repeat 0) coreValidOut inputVector
     outputVector = zipWith (+) <$> inputVectorDelayed <*> ffnCore
 
-    -- Pass through handshaking signals
     validOut = coreValidOut
-    readyOut = coreReadyOut
-
--- FSM States for FFN pipeline
-data FFNState = FFNIdle | FFNGate | FFNUp | FFNDown | FFNDone
-  deriving (Show, Eq, Generic, NFDataX)
-
--- Implements W1 (gate) -> W3 (up) -> W2 (down) pipeline with proper protocol
-feedForwardCore :: forall dom . HiddenClockResetEnable dom
-  => Signal dom Bool                              -- ^ validIn
-  -> Signal dom Bool                              -- ^ readyIn (from downstream)
-  -> PARAM.FeedForwardNetworkComponentQ
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ input vector (normalized)
-  -> ( Signal dom (Vec ModelDimension FixedPoint) -- ^ output vector
-     , Signal dom Bool                             -- ^ validOut
-     , Signal dom Bool                             -- ^ readyOut (to upstream)
-     )
-feedForwardCore validIn readyIn ffn xHat =
-  (outputResult, validOut, readyOut)
-  where
-    -- State machine
-    state :: Signal dom FFNState
-    state = register FFNIdle nextState
-
-    -- Handshake conditions
-    acceptInput = (state .==. pure FFNIdle) .&&. validIn
-    outputAccepted = (state .==. pure FFNDone) .&&. readyIn
-
-    -- W1 (gate) computation
-    gateValidIn = state .==. pure FFNGate
-    gateReadyIn = pure True  -- Always ready to accept multiplier result
-    (gateRaw, gateValidOut, gateReadyOut) =
-      parallelRowMatrixMultiplier gateValidIn gateReadyIn (PARAM.fW1Q ffn) xHatLatched
-
-    -- W3 (up) computation  
-    upValidIn = state .==. pure FFNUp
-    upReadyIn = pure True
-    (upRaw, upValidOut, upReadyOut) =
-      parallelRowMatrixMultiplier upValidIn upReadyIn (PARAM.fW3Q ffn) xHatLatched
-
-    -- W2 (down) computation
-    downValidIn = state .==. pure FFNDown
-    downReadyIn = pure True
-    (downRaw, downValidOut, downReadyOut) =
-      parallelRowMatrixMultiplier downValidIn downReadyIn (PARAM.fW2Q ffn) gateUpLatched
-
-    -- State transitions with explicit conditions
-    nextState =
-      mux acceptInput
-          (pure FFNGate)  -- Accept input, start W1
-          (mux ((state .==. pure FFNGate) .&&. gateValidOut)
-               (pure FFNUp)  -- W1 done, start W3
-               (mux ((state .==. pure FFNUp) .&&. upValidOut)
-                    (pure FFNDown)  -- W3 done, start W2
-                    (mux ((state .==. pure FFNDown) .&&. downValidOut)
-                         (pure FFNDone)  -- W2 done, output ready
-                         (mux outputAccepted
-                              (pure FFNIdle)  -- Output consumed, return to idle
-                              state))))  -- Hold current state
-
-    -- Ready/Valid outputs
-    readyOut :: Signal dom Bool
-    readyOut = state .==. pure FFNIdle
-
-    validOut :: Signal dom Bool
-    validOut = state .==. pure FFNDone
-
-    -- Data path: latch input when accepted
-    xHatLatched :: Signal dom (Vec ModelDimension FixedPoint)
-    xHatLatched = regEn (repeat 0) acceptInput xHat
-
-    -- Apply SiLU activation to gate output and latch when valid
-    gateSiLU :: Signal dom (Vec HiddenDimension FixedPoint)
-    gateSiLU = regEn (repeat 0) gateValidOut (map sigmoidLinearUnit <$> gateRaw)
-
-    -- Element-wise multiplication: gate ⊙ up, computed when up becomes valid
-    gateUpLatched :: Signal dom (Vec HiddenDimension FixedPoint)
-    gateUpLatched = regEn (repeat 0) upValidOut (zipWith (*) <$> gateSiLU <*> upRaw)
-
-    -- Latch final output when valid
-    outputResult :: Signal dom (Vec ModelDimension FixedPoint)
-    outputResult = regEn (repeat 0) downValidOut downRaw

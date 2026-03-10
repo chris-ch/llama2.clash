@@ -3,25 +3,19 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), ProcessingState, Temperature, Seed, Token)
-import qualified Simulation.Parameters as PARAM (DecoderParameters (..))
-import LLaMa2.Types.ModelConfig
-  ( NumLayers, ModelDimension, NumKeyValueHeads, HeadDimension, HiddenDimension )
-import LLaMa2.Numeric.Types (Mantissa, FixedPoint)
+import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension, HeadDimension, SequenceLength)
+import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
 
-import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (outputProjection)
-import qualified LLaMa2.Decoder.SequenceController as Controller
+import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
+import qualified LLaMa2.Decoder.DataFlowController as Controller
 import qualified LLaMa2.Decoder.LayerStack as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
-import LLaMa2.Memory.WeightLoader (weightManagementSystem, WeightSystemState)
-import LLaMa2.Numeric.Quantization (RowI8E)
-import LLaMa2.Layer.Attention.QKVProjectionWeightBuffer (QKVProjectionWeightBuffer(..), qkvWeightBufferController)
-import LLaMa2.Memory.LayerAddressing (LayerSeg(..), LayerAddress(..), layerAddressGenerator, WeightAddress (..), WeightMatrixType (..))
-import LLaMa2.Memory.I8EDynamicRower (dynamicRower)
-import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn)
-import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut)
+import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
+import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..), axiMasterMux)
+import LLaMa2.Numeric.Operations (MultiplierState)
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -36,107 +30,181 @@ initialLayerData = LayerData
 
 -- | Introspection signals for debugging
 data DecoderIntrospection dom = DecoderIntrospection
-  { state               :: Signal dom ProcessingState
+  { stage               :: Signal dom Controller.DataStage
   , layerIndex          :: Signal dom (Index NumLayers)
   , ready               :: Signal dom Bool
+  , layerValidIn        :: Signal dom Bool
   , attnDone            :: Signal dom Bool
   , qkvDone             :: Signal dom Bool
   , ffnDone             :: Signal dom Bool
-  , weightStreamValid   :: Signal dom Bool
-  , parsedWeightSample  :: Signal dom Mantissa
   , layerChangeDetected :: Signal dom Bool
-  , sysState            :: Signal dom WeightSystemState
-  , weightBufferState   :: Signal dom QKVProjectionWeightBuffer
   , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
   , layerData           :: Signal dom LayerData
+  , loadTriggerActive   :: Signal dom Bool
+
+  -- Debug fields propagated from LayerOutputs
+  , dbgRowIndex         :: Signal dom (Index HeadDimension)
+  , dbgState            :: Signal dom MultiplierState
+  , dbgFirstMant        :: Signal dom Mantissa
+  , dbgRowResult        :: Signal dom FixedPoint
+  , dbgRowDone          :: Signal dom Bool
+  , dbgFetchValid       :: Signal dom Bool
+  , dbgFetchedWord      :: Signal dom (BitVector 512)
+  , seqPos              :: Signal dom (Index SequenceLength)
+  , cycleCount          :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
 
--- | Main decoder with simplified control flow
+-- | Layer AXI arbiter: select active layer's AXI request
+layerAxiArbiter :: forall dom.
+  (KnownNat NumLayers)
+  => Signal dom (Index NumLayers)
+  -> Vec NumLayers (Master.AxiMasterOut dom)
+  -> Master.AxiMasterOut dom
+layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
+  { arvalid = sel Master.arvalid
+  , ardata  = sel Master.ardata
+  , rready  = sel Master.rready
+  , awvalid = sel Master.awvalid
+  , awdata  = sel Master.awdata
+  , wvalid  = sel Master.wvalid
+  , wdata   = sel Master.wdata
+  , bready  = sel Master.bready
+  }
+ where
+  sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
+  sel field =
+    let fieldVec    :: Vec NumLayers (Signal dom a)
+        fieldVec    = map field axiMasters
+
+        fieldVecSig :: Signal dom (Vec NumLayers a)
+        fieldVecSig = sequenceA fieldVec
+    in (!!) <$> fieldVecSig <*> activeLayerIdx
+
+-- | Main decoder with AXI interface
 decoder :: forall dom. HiddenClockResetEnable dom
-  => Slave.AxiSlaveIn dom
-  -> Signal dom Bool
-  -> PARAM.DecoderParameters
+  => Signal dom (Unsigned 32)                                         -- Cycle counter
+  -> Slave.AxiSlaveIn dom                                             -- weights DRAM
+  -> Vec NumLayers (Vec NumKeyValueHeads (Slave.AxiSlaveIn dom))      -- KV cache DRAM
   -> Signal dom Token
   -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
-  -> ( Signal dom Token
+  -> ( Master.AxiMasterOut dom                                         -- weights AXI master
+     , Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom)) -- KV cache AXI masters
+     , Signal dom Token
      , Signal dom Bool
-     , Master.AxiMasterOut dom
      , DecoderIntrospection dom )
-decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
-  (outputToken, readyPulse, ddrMaster, introspection)
+decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken temperature seed =
+  (axiMasterOut, LayerStack.kvAxiMasterOuts layerOutputs, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
-    controller = Controller.sequenceController
-      layerQkvDone layerWriteDone layerAttnDone layerFfnDone logitsValid
+    controller = Controller.dataFlowController
+      layerFfnDone     -- Layer processing complete
+      logitsValid      -- Classifier/token complete
 
-    processingState = Controller.processingState controller
+    processingStage = Controller.processingStage controller
+    seqPosition     = Controller.seqPosition controller
     layerIdx        = Controller.currentLayer controller
     readyPulse      = Controller.readyPulse controller
 
     -- Extract enable signals from controller
-    enableQKV       = Controller.enableQKV controller
-    enableWriteKV   = Controller.enableWriteKV controller
-    enableAttend    = Controller.enableAttend controller
-    enableFFN       = Controller.enableFFN controller
-    enableClassifier = Controller.enableClassifier controller
-    
+    layerValid      = Controller.layerValidIn controller
+
     -- =======================================================================
     -- WEIGHT LOADING SYSTEM
     -- =======================================================================
     layerChanged = layerIdx ./=. register 0 layerIdx
     loadTrigger  = register True (pure False) .||. layerChanged
-    
-    (ddrMaster, weightStream, streamValid, sysState) =
-      weightManagementSystem ddrSlave (powerOn .&&. loadTrigger) layerIdx sinkReady
-
-    (layerAddrSig, layerDone) = layerAddressGenerator rowDoneExt loadTrigger
-    
-    (mdRowOut, mdRowValid, rowDoneExt, sinkReady) =
-      dynamicRower (SNat @ModelDimension) (SNat @HeadDimension) (SNat @HiddenDimension)
-                   weightStream streamValid (seg <$> layerAddrSig)
-
-    parsedWeightsHold :: Signal dom (RowI8E ModelDimension)
-    parsedWeightsHold = regEn (repeat 0, 0) mdRowValid mdRowOut
-
-    -- QKV weight buffer
-    weightBuffer = qkvWeightBufferController
-      mdRowValid
-      (mapToOldWeightAddr <$> layerAddrSig)
-      parsedWeightsHold
-      (qkvDonePulse <$> layerAddrSig <*> mdRowValid)
-      loadTrigger
-
-    -- Weight loading complete when QKV buffer is fully loaded
-    useRAM = (fullyLoaded <$> weightBuffer) .&&. layerDone
 
     -- =======================================================================
-    -- TOKEN EMBEDDING AND FEEDBACK
+    -- LAYER PROCESSING (with AXI)
     -- =======================================================================
-    outputToken = mux inputTokenValid inputToken feedbackToken
-    embeddedVector = InputEmbedding.inputEmbedding (PARAM.modelEmbedding params) outputToken
 
-    -- =======================================================================
-    -- LAYER PROCESSING (direct active layer)
-    -- =======================================================================
-    layerInput = LayerStack.prepareLayerInput 
-      <$> layerIdx 
-      <*> register initialLayerData nextLayerData 
+    -- Trigger embedding fetch one cycle after token is stable
+    firstCycle :: Signal dom Bool
+    firstCycle = register True (pure False)
+
+    embFetchTrigger :: Signal dom Bool
+    embFetchTrigger = firstCycle .||. register False readyPulse
+
+    (embAxiMaster, embeddedVector, embOutputValid, embBusy) =
+      InputEmbedding.inputEmbedding
+        cycleCounter dramSlaveIn
+        embFetchTrigger outputToken
+
+    layerInput :: Signal dom LayerData
+    layerInput = LayerStack.layerInputStage
+      <$> layerIdx
+      <*> layerDataReg
       <*> embeddedVector
 
-    -- Extract seqPos for modules that need it, but keep processingState too
-    layerOutput = LayerStack.processActiveLayer
-      processingState layerIdx layerInput weightBuffer useRAM (PARAM.modelLayers params)
-      enableQKV enableWriteKV enableAttend enableFFN enableClassifier
-    
-    nextLayerData   = LayerStack.outputData layerOutput
-    layerWriteDone  = LayerStack.writeDone layerOutput
-    layerAttnDone   = LayerStack.attnDone layerOutput
-    layerQkvDone    = LayerStack.qkvDone layerOutput
-    layerFfnDone    = LayerStack.ffnDone layerOutput
+    -- Capture the controller's layerValid signal from earlier
+    controllerLayerValid = Controller.layerValidIn controller
+
+    -- Embedding is ready for layer 0: valid and not mid-fetch
+    embeddingOk :: Signal dom Bool
+    embeddingOk = embOutputValid .&&. (not <$> embBusy)
+
+    -- Hold layer-0 start request until embedding is ready.
+    -- Other layers start immediately on controllerLayerValid.
+    pendingLayer0 :: Signal dom Bool
+    pendingLayer0 = register False nextPendingLayer0
+      where
+        consumed = pendingLayer0 .&&. embeddingOk .&&. (not <$> layerValidLatched)
+        nextPendingLayer0 =
+          mux consumed (pure False) $
+          mux (controllerLayerValid .&&. (layerIdx .==. 0)) (pure True)
+          pendingLayer0
+
+    -- Latched version that holds until handshake completes
+    layerValidLatched :: Signal dom Bool
+    layerValidLatched = register False nextLayerValidLatched
+      where
+        layerReady = LayerStack.qkvReady layerOutputs
+
+        -- Layer 0: wait for embedding; other layers: fire immediately
+        effectiveValid =
+          ((layerIdx ./=. 0) .&&. controllerLayerValid) .||.
+          (pendingLayer0 .&&. embeddingOk)
+
+        setLatch  = effectiveValid .&&. (not <$> layerValidLatched)
+        clearLatch = layerValidLatched .&&. layerReady
+
+        nextLayerValidLatched = mux setLatch (pure True)
+                              (mux clearLatch (pure False) layerValidLatched)
+
+    -- Layer processing with AXI
+    layerOutputs = LayerStack.activeLayerProcessor
+      cycleCounter
+      dramSlaveIn
+      kvDramSlavesPerLayer
+      layerIdx
+      seqPosition
+      layerInput
+      layerValidLatched
+
+    -- AXI arbitration: embedding has priority while fetching
+    layerAxiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
+    axiMasterOut = Master.axiMasterMux classifierActive logitsAxiMaster
+                 $ Master.axiMasterMux embBusy embAxiMaster layerAxiMasterOut
+
+    nextLayerData :: Signal dom LayerData
+    nextLayerData =
+        mux layerFfnDone
+          (LayerStack.ffnOutput layerOutputs)
+          (mux layerAttnDone
+              (LayerStack.attnOutput layerOutputs)
+              (mux layerQkvDone
+                  (LayerStack.qkvOutput layerOutputs)
+                  layerDataReg))
+
+    layerDataReg = register initialLayerData nextLayerData
+
+    layerAttnDone = LayerStack.attnDone layerOutputs
+    layerQkvDone  = LayerStack.qkvDone layerOutputs
+    layerFfnDone  = LayerStack.ffnDone layerOutputs
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
@@ -144,46 +212,48 @@ decoder ddrSlave powerOn params inputToken inputTokenValid temperature seed =
     ffnOutput = feedForwardOutput <$> nextLayerData
     lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
 
-    (logits, logitsValid) = OutputProjection.outputProjection params lastLayerComplete ffnOutput
+    classifierActive = processingStage .==. pure Controller.Classifier
+
+    (logitsAxiMaster, logits, logitsValid) = OutputProjection.logitsProjector
+      cycleCounter
+      dramSlaveIn
+      lastLayerComplete
+      (pure True) -- always ready to consume
+      logitsValid -- self-consuming: OTC clears on next cycle after outputValid
+      ffnOutput
 
     sampledToken = Sampler.tokenSampler logitsValid temperature seed logits
     feedbackToken = regEn 0 logitsValid sampledToken
 
     -- =======================================================================
+    -- TOKEN EMBEDDING AND FEEDBACK
+    -- =======================================================================
+    outputToken = mux forceInputToken inputToken feedbackToken
+
+    -- =======================================================================
     -- INTROSPECTION
     -- =======================================================================
-    (mantissasH, _expH) = unbundle parsedWeightsHold
-    firstMantissa = fmap (bitCoerce . head) mantissasH
-    
     introspection = DecoderIntrospection
-      { state               = processingState
+      { stage               = processingStage
       , layerIndex          = layerIdx
       , ready               = readyPulse
+      , layerValidIn        = layerValid
       , attnDone            = layerAttnDone
       , qkvDone             = layerQkvDone
       , ffnDone             = layerFfnDone
-      , weightStreamValid   = streamValid
-      , parsedWeightSample  = firstMantissa
       , layerChangeDetected = layerChanged
-      , sysState            = sysState
-      , weightBufferState   = weightBuffer
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
+      , loadTriggerActive   = loadTrigger
+
+      -- Propagate debug fields from layerOutputs
+      , dbgRowIndex         = LayerStack.dbgRowIndex layerOutputs
+      , dbgState            = LayerStack.dbgState layerOutputs
+      , dbgFirstMant        = LayerStack.dbgFirstMant layerOutputs
+      , dbgRowResult        = LayerStack.dbgRowResult layerOutputs
+      , dbgRowDone          = LayerStack.dbgRowDone layerOutputs
+      , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
+      , dbgFetchedWord      = LayerStack.dbgFetchedWord layerOutputs
+      , seqPos              = seqPosition
+      , cycleCount          = cycleCounter
       }
-
--- =============================================================================
--- HELPER FUNCTIONS
--- =============================================================================
-
-mapToOldWeightAddr :: LayerAddress -> WeightAddress
-mapToOldWeightAddr la = case seg la of
-  SegQ -> WeightAddress { rowIndex = rowIx la, matrixType = QMatrix, headIndex = resize (headIx la) }
-  SegK -> WeightAddress { rowIndex = rowIx la, matrixType = KMatrix, headIndex = resize (headIx la) }
-  SegV -> WeightAddress { rowIndex = rowIx la, matrixType = VMatrix, headIndex = resize (headIx la) }
-  _    -> WeightAddress { rowIndex = 0, matrixType = QMatrix, headIndex = 0 }
-
-qkvDonePulse :: LayerAddress -> Bool -> Bool
-qkvDonePulse la vld =
-  vld && seg la == SegV
-      && headIx la == fromInteger (natToNum @NumKeyValueHeads - 1)
-      && rowIx la == maxBound

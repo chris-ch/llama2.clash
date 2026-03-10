@@ -1,4 +1,3 @@
-{-# LANGUAGE NoStarIsType #-}
 module Simulation.DRAMBackedAxiSlaveSpec (spec) where
 
 import Clash.Prelude
@@ -35,7 +34,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
 
       let sampledRValid = sampleN 5 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid: " P.++ show sampledRValid
@@ -64,7 +63,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
 
       let sampledRValid = sampleN 10 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid (burst 2): " P.++ show sampledRValid
@@ -112,7 +111,7 @@ spec = do
 
       let
         slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                    createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
+                    createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
 
         sampledBValid :: [Bool]
         sampledBValid = sampleN 12 (Slave.bvalid slaveIn)
@@ -148,7 +147,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 5 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 5 1 1) initMem masterOut
 
       let sampledRValid = sampleN 15 (Slave.rvalid slaveIn)
       P.putStrLn $ "rValid (latency=5): " P.++ show sampledRValid
@@ -187,7 +186,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
 
       let bValidSamples = sampleN 20 (Slave.bvalid slaveIn)
       P.putStrLn $ "bValid (burst write 4): " P.++ show bValidSamples
@@ -214,7 +213,7 @@ spec = do
             }
 
       let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 1 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
 
       let wreadySamples = sampleN 10 (Slave.wready slaveIn)
       let bvalidSamples = sampleN 10 (Slave.bvalid slaveIn)
@@ -261,7 +260,7 @@ spec = do
             }
 
           slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
-                      createDRAMBackedAxiSlaveFromVec (DRAMConfig 2 1 1) initMem masterOut
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 2 1 1) initMem masterOut
 
           rs = sampleN 120 (bundle ( Slave.rvalid slaveIn
                                    , AXITypes.rdata <$> Slave.rdata slaveIn))
@@ -286,3 +285,102 @@ spec = do
 
       -- 3) No X explosions
       rBeats `shouldSatisfy` P.all (\x -> x == x)
+
+    it "handles two sequential reads to the same address without state pollution" $ do
+      let initMem :: Vec 65536 WordData
+          initMem = replace (0 :: Int) 0xDEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEFCAFEBABE $
+                    repeat 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+          -- First read at cycle 1, second read at cycle 10 (after first completes)
+          arvalid = fromList $ [False, True] P.++ P.replicate 8 False P.++
+                              [True] P.++ P.repeat False
+
+          ardata  = fromList $ [AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 6 0 0,  -- addr=0, len=0, size=6 (64 bytes)
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 6 0 0  -- Second read: same address
+                              ] P.++ P.repeat (AXITypes.AxiAR 0 0 0 0 0)
+
+          rready  = pure True
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = arvalid
+            , Master.ardata  = ardata
+            , Master.rready  = rready
+            , Master.awvalid = pure False
+            , Master.awdata  = pure (AXITypes.AxiAW 0 0 0 0 0)
+            , Master.wvalid  = pure False
+            , Master.wdata   = pure (AXITypes.AxiW 0 0 False)
+            , Master.bready  = pure False
+            }
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
+
+      let sampledR = sampleN 20 (bundle (Slave.rvalid slaveIn,
+                                        AXITypes.rdata <$> Slave.rdata slaveIn))
+
+      let validReads = [d | (True, d) <- sampledR]
+
+      -- Should get exactly 2 reads
+      P.length validReads `shouldBe` 2
+
+      let firstRead = P.head validReads
+          secondRead = validReads P.!! 1
+
+      -- Both reads should return the same data (no state pollution)
+      firstRead `shouldBe` secondRead
+
+      -- Both should be the test pattern we wrote to address 0
+      firstRead `shouldBe` 0xDEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEFCAFEBABEDEADBEEFCAFEBABE
+
+    it "handles sequential reads to different addresses correctly" $ do
+      let initMem :: Vec 65536 WordData
+          initMem = replace (0 :: Int) 0x1111111111111111111111111111111111111111111111111111111111111111 $
+                    replace (1 :: Int) 0x2222222222222222222222222222222222222222222222222222222222222222 $
+                    repeat 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+          -- Read addr 0, then addr 64 (next 64-byte block)
+          arvalid = fromList $ [False, True, False, False, False, False,
+                              True] P.++ P.repeat False
+
+          ardata  = fromList $ [AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 6 0 0,   -- addr=0
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 0 0 0 0 0, AXITypes.AxiAR 0 0 0 0 0,
+                              AXITypes.AxiAR 64 0 6 0 0   -- addr=64
+                              ] P.++ P.repeat (AXITypes.AxiAR 0 0 0 0 0)
+
+          rready  = pure True
+
+          masterOut = Master.AxiMasterOut
+            { Master.arvalid = arvalid
+            , Master.ardata  = ardata
+            , Master.rready  = rready
+            , Master.awvalid = pure False
+            , Master.awdata  = pure (AXITypes.AxiAW 0 0 0 0 0)
+            , Master.wvalid  = pure False
+            , Master.wdata   = pure (AXITypes.AxiW 0 0 False)
+            , Master.bready  = pure False
+            }
+
+      let slaveIn = withClockResetEnable systemClockGen resetGen enableGen $
+                      createDRAMBackedAxiSlaveFromVec (pure 0) (DRAMConfig 1 1 1) initMem masterOut
+
+      let sampledR = sampleN 15 (bundle (Slave.rvalid slaveIn,
+                                        AXITypes.rdata <$> Slave.rdata slaveIn))
+
+      let validReads = [d | (True, d) <- sampledR]
+
+      -- Should get exactly 2 reads
+      P.length validReads `shouldBe` 2
+
+      let firstRead = P.head validReads
+          secondRead = validReads P.!! 1
+
+      -- Reads should be different
+      firstRead `shouldBe` 0x1111111111111111111111111111111111111111111111111111111111111111
+      secondRead `shouldBe` 0x2222222222222222222222222222222222222222222222222222222222222222

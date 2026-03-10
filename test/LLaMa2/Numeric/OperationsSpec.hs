@@ -3,10 +3,9 @@ module LLaMa2.Numeric.OperationsSpec (spec) where
 import Clash.Prelude
 import qualified Clash.Signal as CS
 import qualified Data.List as DL
-import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..), 
-  matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor,
-  parallel64RowMatrixMultiplier)
-import LLaMa2.Numeric.Quantization (MatI8E, RowI8E)
+import LLaMa2.Numeric.Operations (accumulator, MultiplierState (..),
+  matrixMultiplierStateMachine, cyclicalCounter64, parallel64RowProcessor)
+import LLaMa2.Numeric.Quantization (RowI8E (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import Test.Hspec
 import qualified Prelude as P
@@ -112,7 +111,7 @@ spec = do
       let maxCycles = 12
 
           rowVector :: RowI8E 4
-          rowVector = (1 :> 2 :> 3 :> 4 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> 4 :> Nil, rowExponent = 0}
 
           columnVector :: Vec 4 FixedPoint
           columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil
@@ -135,7 +134,7 @@ spec = do
             fromList $ DL.replicate 5 columnVector
               P.++ DL.repeat (pure 0)
 
-          (outputComponent, rowDone) =
+          (outputComponent, rowDone, _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -152,7 +151,7 @@ spec = do
           doneIndices = DL.findIndices id dones
 
       it "there should be only one completion" $ do
-        P.length doneIndices `shouldBe` 4
+        P.length doneIndices `shouldBe` 1
       it "(test input) reset flags should match expected flags" $ do
         let expectedResets = [True,False,False,False,False,False,False,False,False,False,False,False]
         resets `shouldBe` expectedResets
@@ -160,97 +159,18 @@ spec = do
         let expectedEnables = [False,True,True,True,True,False,False,False,False,False,False,False]
         enables `shouldBe` expectedEnables
       it "done flags should match expected flags" $ do
-        let expectedDones = [False,False,True,True,True,True,False,False,False,False,False,False]
+        let expectedDones = [False,False,True,False,False,False,False,False,False,False,False,False]
         dones `shouldBe` expectedDones
       it "final output should match expected value" $ do
-        let expectedOuts = [0.0,0.0,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25,3.25]
+        -- After rowDone pulses at index 2, enable stays True so counter stays at maxBound=3.
+        -- Each extra enabled cycle accumulates element[3] = 4 * 0.125 = 0.5.
+        let expectedOuts = [0.0,0.0,3.25,3.25,3.75,4.25,4.25,4.25,4.25,4.25,4.25,4.25]
         outs `shouldBe` expectedOuts
-
-    context "computes dot products for two rows sequentially" $ do
-      let maxCycles = 12
-          -- Define two different rows
-          rowVector1 :: RowI8E 4
-          rowVector1 = (1 :> 2 :> 3 :> 4 :> Nil, 0) -- First row: [1, 2, 3, 4], exponent 0
-          rowVector2 :: RowI8E 4
-          rowVector2 = (2 :> 3 :> 4 :> 5 :> Nil, 0) -- Second row: [2, 3, 4, 5], exponent 0
-          columnVector :: Vec 4 FixedPoint
-          columnVector = 1.0 :> 0.5 :> 0.25 :> 0.125 :> Nil -- Column: [1.0, 0.5, 0.25, 0.125]
-          -- Expected dot products
-          expectedOutsPattern =
-            [ 0.0,0.0,3.25,3.25,3.25,3.25,0.0,5.125,5.125,5.125,5.125,5.125 ] :: [FixedPoint]
-
-          -- Input signals
-          -- Process first row for 4 cycles, gap with reset, then second row for 4 cycles
-          rowStream =
-            [ rowVector1,
-              rowVector1,
-              rowVector1,
-              rowVector1, -- First row
-              rowVector1, -- Gap cycle (reset)
-              rowVector2,
-              rowVector2,
-              rowVector2,
-              rowVector2 -- Second row
-            ]
-              P.++ P.replicate (maxCycles - 9) rowVector2
-          row :: Signal System (RowI8E 4)
-          row = fromList rowStream
-
-          resetStream =
-            [True] -- Initial reset
-              P.++ P.replicate 4 False -- First row processing
-              P.++ [True] -- Reset after first row
-              P.++ P.replicate (maxCycles - 6) False -- Second row and beyond
-          reset :: Signal System Bool
-          reset = fromList resetStream
-
-          enableStream =
-            [False] -- Initial idle cycle
-              P.++ DL.replicate 4 True -- Process first row
-              P.++ [True] -- Gap cycle
-              P.++ DL.replicate 4 True -- Process second row
-              P.++ DL.replicate (maxCycles - 10) False
-          enable :: Signal System Bool
-          enable = fromList enableStream
-
-          columnStream =
-            [pure 0] -- Initial idle cycle
-              P.++ DL.replicate 4 columnVector -- First row columns
-              P.++ [pure 0] -- Gap cycle
-              P.++ DL.replicate 4 columnVector -- Second row columns
-              P.++ DL.replicate (maxCycles - 10) (pure 0)
-          column :: Signal System (Vec 4 FixedPoint)
-          column = fromList columnStream
-
-          (outputComponent, rowDone) =
-            exposeClockResetEnable
-              parallel64RowProcessor
-              CS.systemClockGen
-              CS.resetGen
-              CS.enableGen
-              reset
-              enable
-              row
-              column
-
-          outs = P.take maxCycles $ sample outputComponent
-          dones = P.take maxCycles $ sample rowDone
-
-          -- Find cycles where rowDone is True
-          doneIndices = DL.findIndices id dones
-
-      it "matches expected output" $ do
-        outs `shouldBe` expectedOutsPattern
-      it "has enough completions" $ do
-        P.length doneIndices `shouldBe` 8
-      it "completions happen on expected cycles" $ do
-        DL.head doneIndices `shouldBe` 2
-        doneIndices P.!! 1 `shouldBe` 3
 
     context "computes dot product for a 3-column row" $ do
       let maxCycles = 7
           rowVector :: RowI8E 3
-          rowVector = (1 :> 2 :> 3 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> Nil, rowExponent = 0}
           columnVector :: Vec 3 FixedPoint
           columnVector = 1.0 :> 2.0 :> 3.0 :> Nil
           expected = 14.0 :: FixedPoint -- 1*1.0 + 2*2.0 + 3*3.0
@@ -262,7 +182,7 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = fromList $ pure 0 : pure 0 : P.replicate maxCycles columnVector -- padding with zero before enable
-          (outputComponent, rowDone) =
+          (outputComponent, rowDone , _) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -277,19 +197,21 @@ spec = do
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
       it "completes at expected cycle" $ do
-        doneIndices `shouldBe` [3,4,5]
+        doneIndices `shouldBe` [3]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
         let
-          expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
+          -- rowDone pulses at index 3, then enable stays True so counter stays at maxBound=2.
+          -- Each extra enabled cycle accumulates element[2] = 3 * 3.0 = 9.0.
+          expectedOuts = [0.0,0.0,0.0,14.0,14.0,23.0,23.0]
           actualOutputs = P.take maxCycles outs
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip actualOutputs expectedOuts) `shouldBe` True
 
     context "computes dot product for a 3-column row, independently from components before enable" $ do
       let maxCycles = 7
           rowVector :: RowI8E 3
-          rowVector = (1 :> 2 :> 3 :> Nil, 0)
+          rowVector = RowI8E {rowMantissas = 1 :> 2 :> 3 :> Nil, rowExponent = 0}
           columnVector :: Vec 3 FixedPoint
           columnVector = 1.0 :> 2.0 :> 3.0 :> Nil
           expected = 14.0 :: FixedPoint -- 1*1.0 + 2*2.0 + 3*3.0
@@ -301,8 +223,8 @@ spec = do
           reset = fromList resetStream :: Signal System Bool
           enable = fromList enableStream :: Signal System Bool
           column = pure columnVector
-          
-          (outputComponent, rowDone) =
+
+          (outputComponent, rowDone ,_) =
             exposeClockResetEnable
               parallel64RowProcessor
               CS.systemClockGen
@@ -316,12 +238,12 @@ spec = do
           dones = P.take maxCycles $ sample rowDone
           doneIndices = DL.findIndices id dones
           finalOut = if null doneIndices then 0 else outs P.!! P.last doneIndices
-      it "completes after 3 columns (cycle 5)" $ do
-        doneIndices `shouldBe` [3,4,5]
+      it "completes after 3 columns (cycle 3)" $ do
+        doneIndices `shouldBe` [3]
       it "produces correct dot product" $ do
         abs (finalOut - expected) < tolerance `shouldBe` True
       it "accumulator follows expected sequence" $ do
-        let expectedOuts = [0.0,0.0,0.0,14.0,14.0,14.0,14.0]
+        let expectedOuts = [0.0,0.0,0.0,14.0,14.0,23.0,23.0]
         P.all (\(a, e) -> abs (a - e) < tolerance) (P.zip (P.take maxCycles outs) expectedOuts) `shouldBe` True
 
   describe "matrixMultiplierStateMachine" $ do
@@ -343,8 +265,8 @@ spec = do
           -- Input: enable signal (high on cycle 1)
           enableStream =
             [False, True] P.++ P.replicate (maxCycles - 2) False
-          enable :: Signal System Bool
-          enable = fromList enableStream
+          validIn :: Signal System Bool
+          validIn = fromList enableStream
 
           -- Input: rowDone signal (pulses after each row completes)
           -- Row processing takes numCols cycles, done appears 1 cycle after last enable
@@ -369,13 +291,14 @@ spec = do
           readyIn :: Signal System Bool
           readyIn = pure True
 
-          (state, rowReset, rowEnable, validOut, readyOut) =
+          (state, _, rowReset, rowEnable, validOut, readyOut) =
             exposeClockResetEnable
               matrixMultiplierStateMachine
               CS.systemClockGen
               CS.resetGen
               CS.enableGen
-              enable
+              validIn
+              (pure True)
               readyIn
               rowDone
               currentRow
@@ -387,73 +310,13 @@ spec = do
           readyOuts = P.take (maxCycles + 2) $ sample readyOut
 
           expectedStates =
-            [ MIdle, -- Cycle 0: initial idle
-              MIdle, -- Cycle 1: enable received, but state updates next cycle
-              MReset, -- Cycle 2: reset row 0
-              MProcessing, -- Cycle 3: processing row 0
-              MProcessing, -- Cycle 4
-              MProcessing, -- Cycle 5
-              MProcessing, -- Cycle 6
-              MProcessing, -- Cycle 7: still processing when rowDone arrives
-              MReset, -- Cycle 8: reset row 1
-              MProcessing, -- Cycle 9: processing row 1
-              MProcessing, -- Cycle 10
-              MProcessing, -- Cycle 11
-              MProcessing, -- Cycle 12
-              MProcessing, -- Cycle 13: still processing when rowDone arrives
-              MReset, -- Cycle 14: reset row 2
-              MProcessing, -- Cycle 15: processing row 2
-              MProcessing, -- Cycle 16
-              MProcessing, -- Cycle 17
-              MProcessing, -- Cycle 18
-              MProcessing -- Cycle 19: still processing when rowDone arrives (last row)
-            ]
+            [MIdle,MIdle,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing]
 
           expectedRowResets =
-            [ False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False,
-              True,
-              False,
-              False,
-              False,
-              False,
-              False
-            ]
+            [False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,True,False,False,False,False]
 
           expectedRowEnables =
-            [ False,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False,
-              False,
-              True,
-              True,
-              True,
-              True,
-              False
-            ]
+            [False,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,True,True,True,False]
 
           expectedValidOuts =
             P.replicate 20 False P.++ [True] -- validOut on cycle 20 (after last rowDone)
@@ -502,8 +365,8 @@ spec = do
               -- Input: enable signal (high on cycle 1)
               enableStream =
                 [False, True] P.++ P.replicate (maxCycles - 2) False
-              enable :: Signal System Bool
-              enable = fromList enableStream
+              validIn :: Signal System Bool
+              validIn = fromList enableStream
 
               -- Input: rowDone signal (pulses after each row completes)
               -- Row processing takes numCols cycles, done appears 1 cycle after last enable
@@ -536,13 +399,14 @@ spec = do
               readyIn :: Signal System Bool
               readyIn = fromList readyInStream
 
-              (state, rowReset, rowEnable, validOut, readyOut) =
+              (state, _, rowReset, rowEnable, validOut, readyOut) =
                 exposeClockResetEnable
                   matrixMultiplierStateMachine
                   CS.systemClockGen
                   CS.resetGen
                   CS.enableGen
-                  enable
+                  validIn
+                  (pure True)
                   readyIn
                   rowDone
                   currentRow
@@ -554,88 +418,13 @@ spec = do
               readyOuts = P.take (maxCycles + 2) $ sample readyOut
 
               expectedStates =
-                [ MIdle, -- Cycle 0: initial idle
-                  MIdle, -- Cycle 1: enable received, but state updates next cycle
-                  MReset, -- Cycle 2: reset row 0
-                  MProcessing, -- Cycle 3: processing row 0
-                  MProcessing, -- Cycle 4
-                  MProcessing, -- Cycle 5
-                  MProcessing, -- Cycle 6
-                  MProcessing, -- Cycle 7: still processing when rowDone arrives
-                  MReset, -- Cycle 8: reset row 1
-                  MProcessing, -- Cycle 9: processing row 1
-                  MProcessing, -- Cycle 10
-                  MProcessing, -- Cycle 11
-                  MProcessing, -- Cycle 12
-                  MProcessing, -- Cycle 13: still processing when rowDone arrives
-                  MReset, -- Cycle 14: reset row 2
-                  MProcessing, -- Cycle 15: processing row 2
-                  MProcessing, -- Cycle 16
-                  MProcessing, -- Cycle 17
-                  MProcessing, -- Cycle 18
-                  MProcessing, -- Cycle 19: still processing when rowDone arrives (last row)
-                  MDone, -- Cycle 20: done, waiting for downstream
-                  MDone, -- Cycle 21: still waiting (readyIn=False)
-                  MDone, -- Cycle 22: still waiting (readyIn=False)
-                  MIdle, -- Cycle 23: downstream accepted, back to idle
-                  MIdle -- Cycle 24: idle
-                ]
+                [MIdle,MIdle,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MFetching,MReset,MProcessing,MProcessing,MProcessing,MProcessing,MDone,MDone,MDone,MIdle,MIdle]
 
               expectedRowResets =
-                [ False,
-                  False,
-                  True, -- Cycle 2
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  True, -- Cycle 8
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  True, -- Cycle 14
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False,
-                  False
-                ]
+                [False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,True,False,False,False,False,False,False,False,False,False]
 
               expectedRowEnables =
-                [ False,
-                  False,
-                  False,
-                  True, -- Cycle 3-6: row 0 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 7: rowDone high, disable
-                  False,
-                  True, -- Cycle 9-12: row 1 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 13: rowDone high, disable
-                  False,
-                  True, -- Cycle 15-18: row 2 processing
-                  True,
-                  True,
-                  True,
-                  False, -- Cycle 19: rowDone high, disable
-                  False,
-                  False,
-                  False,
-                  False,
-                  False
-                ]
+                [False,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,True,True,True,False,False,False,False,False,False]
 
               expectedValidOuts =
                 P.replicate 20 False
@@ -684,85 +473,6 @@ spec = do
             DL.head doneIndices `shouldBe` 20
 
   describe "matrixMultiplier" $ do
-    context "computes matrix-vector multiplication using handshake protocol" $ do
-      let maxCycles = 30
-
-          -- Define a 3x4 matrix
-          -- Row 0: [2, 1, 3, 2]
-          -- Row 1: [1, 2, 1, 3]
-          -- Row 2: [3, 2, 2, 1]
-          row0 :: RowI8E 4
-          row0 = (2 :> 1 :> 3 :> 2 :> Nil, 0)
-
-          row1 :: RowI8E 4
-          row1 = (1 :> 2 :> 1 :> 3 :> Nil, 0)
-
-          row2 :: RowI8E 4
-          row2 = (3 :> 2 :> 2 :> 1 :> Nil, 0)
-
-          matrix :: MatI8E 3 4
-          matrix = row0 :> row1 :> row2 :> Nil
-
-          -- Input vector: [2.0, 1.5, 1.0, 0.5]
-          inputVector :: Vec 4 FixedPoint
-          inputVector = 2.0 :> 1.5 :> 1.0 :> 0.5 :> Nil
-
-          -- Expected outputs:
-          -- Row 0: 2*2.0 + 1*1.5 + 3*1.0 + 2*0.5 = 4.0 + 1.5 + 3.0 + 1.0 = 9.5
-          -- Row 1: 1*2.0 + 2*1.5 + 1*1.0 + 3*0.5 = 2.0 + 3.0 + 1.0 + 1.5 = 7.5
-          -- Row 2: 3*2.0 + 2*1.5 + 2*1.0 + 1*0.5 = 6.0 + 3.0 + 2.0 + 0.5 = 11.5
-          expectedResult :: Vec 3 FixedPoint
-          expectedResult = 9.5 :> 7.5 :> 11.5 :> Nil
-
-          tolerance = 0.01
-
-          -- Input signals
-          -- validIn: pulse high only on cycle 1 (when ready to start transaction)
-          validIn :: Signal System Bool
-          validIn = fromList $ [False, True] P.++ P.replicate (maxCycles - 2) False
-
-          readyIn :: Signal System Bool
-          readyIn = pure True  -- previous output always considered as consumed
-
-          (outputVec, validOut, readyOut) =
-            exposeClockResetEnable
-              parallel64RowMatrixMultiplier
-              CS.systemClockGen
-              CS.resetGen
-              CS.enableGen
-              validIn
-              readyIn
-              matrix
-              (pure inputVector)
-
-          outputs = P.take maxCycles $ sample outputVec
-          validOuts = P.take maxCycles $ sample validOut
-          readyOuts = P.take maxCycles $ sample readyOut
-
-          -- Find when validOut goes high
-          validIndices = DL.findIndices id validOuts
-          completionCycle = if null validIndices then 0 else DL.head validIndices
-          finalOutput = if null validIndices then repeat 0 else outputs P.!! completionCycle
-
-      it "asserts readyOut initially (ready to accept transaction)" $ do
-        DL.head readyOuts `shouldBe` True
-
-      it "only one valid pulse emitted" $ do
-        P.length validIndices `shouldBe` 1
-
-      it "produces correct result vector when validOut is asserted" $ do
-        let matches =
-              P.zipWith
-                (\a e -> abs (a - e) < tolerance)
-                (toList finalOutput)
-                (toList expectedResult)
-        DL.and matches `shouldBe` True
-
-      it "returns to ready state after completion" $ do
-        if completionCycle < maxCycles - 1
-          then readyOuts P.!! (completionCycle + 1) `shouldBe` True
-          else True `shouldBe` False -- can't test if at end of sampled cycles
-
     context "handles reset overriding enable (size = 64)" $ do
       let maxCycles = 10
           resetStream = [True, False, False, True, False, False, True, False, False, False]

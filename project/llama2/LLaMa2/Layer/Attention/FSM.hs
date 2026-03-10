@@ -14,19 +14,19 @@ data GenericState = PROCESSING_IDLE | PROCESSING_RUN | PROCESSING_DONE
 processingControllerFSM ::
   HiddenClockResetEnable dom =>
   Signal dom Bool ->  -- inValid
-  Signal dom Bool ->  -- outReady
+  Signal dom Bool ->  -- downStreamReady
   Signal dom Bool ->  -- computeDone
   ( Signal dom Bool   -- enable
   , Signal dom Bool   -- validOut
-  , Signal dom Bool   -- inReady
+  , Signal dom Bool   -- readyForInput
   )
-processingControllerFSM inValid outReady computeDone = (enable, validOut, inReady)
+processingControllerFSM inValid downStreamReady computeDone = (enable, validOut, readyForInput)
  where
   state    = register PROCESSING_IDLE next
-  inReady  = state .==. pure PROCESSING_IDLE
-  startTx  = inValid .&&. inReady
+  readyForInput  = state .==. pure PROCESSING_IDLE
+  startTx  = inValid .&&. readyForInput
   validOut = state .==. pure PROCESSING_DONE
-  consume  = validOut .&&. outReady
+  consume  = validOut .&&. downStreamReady
 
   next = mux (state .==. pure PROCESSING_IDLE)
               (mux startTx (pure PROCESSING_RUN) (pure PROCESSING_IDLE))
@@ -39,20 +39,20 @@ processingControllerFSM inValid outReady computeDone = (enable, validOut, inRead
 kvWriteControllerFSM ::
   (HiddenClockResetEnable dom) =>
   Signal dom Bool -> -- validIn (QKV done)
-  Signal dom Bool -> -- readyOut (Attn ready)
+  Signal dom Bool -> -- downStreamReady (Attn ready)
   Signal dom Bool -> -- writeComplete (all banks written)
   ( Signal dom Bool, -- validOut (write done, ready for attn)
-    Signal dom Bool, -- readyIn (can accept QKV)
+    Signal dom Bool, -- readyForInput (can accept QKV)
     Signal dom Bool -- enableWrite (trigger write)
   )
-kvWriteControllerFSM validIn readyOut writeComplete = (validOut, readyIn, enableWrite)
+kvWriteControllerFSM validIn downStreamReady writeComplete = (validOut, readyForInput, enableWrite)
   where
     state = register PROCESSING_IDLE nextState
 
-    readyIn = state .==. pure PROCESSING_IDLE
-    startWrite = validIn .&&. readyIn
+    readyForInput = state .==. pure PROCESSING_IDLE
+    startWrite = validIn .&&. readyForInput
     validOut = state .==. pure PROCESSING_DONE
-    consume = validOut .&&. readyOut
+    consume = validOut .&&. downStreamReady
 
     nextState =
       mux

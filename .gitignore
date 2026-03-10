@@ -24,3 +24,5 @@ runq
 /temp
 *.log
 .DS_Store
+core
+.history

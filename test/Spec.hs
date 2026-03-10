@@ -3,19 +3,19 @@ module Spec (main) where
 import Clash.Prelude
 
 import Test.Hspec
-import qualified LLaMa2.Layer.Attention.LayerWeightBufferSpec (spec)
 import qualified LLaMa2.Layer.TransformerLayerSpec (spec)
 import qualified LLaMa2.Numeric.OperationsSpec (spec)
 import qualified LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec (spec)
 import qualified Simulation.AxiWriteMasterSpec (spec)
-import qualified Simulation.WeightLoaderSpec (spec)
-import qualified LLaMa2.Decoder.MultiTokenSpec (spec)
-import qualified LLaMa2.Decoder.TimingValidationSpec (spec)
 import qualified Simulation.DRAMBackedAxiSlaveSpec  (spec)
-import qualified Simulation.WeightLoadingDiagnosticSpec (spec)
-import qualified LLaMa2.Decoder.EnableAttentionTimingSpec (spec)
-import qualified Simulation.SingleLayerOutputSpec (spec)
-import qualified Simulation.ControllerSpec (spec)
+import qualified Simulation.DynamicMatMulSpec (spec)
+import qualified LLaMa2.Memory.WeightsLayoutSpec (spec)
+import qualified LLaMa2.Layer.Attention.QKVProjectionSpec (spec)
+import qualified LLaMa2.Decoder.DecoderSpec (spec)
+import qualified LLaMa2.Memory.WeightsLayoutRoundtripSpec (spec)
+import qualified LLaMa2.Layer.Attention.WeightLoaderSpec (spec)
+import qualified LLaMa2.Layer.Attention.WeightLoaderDebugSpec (spec)
+
 
 main :: IO ()
 main = hspec $ do
@@ -23,13 +23,14 @@ main = hspec $ do
   LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec.spec
   LLaMa2.Numeric.OperationsSpec.spec
   Simulation.AxiWriteMasterSpec.spec
-  Simulation.WeightLoaderSpec.spec
-  LLaMa2.Layer.Attention.LayerWeightBufferSpec.spec
   --LLaMa2.Decoder.MultiTokenSpec.spec
-  LLaMa2.Decoder.TimingValidationSpec.spec
   Simulation.DRAMBackedAxiSlaveSpec.spec
   -- too long:
   --Simulation.WeightLoadingDiagnosticSpec.spec
-  LLaMa2.Decoder.EnableAttentionTimingSpec.spec
-  Simulation.SingleLayerOutputSpec.spec
-  Simulation.ControllerSpec.spec
+  Simulation.DynamicMatMulSpec.spec
+  LLaMa2.Memory.WeightsLayoutSpec.spec
+  LLaMa2.Layer.Attention.QKVProjectionSpec.spec
+  LLaMa2.Decoder.DecoderSpec.spec
+  LLaMa2.Layer.Attention.WeightLoaderSpec.spec
+  LLaMa2.Memory.WeightsLayoutRoundtripSpec.spec
+  LLaMa2.Layer.Attention.WeightLoaderDebugSpec.spec
