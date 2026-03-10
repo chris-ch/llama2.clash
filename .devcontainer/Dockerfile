@@ -79,6 +79,8 @@ USER ${USER_NAME}
 
 WORKDIR /home/${USER_NAME}
 
+ENV PATH="/home/${USER_NAME}/.ghcup/bin:/home/${USER_NAME}/.local/bin:${PATH}"
+
 # install GHC and cabal
 RUN \
     ghcup -v install ghc --force ${VERSION_GHC} && \
@@ -86,6 +88,6 @@ RUN \
     ghcup set ghc ${VERSION_GHC} && \
     ghcup install hls
 
-RUN cabal install clash-ghc
+RUN cabal update && cabal install clash-ghc
 
 RUN /bin/echo -e "\nexport PATH=$PATH:/home/${USER_NAME}/.ghcup/bin:/home/${USER_NAME}/.local/bin/\n" >> /home/${USER_NAME}/.bashrc
