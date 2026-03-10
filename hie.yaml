@@ -1,6 +1,6 @@
 cradle:
   cabal:
-    cabalProject: "/workspaces/llama2.clash/cabal.project"
+    cabalProject: "./cabal.project"
     components:
       - path: "project/llama2"
         component: "lib:llama2"
