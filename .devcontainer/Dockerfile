@@ -56,8 +56,8 @@ RUN \
     chmod +x /usr/bin/ghcup && \
     ghcup config set gpg-setting GPGStrict
 
-ARG VERSION_GHC=9.2.8
-ARG VERSION_CABAL=3.12.1.0
+ARG VERSION_GHC=9.8.4
+ARG VERSION_CABAL=3.14.2.0
 
 ARG USER_NAME=haskell
 ARG USER_UID=1000

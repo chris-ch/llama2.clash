@@ -78,7 +78,6 @@ common project-defaults
     -Wredundant-constraints
     -O2
     -threaded
-    -fllvm
     -haddock
     -rtsopts
     -with-rtsopts=-N
