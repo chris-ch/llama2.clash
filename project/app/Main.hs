@@ -99,13 +99,13 @@ optionsParser =
   Options
     <$> OA.optional (OA.option OA.auto (OA.long "seed" <> OA.help "Seed for debugging"))
     <*> OA.strOption (OA.long "tokenizer-file" <> OA.value
-#if defined(MODEL_260K)
-      "./data/tok512.bin"
-#elif defined(MODEL_15M)
+
+
+
+
+
       "./data/tokenizer.bin"
-#else
-      "./data/tokenizer.bin"
-#endif
+
     <> OA.help "Tokenizer binary file")
     <*> OA.option OA.auto (OA.long "temperature" <> OA.value 0.0 <> OA.metavar "TEMPERATURE" <> OA.help "Temperature")
     <*> OA.option OA.auto (OA.long "steps" <> OA.value 256 <> OA.metavar "STEPS" <> OA.help "Number of steps")
@@ -113,7 +113,7 @@ optionsParser =
 
 printToken :: T.Tokenizer -> Token -> IO ()
 printToken tokenizer tokenId = do
-    BSC.putStr $ decodeToken tokenizer tokenId
+    BSC.putStrLn $ decodeToken tokenizer tokenId
     hFlush stdout
 
 decodeToken :: T.Tokenizer -> Token -> BSC.ByteString
@@ -227,7 +227,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
 
   -- Loop through sampled outputs and display selected signals
   let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
-  let printCycle (ioIdx, token') = do
+  let printCycle ioIdx = do
         let hwCycle = fromIntegral $ cycleCountSampled !! ioIdx
         let
 
@@ -268,7 +268,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show dbgRowIdx)
               (show dbgSt)
 
-  mapM_ printCycle (zip [0 :: Int ..] coreOutputs)
+  mapM_ printCycle [0 :: Int ..]
 
   mapM_ (printToken tokenizer) sampledTokens
   putStrLn ""
@@ -287,7 +287,7 @@ bundledOutputs bundledInputs =
 
   params :: DecoderParameters
   params = PARAM.decoderConst
-  
+
 -- Instantiate cycle counter with explicit clock/reset/enable
   cycleCounter :: C.Signal C.System (C.Unsigned 32)
   cycleCounter =
@@ -306,7 +306,7 @@ bundledOutputs bundledInputs =
 
   -- KV cache DRAM slaves (lazy circular dependency with decoder's KV masters)
   kvDramSlavesPerLayer = C.exposeClockResetEnable
-    (C.map (C.map (\m -> DRAMSlave.createKVCacheDRAMSlave cycleCounter m)) kvMasters)
+    (C.map (C.map (DRAMSlave.createKVCacheDRAMSlave cycleCounter)) kvMasters)
     C.systemClockGen
     C.resetGen
     C.enableGen
