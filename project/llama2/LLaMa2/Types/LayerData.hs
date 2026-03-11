@@ -34,6 +34,6 @@ data LayerData = LayerData
 
 type Token = Unsigned 32
 
-type Temperature = FixedPoint
-
 type Seed = Unsigned 32
+
+type Temperature = FixedPoint

@@ -65,9 +65,8 @@ fpVecLoader _cycleCounter dramSlaveIn fetchTrigger address =
 
   nextState :: Signal dom FPVState
   nextState =
-    mux newFetchStarting                                        (pure FPVFetching) $
-    mux (state .==. pure FPVFetching .&&. fetchDone)           (pure FPVReady)    $
-    state
+    mux newFetchStarting (pure FPVFetching) $
+    mux (state .==. pure FPVFetching .&&. fetchDone) (pure FPVReady) state
 
   -- -----------------------------------------------------------------------
   -- Parse on fetch completion
@@ -125,9 +124,8 @@ fpVecLoaderDyn _cycleCounter dramSlaveIn fetchTrigger address =
 
   nextState :: Signal dom FPVState
   nextState =
-    mux newFetchStarting                                       (pure FPVFetching) $
-    mux (state .==. pure FPVFetching .&&. fetchDone)          (pure FPVReady)    $
-    state
+    mux newFetchStarting (pure FPVFetching) $
+    mux (state .==. pure FPVFetching .&&. fetchDone) (pure FPVReady) state
 
   capturing :: Signal dom Bool
   capturing = state .==. pure FPVFetching .&&. fetchDone
