@@ -10,8 +10,7 @@ module LLaMa2.Types.ModelConfig (
     VocabularySize,
     SequenceLength,
     BankDepth,
-    BankAddress,
-    CacheDepth
+    BankAddress
 ) where
 
 import Clash.Prelude
@@ -140,6 +139,3 @@ type SequenceLength = 4096
 
 type BankDepth   = SequenceLength TN.* HeadDimension
 type BankAddress = Index BankDepth
-
--- Global KV-cache geometry (all layers × KV heads × seq × headDim)
-type CacheDepth   = NumLayers TN.* NumKeyValueHeads TN.* SequenceLength TN.* HeadDimension

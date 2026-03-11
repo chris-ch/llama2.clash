@@ -2,7 +2,7 @@ module Simulation.ParametersQuantization (
     quantizeMatI8E
 ) where
 import Clash.Prelude
-import LLaMa2.Types.LayerData (CArray2D (..))
+import Simulation.SimulationTypes (CArray2D (..))
 import LLaMa2.Numeric.Quantization (MatI8E, RowI8E (..))
 import LLaMa2.Numeric.Types (FixedPoint, Exponent, scalePow2F, clampExp, satRoundToI8)
 

@@ -8,14 +8,10 @@ import qualified Clash.Sized.Vector as CV
 import qualified Clash.Prelude as C
 
 import Control.Monad (replicateM_)
-import LLaMa2.Types.LayerData
-    (
-      SingleHeadComponent(SingleHeadComponent, rotary, wqHead, wkHead,
-                          wvHead),
+import Simulation.SimulationTypes (EmbeddingComponent(..),
+      SingleHeadComponent(SingleHeadComponent, rotary, wqHead, wkHead, wvHead),
       RotaryEncodingComponent(RotaryEncodingComponent, freqSin, freqCos),
-      EmbeddingComponent(EmbeddingComponent, rmsFinalWeight, vocabulary),
-      CArray2D(CArray2D), MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..) )
-
+      MultiHeadAttentionComponent (..), FeedForwardNetworkComponent (..), CArray2D (..))
 import LLaMa2.Types.ModelConfig 
     (
       HeadDimension,

@@ -12,8 +12,9 @@ import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads, ModelDimension, HeadDimension, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension, VocabularySize, NumKeyValueHeads)
 import LLaMa2.Numeric.Quantization (MatI8E)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData (FeedForwardNetworkComponent (..), EmbeddingComponent (..), CArray2D (..), MultiHeadAttentionComponent (..), SingleHeadComponent (..))
 import Simulation.ParametersQuantization (quantizeMatI8E)
+import Simulation.SimulationTypes (EmbeddingComponent(..), FeedForwardNetworkComponent (..), 
+  MultiHeadAttentionComponent (..), SingleHeadComponent (..), CArray2D (..))
 
 data DecoderParameters = DecoderParameters
   { modelEmbedding :: EmbeddingComponentQ

@@ -156,6 +156,7 @@ library
       Simulation.MatVecSim
       Simulation.Parameters
       Simulation.ParametersQuantization
+      Simulation.SimulationTypes
       Tokenizer
       TraceUtils
   hs-source-dirs:
