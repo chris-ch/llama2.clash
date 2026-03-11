@@ -99,13 +99,13 @@ optionsParser =
   Options
     <$> OA.optional (OA.option OA.auto (OA.long "seed" <> OA.help "Seed for debugging"))
     <*> OA.strOption (OA.long "tokenizer-file" <> OA.value
-
-
-
-
-
+#if defined(MODEL_260K)
+      "./data/tok512.bin"
+#elif defined(MODEL_15M)
       "./data/tokenizer.bin"
-
+#else
+      "./data/tokenizer.bin"
+#endif
     <> OA.help "Tokenizer binary file")
     <*> OA.option OA.auto (OA.long "temperature" <> OA.value 0.0 <> OA.metavar "TEMPERATURE" <> OA.help "Temperature")
     <*> OA.option OA.auto (OA.long "steps" <> OA.value 256 <> OA.metavar "STEPS" <> OA.help "Number of steps")
