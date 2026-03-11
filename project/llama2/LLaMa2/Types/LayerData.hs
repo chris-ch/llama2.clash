@@ -30,7 +30,7 @@ data LayerData = LayerData
     attentionOutput :: Vec ModelDimension FixedPoint,
     feedForwardOutput :: Vec ModelDimension FixedPoint
   }
-  deriving (Show, Generic, NFDataX, Eq)
+  deriving (Show, Generic, Eq, NFDataX, BitPack)
 
 type Token = Unsigned 32
 

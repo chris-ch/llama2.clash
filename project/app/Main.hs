@@ -201,10 +201,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
     loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
 
-    dbgRowIndexSampled  = C.sampleN simSteps (Decoder.dbgRowIndex introspection)
-    dbgStateSampled     = C.sampleN simSteps (Decoder.dbgState introspection)
-    dbgRowDoneSampled   = C.sampleN simSteps (Decoder.dbgRowDone introspection)
-
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
 
@@ -222,8 +218,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | norm(attn) | norm(out) |     Tok     | LayerValid | loadTriggerActive | dbgRowIdx  |     dbgState    | dbgFetchValid"
-  putStrLn "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | norm(attn) | norm(out) |     Tok     | LayerValid | loadTriggerActive"
+  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
@@ -246,13 +242,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           layerValidIn = layerValidInsSampled !! hwCycle
           loadTriggerActive = loadTriggerActiveSampled !! hwCycle
 
-          dbgRowIdx      = dbgRowIndexSampled !! hwCycle
-          dbgSt          = dbgStateSampled !! hwCycle
-          dbgRowDone     = dbgRowDoneSampled !! hwCycle
-
-        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive || dbgRowDone) $
+        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s | %10s | %16s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s"
               hwCycle
               li
               (show rdy)
@@ -265,8 +257,6 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show $ decodeToken tokenizer (fst token))
               (show layerValidIn)
               (show loadTriggerActive)
-              (show dbgRowIdx)
-              (show dbgSt)
 
   mapM_ printCycle [0 :: Int ..]
 

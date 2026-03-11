@@ -4,8 +4,8 @@ module LLaMa2.Decoder.Decoder (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
-import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension, HeadDimension, SequenceLength)
-import LLaMa2.Numeric.Types (FixedPoint, Mantissa)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension, SequenceLength)
+import LLaMa2.Numeric.Types (FixedPoint)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Decoder.DataFlowController as Controller
@@ -15,7 +15,6 @@ import qualified LLaMa2.Sampling.Sampler as Sampler
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..), axiMasterMux)
-import LLaMa2.Numeric.Operations (MultiplierState)
 
 -- | Initial layer data (all zeros)
 initialLayerData :: LayerData
@@ -41,15 +40,6 @@ data DecoderIntrospection dom = DecoderIntrospection
   , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
   , layerData           :: Signal dom LayerData
   , loadTriggerActive   :: Signal dom Bool
-
-  -- Debug fields propagated from LayerOutputs
-  , dbgRowIndex         :: Signal dom (Index HeadDimension)
-  , dbgState            :: Signal dom MultiplierState
-  , dbgFirstMant        :: Signal dom Mantissa
-  , dbgRowResult        :: Signal dom FixedPoint
-  , dbgRowDone          :: Signal dom Bool
-  , dbgFetchValid       :: Signal dom Bool
-  , dbgFetchedWord      :: Signal dom (BitVector 512)
   , seqPos              :: Signal dom (Index SequenceLength)
   , cycleCount          :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
@@ -245,15 +235,6 @@ decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
       , loadTriggerActive   = loadTrigger
-
-      -- Propagate debug fields from layerOutputs
-      , dbgRowIndex         = LayerStack.dbgRowIndex layerOutputs
-      , dbgState            = LayerStack.dbgState layerOutputs
-      , dbgFirstMant        = LayerStack.dbgFirstMant layerOutputs
-      , dbgRowResult        = LayerStack.dbgRowResult layerOutputs
-      , dbgRowDone          = LayerStack.dbgRowDone layerOutputs
-      , dbgFetchValid       = LayerStack.dbgFetchValid layerOutputs
-      , dbgFetchedWord      = LayerStack.dbgFetchedWord layerOutputs
       , seqPos              = seqPosition
       , cycleCount          = cycleCounter
       }

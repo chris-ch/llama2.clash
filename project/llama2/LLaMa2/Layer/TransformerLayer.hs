@@ -14,7 +14,6 @@ import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
-import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
 ffnController ::
@@ -62,7 +61,6 @@ transformerLayer ::
       , Signal dom Bool
       , Signal dom Bool
       , Signal dom Bool
-      , QHeadDebugInfo dom
       , Signal dom Bool
       , Signal dom Bool
       , Signal dom Bool
@@ -80,7 +78,6 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData
   , attentionDone
   , ffnDone
   , qkvReady
-  , debugInfo
   , ffnArmed
   , ffnStageStart
   , ffnValidIn
@@ -95,7 +92,7 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData
     validInGated = validIn .&&. (not <$> layerBusy)
 
     -- MHA uses its own weights DRAM slave (from 2-master arbiter)
-    (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone, debugInfo) =
+    (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone) =
       multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx seqPos layerData validInGated
 
     -- 2-master arbiter for weights DRAM: slot 0 = MHA, slot 1 = FFN

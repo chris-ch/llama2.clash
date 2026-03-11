@@ -111,10 +111,9 @@ qkvProjector :: forall dom.
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
-     , QHP.QHeadDebugInfo dom
      )
 qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec =
-  (axiMasterOut, qkvOut, outputValid, readyForInput, head0Debug)
+  (axiMasterOut, qkvOut, outputValid, readyForInput)
  where
   ----------------------------------------------------------------------------
   -- DRAM-backed rmsAttF fetch (once per inputValid; gates QKV start)
@@ -210,12 +209,10 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                         cosVec sinVec xNorm
     ) (repeat () :: Vec NumQueryHeads ())
 
-  head0Debug  = head qDebugInfos
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
   qVecs       = map (\(_, q, _, _, _) -> q) qResults
   qValids     = map (\(_, _, v, _, _) -> v) qResults
   qReadys     = map (\(_, _, _, r, _) -> r) qResults
-  qDebugInfos = map (\(_, _, _, _, d) -> d) qResults
 
   ----------------------------------------------------------------------------
   -- KV DRAM path: independent K and V compute paths per head, both via AXI
@@ -267,15 +264,14 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
-     , QHP.QHeadDebugInfo dom
      )
 qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input seqPos =
-  (axiMasterOut, result, outputValid, readyForInput, debugInfo)
+  (axiMasterOut, result, outputValid, readyForInput)
  where
   (enable, outputValid, inReadyRaw) =
     FSM.processingControllerFSM inputValid downStreamReady matVecValid
 
-  (axiMasterOut, result, matVecValid, projReadyOut, debugInfo) =
+  (axiMasterOut, result, matVecValid, projReadyOut) =
     qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
                  seqPos input
 

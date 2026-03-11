@@ -15,7 +15,6 @@ import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
-import LLaMa2.Layer.Attention.QueryHeadProjector (QHeadDebugInfo)
 import qualified LLaMa2.Layer.Attention.WOHeadProjector as WOHP
 
 multiHeadAttentionStage :: forall dom.
@@ -39,12 +38,11 @@ multiHeadAttentionStage :: forall dom.
   , Signal dom Bool
   , Signal dom Bool
   , Signal dom Bool
-  , QHeadDebugInfo dom
   )
 multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData validIn =
   ( axiMasterOut, kvAxiMasters
   , xAfterAttn, q, k, v
-  , qkvReady, qkvDone, writeDone, attentionDone, debugInfo)
+  , qkvReady, qkvDone, writeDone, attentionDone)
   where
     -- -----------------------------------------------------------------------
     -- Write-back controller (same as before)
@@ -87,7 +85,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos la
     -------------------------------------------------------------------------
     -- QKV projection (weights DRAM)
     -------------------------------------------------------------------------
-    (qkvAxiMaster, qkvProjected, qkvDone, qkvReady, debugInfo) =
+    (qkvAxiMaster, qkvProjected, qkvDone, qkvReady) =
       qkvProjectionController
         cycleCounter qkvSlave layerIdx validIn writeReadyIn input seqPos
 

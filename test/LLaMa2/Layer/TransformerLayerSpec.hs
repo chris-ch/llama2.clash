@@ -118,7 +118,7 @@ spec = do
           seqPos = pure 0 :: Signal System (Index 512)
 
           (_masterOut, _kvMasters, _qProj, _kProj, _vProj, _attnOut, ffnOut,
-           _qkvDone, _writeDone, attnDone, ffnDone, _qkvReady, _debugInfo, ffnArmed, ffnStageStart, ffnValidIn) =
+           _qkvDone, _writeDone, attnDone, ffnDone, _qkvReady, ffnArmed, ffnStageStart, ffnValidIn) =
             exposeClockResetEnable
               (transformerLayer
                 (pure 0)
