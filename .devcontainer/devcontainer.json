@@ -8,7 +8,8 @@
 					"extensions": [
 						"haskell.haskell",
 						"yzhang.markdown-all-in-one",
-						"shd101wyy.markdown-preview-enhanced"
+						"shd101wyy.markdown-preview-enhanced",
+						"Anthropic.claude-code"
 					]
 			}
 	},
