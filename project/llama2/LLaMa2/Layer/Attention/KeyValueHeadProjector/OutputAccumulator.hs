@@ -5,9 +5,6 @@ module LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
 import Clash.Prelude
 import LLaMa2.Numeric.Types
 import LLaMa2.Types.ModelConfig
-import qualified Prelude as P
-
-import TraceUtils (traceWhenC)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputAccumulator
@@ -32,22 +29,17 @@ outputAccumulator :: forall dom.
   -> Index NumKeyValueHeads
   -> OutputAccumIn dom
   -> OutputAccumOut dom
-outputAccumulator cycleCounter layerIdx kvHeadIdx inputs =
+outputAccumulator _cycleCounter _layerIdx _kvHeadIdx inputs =
   OutputAccumOut
     { oaOutput   = kvOut
     , oaOutputHC = kvOutHC
     }
   where
-    tag = "[KV-OA L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
-
     -- DRAM result accumulator
     kvOut = register (repeat 0) nextOutput
 
-    -- Trace result value when rowDone fires
-    resultTraced = traceWhenC cycleCounter (tag P.++ "result") (oaRowDone inputs) (oaRowResult inputs)
-
     nextOutput = mux (oaRowDone inputs)
-                     (replace <$> oaRowIndex inputs <*> resultTraced <*> kvOut)
+                     (replace <$> oaRowIndex inputs <*> oaRowResult inputs <*> kvOut)
                      kvOut
 
     -- HC reference accumulator

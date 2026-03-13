@@ -5,9 +5,6 @@ module LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, HeadDimension)
-import qualified Prelude as P
-
-import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputTransactionController
@@ -31,11 +28,9 @@ outputTransactionController :: forall dom.
   -> Signal dom Bool                       -- downStreamReady (unused, API compat)
   -> OutputTransactionIn dom
   -> OutputTransactionOut dom
-outputTransactionController cycleCounter layerIdx kvHeadIdx _rowIndex _downStreamReady inputs =
-  OutputTransactionOut { otcOutputValid = outputValidTraced }
+outputTransactionController _cycleCounter _layerIdx _kvHeadIdx _rowIndex _downStreamReady inputs =
+  OutputTransactionOut { otcOutputValid = outputValidLatch }
   where
-    tag = "[KV-OTC L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
-
     -- Output valid latch: CLR has priority over SET (critical for handshake)
     outputValidLatch = register False nextOutputValidLatch
 
@@ -43,5 +38,3 @@ outputTransactionController cycleCounter layerIdx kvHeadIdx _rowIndex _downStrea
       mux (outputValidLatch .&&. otcConsumeSignal inputs) (pure False)  -- CLR first
       $ mux (otcAllDone inputs) (pure True)                              -- SET second
         outputValidLatch                                                 -- HOLD
-
-    outputValidTraced = traceEdgeC cycleCounter (tag P.++ "outputValid") outputValidLatch

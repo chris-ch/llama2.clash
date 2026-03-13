@@ -4,8 +4,6 @@ module LLaMa2.Layer.Attention.KeyValueHeadProjector
 
 import Clash.Prelude
 
-import qualified Prelude as P
-
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads
     , NumKeyValueHeads, RotaryPositionalEmbeddingDimension )
@@ -20,8 +18,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as 
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
-
-import TraceUtils (traceChangeC, traceEdgeC)
 
 keyValueHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -56,11 +52,8 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   -------------------------------------------------------------------------
   -- K PATH
   -------------------------------------------------------------------------
-  kTag :: String
-  kTag = "[KHP KV" P.++ show kvHeadIdx P.++ "] "
-
   kRowIndex :: Signal dom (Index HeadDimension)
-  kRowIndex = traceChangeC cycleCounter (kTag P.++ "rowIndex") $ register 0 kNextRowIndex
+  kRowIndex = register 0 kNextRowIndex
 
   kRsIn :: RowScheduler.RowSchedulerIn dom HeadDimension
   kRsIn = RowScheduler.RowSchedulerIn
@@ -103,15 +96,14 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kRowReqRise       = kRowReqValidGated .&&. (not <$> kPrevRowReqValid)
   kPrevRowIndex     = register 0 kEffectiveRowIndex
   kRowIndexChanged  = kEffectiveRowIndex ./=. kPrevRowIndex
-  kRowReqPulse      = traceEdgeC cycleCounter (kTag P.++ "reqPulse") $
-                        kRowReqRise .||. (kRowReqValidGated .&&. kRowIndexChanged)
+  kRowReqPulse      = kRowReqRise .||. (kRowReqValidGated .&&. kRowIndexChanged)
 
   (kAxiMaster, kWeightLoaderOut, kWeightValidRaw, kWeightReadyRaw) =
     LOADER.kWeightLoader cycleCounter kDramSlaveIn layerIdx kvHeadIdx
       kEffectiveRowIndex kRowReqPulse (pure True) (RowComputeUnit.rcRowDone kCompute)
 
-  kWeightValid = traceEdgeC cycleCounter (kTag P.++ "weightValid") kWeightValidRaw
-  kWeightReady = traceEdgeC cycleCounter (kTag P.++ "weightReady") kWeightReadyRaw
+  kWeightValid = kWeightValidRaw
+  kWeightReady = kWeightReadyRaw
 
   kCurrentRowDram = LOADER.assertRowStable kWeightValid (LOADER.dramRowOut kWeightLoaderOut)
 
@@ -131,7 +123,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   kReadyForInput = RowComputeUnit.rcIdleReady kCompute .&&. kWeightReady
 
-  kRowDone = traceEdgeC cycleCounter (kTag P.++ "rowDone") $ RowComputeUnit.rcRowDone kCompute
+  kRowDone = RowComputeUnit.rcRowDone kCompute
 
   kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
     OutputAccumulator.OutputAccumIn
@@ -146,11 +138,8 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   -------------------------------------------------------------------------
   -- V PATH
   -------------------------------------------------------------------------
-  vTag :: String
-  vTag = "[VHP KV" P.++ show kvHeadIdx P.++ "] "
-
   vRowIndex :: Signal dom (Index HeadDimension)
-  vRowIndex = traceChangeC cycleCounter (vTag P.++ "rowIndex") $ register 0 vNextRowIndex
+  vRowIndex = register 0 vNextRowIndex
 
   vRsIn :: RowScheduler.RowSchedulerIn dom HeadDimension
   vRsIn = RowScheduler.RowSchedulerIn
@@ -193,15 +182,14 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vRowReqRise       = vRowReqValidGated .&&. (not <$> vPrevRowReqValid)
   vPrevRowIndex     = register 0 vEffectiveRowIndex
   vRowIndexChanged  = vEffectiveRowIndex ./=. vPrevRowIndex
-  vRowReqPulse      = traceEdgeC cycleCounter (vTag P.++ "reqPulse") $
-                        vRowReqRise .||. (vRowReqValidGated .&&. vRowIndexChanged)
+  vRowReqPulse      = vRowReqRise .||. (vRowReqValidGated .&&. vRowIndexChanged)
 
   (vAxiMaster, vWeightLoaderOut, vWeightValidRaw, vWeightReadyRaw) =
     LOADER.vWeightLoader cycleCounter vDramSlaveIn layerIdx kvHeadIdx
       vEffectiveRowIndex vRowReqPulse (pure True) (RowComputeUnit.rcRowDone vCompute)
 
-  vWeightValid = traceEdgeC cycleCounter (vTag P.++ "weightValid") vWeightValidRaw
-  vWeightReady = traceEdgeC cycleCounter (vTag P.++ "weightReady") vWeightReadyRaw
+  vWeightValid = vWeightValidRaw
+  vWeightReady = vWeightReadyRaw
 
   vCurrentRowDram = LOADER.assertRowStable vWeightValid (LOADER.dramRowOut vWeightLoaderOut)
 
@@ -221,7 +209,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   vReadyForInput = RowComputeUnit.rcIdleReady vCompute .&&. vWeightReady
 
-  vRowDone = traceEdgeC cycleCounter (vTag P.++ "rowDone") $ RowComputeUnit.rcRowDone vCompute
+  vRowDone = RowComputeUnit.rcRowDone vCompute
 
   vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
     OutputAccumulator.OutputAccumIn

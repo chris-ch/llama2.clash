@@ -74,8 +74,8 @@ bundledOutputs bundledInputs =
     enableGen
 
   -- KV cache DRAM slaves (lazy circular dependency with decoder's KV masters)
-  kvDramSlavesPerLayer = exposeClockResetEnable
-    (map (map (\m -> DRAMSlave.createKVCacheDRAMSlave (pure 0) m)) kvMasters)
+  kvDramSlaves = exposeClockResetEnable
+    (map (DRAMSlave.createKVCacheDRAMSlave (pure 0)) kvMasters)
     systemClockGen
     resetGen
     enableGen
@@ -83,7 +83,7 @@ bundledOutputs bundledInputs =
   -- Decoder with AXI feedback loop
   (ddrMaster, kvMasters, tokenOut, validOut, introspection) =
     exposeClockResetEnable
-      (Decoder.decoder (pure 0) dramSlaveIn kvDramSlavesPerLayer token isValid temperature seed)
+      (Decoder.decoder (pure 0) dramSlaveIn kvDramSlaves token isValid temperature seed)
       systemClockGen
       resetGen
       enableGen

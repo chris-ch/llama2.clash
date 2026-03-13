@@ -10,9 +10,6 @@ import LLaMa2.Numeric.Quantization (RowI8E)
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified Prelude as P
-
-import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- WeightFetchUnit
@@ -49,17 +46,15 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[WFU H" P.++ show headIdx P.++ "] "
-
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.qWeightLoader cycleCounter dramSlaveIn layerIdx headIdx
                           (wfRowIndex inputs)
-                          rowReqPulseTraced
+                          rowReqPulse
                           (pure True)
                           (wfRowDone inputs)
 
-    weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
-    weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+    weightValid = weightValidRaw
+    weightReady = weightReadyRaw
 
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
@@ -69,6 +64,5 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx inputs =
     prevRowIndex     = register 0 (wfRowIndex inputs)
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
-    rowReqPulseTraced = traceEdgeC cycleCounter (tag P.++ "reqPulse") rowReqPulse
 
     currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)

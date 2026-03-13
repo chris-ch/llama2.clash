@@ -3,7 +3,6 @@ module LLaMa2.Layer.FeedForward.FFNProjector
   ) where
 
 import Clash.Prelude
-import qualified Prelude as P
 
 import LLaMa2.Types.ModelConfig
     ( ModelDimension, HiddenDimension, NumLayers, NumQueryHeads )
@@ -21,8 +20,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionContr
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit              as RCU
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler                as RS
 
-import TraceUtils (traceEdgeC)
-
 --------------------------------------------------------------------------------
 -- FFN Phase FSM
 --------------------------------------------------------------------------------
@@ -36,13 +33,12 @@ data FFNProjState = FPIdle | FPGate | FPUp | FPDown | FPDone
 
 mkRowReqPulse :: forall dom numRows.
   ( HiddenClockResetEnable dom, KnownNat numRows )
-  => String
-  -> Signal dom (Unsigned 32)
+  => Signal dom (Unsigned 32)
   -> Signal dom Bool              -- ^ rcFetchReq from RowComputeUnit
   -> Signal dom Bool              -- ^ weightReady
   -> Signal dom (Index numRows)   -- ^ effectiveRowIndex
   -> Signal dom Bool
-mkRowReqPulse tag cycleCounter fetchReq weightReady effRowIdx = pulse
+mkRowReqPulse _cycleCounter fetchReq weightReady effRowIdx = pulse
   where
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
     reqValidGated    = fetchReq .&&. weightReady
@@ -50,8 +46,7 @@ mkRowReqPulse tag cycleCounter fetchReq weightReady effRowIdx = pulse
     reqRise          = reqValidGated .&&. (not <$> prevReqValid)
     prevRowIdx       = register (0 :: Index numRows) effRowIdx
     rowIdxChanged    = effRowIdx ./=. prevRowIdx
-    pulse            = traceEdgeC cycleCounter tag
-                         (reqRise .||. (reqValidGated .&&. rowIdxChanged))
+    pulse            = reqRise .||. (reqValidGated .&&. rowIdxChanged)
 
 --------------------------------------------------------------------------------
 -- ffnProjector
@@ -78,7 +73,6 @@ ffnProjector :: forall dom.
 ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   (axiMasterOut, outputResult, validOut, readyOut)
  where
-  tag     = "[FFN] "
   headIdx = 0 :: Index NumQueryHeads
 
   -------------------------------------------------------------------------
@@ -145,15 +139,15 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w1OutputValid   = OTC.otcOutputValid w1OutputTxn
   w1ConsumeSignal = w1OutputValid
 
-  w1ReqPulse = mkRowReqPulse (tag P.++ "w1Req") cycleCounter
+  w1ReqPulse = mkRowReqPulse cycleCounter
                  (RCU.rcFetchReq w1Compute) w1WeightReady w1EffRow
 
   (w1AxiMaster, w1Lo, w1WeightValidRaw, w1WeightReadyRaw) =
     LOADER.w1WeightLoader cycleCounter w1Slave layerIdx
       w1EffRow w1ReqPulse (pure True) (RCU.rcRowDone w1Compute)
 
-  w1WeightValid = traceEdgeC cycleCounter (tag P.++ "w1wV") w1WeightValidRaw
-  w1WeightReady = traceEdgeC cycleCounter (tag P.++ "w1wR") w1WeightReadyRaw
+  w1WeightValid = w1WeightValidRaw
+  w1WeightReady = w1WeightReadyRaw
 
   w1JustConsumed = register False w1ConsumeSignal
   w1EffInput = ITC.itcLatchedValid w1InputTxn
@@ -214,15 +208,15 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w3OutputValid   = OTC.otcOutputValid w3OutputTxn
   w3ConsumeSignal = w3OutputValid
 
-  w3ReqPulse = mkRowReqPulse (tag P.++ "w3Req") cycleCounter
+  w3ReqPulse = mkRowReqPulse cycleCounter
                  (RCU.rcFetchReq w3Compute) w3WeightReady w3EffRow
 
   (w3AxiMaster, w3Lo, w3WeightValidRaw, w3WeightReadyRaw) =
     LOADER.w3WeightLoader cycleCounter w3Slave layerIdx
       w3EffRow w3ReqPulse (pure True) (RCU.rcRowDone w3Compute)
 
-  w3WeightValid = traceEdgeC cycleCounter (tag P.++ "w3wV") w3WeightValidRaw
-  w3WeightReady = traceEdgeC cycleCounter (tag P.++ "w3wR") w3WeightReadyRaw
+  w3WeightValid = w3WeightValidRaw
+  w3WeightReady = w3WeightReadyRaw
 
   w3JustConsumed = register False w3ConsumeSignal
   w3EffInput = ITC.itcLatchedValid w3InputTxn
@@ -281,15 +275,15 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w2OutputValid   = OTC.otcOutputValid w2OutputTxn
   w2ConsumeSignal = w2OutputValid
 
-  w2ReqPulse = mkRowReqPulse (tag P.++ "w2Req") cycleCounter
+  w2ReqPulse = mkRowReqPulse cycleCounter
                  (RCU.rcFetchReq w2Compute) w2WeightReady w2EffRow
 
   (w2AxiMaster, w2Lo, w2WeightValidRaw, w2WeightReadyRaw) =
     LOADER.w2WeightLoader cycleCounter w2Slave layerIdx
       w2EffRow w2ReqPulse (pure True) (RCU.rcRowDone w2Compute)
 
-  w2WeightValid = traceEdgeC cycleCounter (tag P.++ "w2wV") w2WeightValidRaw
-  w2WeightReady = traceEdgeC cycleCounter (tag P.++ "w2wR") w2WeightReadyRaw
+  w2WeightValid = w2WeightValidRaw
+  w2WeightReady = w2WeightReadyRaw
 
   w2JustConsumed = register False w2ConsumeSignal
   w2EffInput = ITC.itcLatchedValid w2InputTxn

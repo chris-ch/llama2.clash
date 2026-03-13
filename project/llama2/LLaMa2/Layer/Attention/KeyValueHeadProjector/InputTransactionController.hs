@@ -6,9 +6,6 @@ module LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig
-import qualified Prelude as P
-
-import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- InputTransactionController
@@ -33,11 +30,9 @@ inputTransactionController :: forall dom.
   -> Signal dom (Index HeadDimension)  -- rowIndex (unused now, kept for API compat)
   -> InputTransactionIn dom
   -> InputTransactionOut dom
-inputTransactionController cycleCounter layerIdx kvHeadIdx _rowIndex inputs =
-  InputTransactionOut { itcLatchedValid = latchedValidTraced }
+inputTransactionController _cycleCounter _layerIdx _kvHeadIdx _rowIndex inputs =
+  InputTransactionOut { itcLatchedValid = latchedValid }
   where
-    tag = "[KV-ITC L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
-
     -- Input valid latch: SET on inputValid, CLR when complete and downstream ready
     latchedValid = register False nextLatchedValid
     clearCondition = itcConsumeSignal inputs
@@ -45,5 +40,3 @@ inputTransactionController cycleCounter layerIdx kvHeadIdx _rowIndex inputs =
       mux (itcInputValid inputs .&&. (not <$> latchedValid)) (pure True)
       $ mux clearCondition (pure False)
         latchedValid
-
-    latchedValidTraced = traceEdgeC cycleCounter (tag P.++ "latchedValid") latchedValid

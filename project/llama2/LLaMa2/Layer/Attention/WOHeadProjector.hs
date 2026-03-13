@@ -4,8 +4,6 @@ module LLaMa2.Layer.Attention.WOHeadProjector
 
 import Clash.Prelude
 
-import qualified Prelude as P
-
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads )
 import LLaMa2.Numeric.Types (FixedPoint)
@@ -18,8 +16,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as 
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
-
-import TraceUtils (traceEdgeC)
 
 woHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -40,9 +36,6 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   inputValid downStreamReady consumeSignal headVec =
   (axiMaster, woOut, outputValid, readyForInput)
  where
-  tag :: String
-  tag = "[WOHP H" P.++ show headIdx P.++ "] "
-
   rowIndex :: Signal dom (Index ModelDimension)
   rowIndex = register 0 nextRowIndex
 
@@ -88,15 +81,14 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   rowReqRise       = rowReqValidGated .&&. (not <$> prevRowReqValid)
   prevRowIndex     = register 0 effectiveRowIndex
   rowIndexChanged  = effectiveRowIndex ./=. prevRowIndex
-  rowReqPulse      = traceEdgeC cycleCounter (tag P.++ "reqPulse") $
-                       rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
+  rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
 
   (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
     LOADER.woWeightLoader cycleCounter dramSlaveIn layerIdx headIdx
       effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute)
 
-  weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
-  weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+  weightValid = weightValidRaw
+  weightReady = weightReadyRaw
 
   currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
 
@@ -119,7 +111,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
 
   readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
-  rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
+  rowDone = RowComputeUnit.rcRowDone compute
 
   outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
     OutputAccumulator.OutputAccumIn

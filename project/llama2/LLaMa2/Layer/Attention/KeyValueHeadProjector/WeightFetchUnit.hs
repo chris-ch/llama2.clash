@@ -11,9 +11,6 @@ import LLaMa2.Numeric.Quantization (RowI8E)
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
-import qualified Prelude as P
-
-import TraceUtils (traceEdgeC)
 
 data WeightFetchIn dom = WeightFetchIn
   { wfRowIndex      :: Signal dom (Index HeadDimension)
@@ -46,13 +43,12 @@ kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[KWFU KV" P.++ show kvHeadIdx P.++ "] "
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.kWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
-                          (wfRowIndex inputs) rowReqPulseTraced
+                          (wfRowIndex inputs) rowReqPulse
                           (pure True) (wfRowDone inputs)
-    weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
-    weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+    weightValid = weightValidRaw
+    weightReady = weightReadyRaw
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
     prevRowReqValid  = register False $ mux loaderBecameIdle (pure False) rowReqValidGated
@@ -60,7 +56,6 @@ kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     prevRowIndex     = register 0 (wfRowIndex inputs)
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
-    rowReqPulseTraced = traceEdgeC cycleCounter (tag P.++ "reqPulse") rowReqPulse
     currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
 
 vWeightFetchUnit :: forall dom.
@@ -79,13 +74,12 @@ vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[VWFU KV" P.++ show kvHeadIdx P.++ "] "
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.vWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
-                          (wfRowIndex inputs) rowReqPulseTraced
+                          (wfRowIndex inputs) rowReqPulse
                           (pure True) (wfRowDone inputs)
-    weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
-    weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+    weightValid = weightValidRaw
+    weightReady = weightReadyRaw
     loaderBecameIdle = weightReady .&&. (not <$> register False weightReady)
     rowReqValidGated = wfRowReqValid inputs .&&. weightReady
     prevRowReqValid  = register False $ mux loaderBecameIdle (pure False) rowReqValidGated
@@ -93,5 +87,4 @@ vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     prevRowIndex     = register 0 (wfRowIndex inputs)
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
-    rowReqPulseTraced = traceEdgeC cycleCounter (tag P.++ "reqPulse") rowReqPulse
     currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)

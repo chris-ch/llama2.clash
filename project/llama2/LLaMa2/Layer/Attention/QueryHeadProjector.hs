@@ -5,8 +5,6 @@ module LLaMa2.Layer.Attention.QueryHeadProjector
 
 import Clash.Prelude
 
-import qualified Prelude as P
-
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint, Mantissa, Exponent)
 import LLaMa2.Numeric.Quantization (RowI8E (..))
@@ -22,7 +20,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as Row
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit as WeightFetchUnit
 
-import TraceUtils (traceChangeC, traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- Debug Info Record
@@ -77,10 +74,8 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     , qhcDebug       = debugInfo
     }
   where
-    tag = "[QHP H" P.++ show headIdx P.++ "] "
-
     rowIndex :: Signal dom (Index HeadDimension)
-    rowIndex = traceChangeC cycleCounter (tag P.++ "rowIndex") $ register 0 nextRowIndex
+    rowIndex = register 0 nextRowIndex
 
     rsIn = RowScheduler.RowSchedulerIn
              { rsRowDone       = rowDone
@@ -145,7 +140,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
 
-    rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
+    rowDone = RowComputeUnit.rcRowDone compute
 
     outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
                     OutputAccumulator.OutputAccumIn

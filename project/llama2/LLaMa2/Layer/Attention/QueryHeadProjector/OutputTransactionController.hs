@@ -5,9 +5,6 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumQueryHeads)
-import qualified Prelude as P
-
-import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- COMPONENT: OutputTransactionController
@@ -28,11 +25,9 @@ outputTransactionController :: forall dom.
   -> Index NumQueryHeads
   -> OutputTransactionIn dom
   -> OutputTransactionOut dom
-outputTransactionController cycleCounter headIdx inputs =
-  OutputTransactionOut { otcOutputValid = outputValidTraced }
+outputTransactionController _cycleCounter _headIdx inputs =
+  OutputTransactionOut { otcOutputValid = outputValidLatch }
   where
-    tag = "[OTC H" P.++ show headIdx P.++ "] "
-
     -- Output valid latch: CLR has priority over SET (critical for handshake)
     outputValidLatch = register False nextOutputValidLatch
 
@@ -40,5 +35,3 @@ outputTransactionController cycleCounter headIdx inputs =
       mux (outputValidLatch .&&. otcConsumeSignal inputs) (pure False)  -- CLR first
       $ mux (otcAllDone inputs) (pure True)                              -- SET second
         outputValidLatch                                                 -- HOLD
-
-    outputValidTraced = traceEdgeC cycleCounter (tag P.++ "outputValid") outputValidLatch

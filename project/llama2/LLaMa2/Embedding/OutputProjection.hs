@@ -3,8 +3,6 @@ module LLaMa2.Embedding.OutputProjection
 ) where
 import Clash.Prelude
 
-import qualified Prelude as P
-
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumQueryHeads)
@@ -19,8 +17,6 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as 
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
-
-import TraceUtils (traceEdgeC)
 
 logitsProjector :: forall dom .
   HiddenClockResetEnable dom
@@ -58,9 +54,6 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
 
   tokenWithRms :: Signal dom (Vec ModelDimension FixedPoint)
   tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> rmsFinalVec
-
-  tag :: String
-  tag = "[LOGITS] "
 
   headIdx :: Index NumQueryHeads
   headIdx = 0
@@ -110,15 +103,14 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   rowReqRise       = rowReqValidGated .&&. (not <$> prevRowReqValid)
   prevRowIndex     = register 0 effectiveRowIndex
   rowIndexChanged  = effectiveRowIndex ./=. prevRowIndex
-  rowReqPulse      = traceEdgeC cycleCounter (tag P.++ "reqPulse") $
-                       rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
+  rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
 
   (logitsAxiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
     LOADER.embWeightLoader cycleCounter dramSlaveIn
       effectiveRowIndex rowReqPulse (pure True) (RowComputeUnit.rcRowDone compute)
 
-  weightValid = traceEdgeC cycleCounter (tag P.++ "weightValid") weightValidRaw
-  weightReady = traceEdgeC cycleCounter (tag P.++ "weightReady") weightReadyRaw
+  weightValid = weightValidRaw
+  weightReady = weightReadyRaw
 
   axiMasterOut :: Master.AxiMasterOut dom
   axiMasterOut = Master.axiMasterMux rmsFinalBusy rmsFinalAxiMaster logitsAxiMaster
@@ -142,7 +134,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
       , rcColumn          = tokenWithRms
       }
 
-  rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
+  rowDone = RowComputeUnit.rcRowDone compute
 
   outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
     OutputAccumulator.OutputAccumIn

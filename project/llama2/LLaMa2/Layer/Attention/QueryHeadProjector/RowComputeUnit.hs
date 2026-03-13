@@ -10,7 +10,6 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.Quantization (RowI8E)
 import qualified LLaMa2.Numeric.Operations as OPS
 
-import TraceUtils (traceEdgeC)
 
 --------------------------------------------------------------------------------
 -- RowMultiplier types
@@ -44,7 +43,7 @@ rowMultiplier :: forall dom numRows numCols.
   -> Signal dom Bool
   -> Signal dom (Index numRows)
   -> RowMultiplierOut dom
-rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
+rowMultiplier _cycleCounter column row colValid rowValid downReady rowIndex =
   RowMultiplierOut
     { rmoResult     = rowResult
     , rmoRowDone    = rowDone
@@ -55,7 +54,7 @@ rowMultiplier cycleCounter column row colValid rowValid downReady rowIndex =
     , rmoDebug      = RowMultiplierDebug accValue rowReset rowEnable
     }
   where
-    rowValidTraced = traceEdgeC cycleCounter "[RCU] rowValid" rowValid
+    rowValidTraced = rowValid
 
     (rowResult, rowDone, accValue) =
       OPS.parallel64RowProcessor rowReset rowEnable row column
