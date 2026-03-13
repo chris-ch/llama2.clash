@@ -11,7 +11,7 @@ import System.IO (hFlush, stdout)
 
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import LLaMa2.Types.LayerData (Token, Temperature, Seed, LayerData(..))
-import LLaMa2.Types.ModelConfig (NumLayers)
+import LLaMa2.Types.ModelConfig (NumLayers, VocabularySize)
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified Simulation.ParamsPlaceholder as PARAM
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
@@ -246,10 +246,34 @@ spec = do
             hFlush stdout
 
 #ifdef MODEL_NANO
-            -- Nano: structural check only — DRAM/HC cross-validation is embedded
-            -- in each projector (P.error on mismatch), so reaching here means correct.
-            P.length token0Events `shouldSatisfy` (>= 0)
-            P.length token1Events `shouldSatisfy` (>= 0)
+            -- End-to-end checks: every layer must complete, tokens must be produced.
+            let nLayers    = natToNum @NumLayers :: Int
+                vocabSize  = natToNum @VocabularySize :: Token
+                -- Tokens emitted when readyPulse is high
+                sampledTokens = [ tok | (tok, rdy) <- P.zip outputTokens readyFlags, rdy ]
+                -- Sentinel -1 / -1.0 means event was not found in this window
+                allAttnFired = P.all (\(_, attnCycle, _, _) -> attnCycle >= 0)
+                allFfnFired  = P.all (\(_, _, _, ffnN)      -> ffnN /= -1.0)
+
+            -- Every layer (0 .. NumLayers-1) must have fired attnDone for token 0
+            P.length token0Events `shouldBe` nLayers
+            token0Events `shouldSatisfy` allAttnFired
+            token0Events `shouldSatisfy` allFfnFired
+
+            -- Same for token 1 (second prompt token processed after ready pulse)
+            P.length token1Events `shouldBe` nLayers
+            token1Events `shouldSatisfy` allAttnFired
+            token1Events `shouldSatisfy` allFfnFired
+
+            -- At least one output token must have been produced (readyPulse fired)
+            sampledTokens `shouldSatisfy` (not . P.null)
+
+            -- Every sampled token must be a valid vocabulary index
+            sampledTokens `shouldSatisfy` P.all (< vocabSize)
+
+            P.putStrLn $ "\n=== SAMPLED TOKENS ==="
+            P.mapM_ (\t -> P.putStrLn $ "  " P.++ show t) sampledTokens
+            hFlush stdout
 #else
             -- Focused assertion: Token 1 Layer 0 attention norm
             let token1Layer0Attn = case DL.find (\(li, _, _, _) -> li == 0) token1Events of

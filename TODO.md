@@ -10,6 +10,6 @@
 
 4. ~~**Annotate `Decoder` as the top-level synthesis entity**~~ ✓ — `topEntity = exposeClockResetEnable decoderTop` with full `Synthesize` port-name annotation added to `Decoder.hs`.
 
-5. **End-to-end simulation test** — full decoder simulation exercising multiple token generation steps through all `NumLayers` passes of the single layer instance, verifying correct token output.
+5. ~~**End-to-end simulation test**~~ ✓ — `DecoderSpec.hs` (MODEL_NANO) now asserts all `NumLayers` layers complete (attnDone + ffnDone) for both prompt tokens, at least one token is sampled, and every sampled token is within vocabulary range.
 
 6. **Trial synthesis + resource estimation** — run Clash + FPGA toolchain to confirm the design synthesises cleanly and check LUT/FF/BRAM utilisation.
