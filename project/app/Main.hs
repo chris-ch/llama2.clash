@@ -195,11 +195,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
-    layerChangeSampled = C.sampleN simSteps (Decoder.layerChangeDetected introspection)
     layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
     layerDataSampled :: [LayerData]
     layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
-    loadTriggerActiveSampled = C.sampleN simSteps (Decoder.loadTriggerActive introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -218,8 +216,8 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | WgtValid | norm(attn) | norm(out) |     Tok     | LayerValid | loadTriggerActive"
-  putStrLn "-------------------------------------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | norm(attn) | norm(out) |     Tok     | LayerValid"
+  putStrLn "--------------------------------------------------------------------------------------------------------------"
 
   -- Loop through sampled outputs and display selected signals
   let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
@@ -235,28 +233,24 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           qkv    = qkvDonesSampled !! hwCycle
           attn    = attnDonesSampled !! hwCycle
           ffn    = ffnDonesSampled !! hwCycle
-          layChg = layerChangeSampled !! hwCycle
           layerOutputNorm = normVec $ layerOutputSampled !! hwCycle
           attnOutNorm = normVec attnOut
           token  = coreOutputs !! hwCycle
           layerValidIn = layerValidInsSampled !! hwCycle
-          loadTriggerActive = loadTriggerActiveSampled !! hwCycle
 
-        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layChg || layerValidIn || loadTriggerActive) $
+        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %8s | %10.4f | %9.4f | %11s | %10s | %15s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %10.4f | %9.4f | %11s | %10s"
               hwCycle
               li
               (show rdy)
               (show qkv)
               (show attn)
               (show ffn)
-              (show layChg)
               attnOutNorm
               layerOutputNorm
               (show $ decodeToken tokenizer (fst token))
               (show layerValidIn)
-              (show loadTriggerActive)
 
   mapM_ printCycle [0 :: Int ..]
 

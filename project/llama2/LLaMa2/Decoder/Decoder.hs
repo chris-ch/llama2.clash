@@ -36,10 +36,8 @@ data DecoderIntrospection dom = DecoderIntrospection
   , attnDone            :: Signal dom Bool
   , qkvDone             :: Signal dom Bool
   , ffnDone             :: Signal dom Bool
-  , layerChangeDetected :: Signal dom Bool
   , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
   , layerData           :: Signal dom LayerData
-  , loadTriggerActive   :: Signal dom Bool
   , seqPos              :: Signal dom (Index SequenceLength)
   , cycleCount          :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
@@ -75,12 +73,6 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken tempera
 
     -- Extract enable signals from controller
     layerValid      = Controller.layerValidIn controller
-
-    -- =======================================================================
-    -- WEIGHT LOADING SYSTEM
-    -- =======================================================================
-    layerChanged = layerIdx ./=. register 0 layerIdx
-    loadTrigger  = register True (pure False) .||. layerChanged
 
     -- =======================================================================
     -- LAYER PROCESSING (with AXI)
@@ -204,10 +196,8 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken tempera
       , attnDone            = layerAttnDone
       , qkvDone             = layerQkvDone
       , ffnDone             = layerFfnDone
-      , layerChangeDetected = layerChanged
       , layerOutput         = ffnOutput
       , layerData           = nextLayerData
-      , loadTriggerActive   = loadTrigger
       , seqPos              = seqPosition
       , cycleCount          = cycleCounter
       }
