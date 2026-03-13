@@ -8,7 +8,7 @@
 
 3. **Remove vestigial `loadTrigger` / `layerChanged` from Decoder** — these signals appear to be remnants of the old weight-prefetch scheme. Verify they serve no purpose with on-demand AXI weight loading and delete if dead.
 
-4. **Annotate `Decoder` as the top-level synthesis entity** — add `{-# ANN topEntity (defTop { t_name = ..., t_inputs = ..., t_outputs = ... }) #-}` and `exposeClockResetEnable` to `decoder` in `Decoder.hs`, giving all ports synthesis-friendly names.
+4. ~~**Annotate `Decoder` as the top-level synthesis entity**~~ ✓ — `topEntity = exposeClockResetEnable decoderTop` with full `Synthesize` port-name annotation added to `Decoder.hs`.
 
 5. **End-to-end simulation test** — full decoder simulation exercising multiple token generation steps through all `NumLayers` passes of the single layer instance, verifying correct token output.
 

@@ -1,5 +1,5 @@
 module LLaMa2.Decoder.Decoder (
-    decoder, DecoderIntrospection(..)
+    topEntity, decoder, DecoderIntrospection(..)
 ) where
 
 import Clash.Prelude
@@ -201,3 +201,62 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken tempera
       , seqPos              = seqPosition
       , cycleCount          = cycleCounter
       }
+
+-- | Synthesis wrapper: generates cycle counter internally, drops introspection
+decoderTop :: HiddenClockResetEnable dom
+  => Slave.AxiSlaveIn dom
+  -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
+  -> Signal dom Token
+  -> Signal dom Bool
+  -> Signal dom Temperature
+  -> Signal dom Seed
+  -> ( Master.AxiMasterOut dom
+     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
+     , Signal dom Token
+     , Signal dom Bool
+     )
+decoderTop dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed =
+  (axiOut, kvOut, tokenOut, readyOut)
+  where
+    cycleCounter   = register (0 :: Unsigned 32) (cycleCounter + 1)
+    (axiOut, kvOut, tokenOut, readyOut, _) =
+      decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed
+
+{-# ANN topEntity
+  (Synthesize
+    { t_name   = "decoder"
+    , t_inputs =
+        [ PortName "clk"
+        , PortName "rst"
+        , PortName "en"
+        , PortProduct "weights_dram" []
+        , PortProduct "kv_dram"      []
+        , PortName "input_token"
+        , PortName "force_input_token"
+        , PortName "temperature"
+        , PortName "seed"
+        ]
+    , t_output =
+        PortProduct ""
+          [ PortProduct "weights_axi" []
+          , PortProduct "kv_axi"      []
+          , PortName "output_token"
+          , PortName "ready"
+          ]
+    }) #-}
+topEntity
+  :: Clock System
+  -> Reset System
+  -> Enable System
+  -> Slave.AxiSlaveIn System
+  -> Vec NumKeyValueHeads (Slave.AxiSlaveIn System)
+  -> Signal System Token
+  -> Signal System Bool
+  -> Signal System Temperature
+  -> Signal System Seed
+  -> ( Master.AxiMasterOut System
+     , Vec NumKeyValueHeads (Master.AxiMasterOut System)
+     , Signal System Token
+     , Signal System Bool
+     )
+topEntity = exposeClockResetEnable decoderTop
