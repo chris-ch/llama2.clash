@@ -48,17 +48,17 @@ data DecoderIntrospection dom = DecoderIntrospection
 decoder :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                                         -- Cycle counter
   -> Slave.AxiSlaveIn dom                                             -- weights DRAM
-  -> Vec NumLayers (Vec NumKeyValueHeads (Slave.AxiSlaveIn dom))      -- KV cache DRAM
+  -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)                      -- KV cache DRAM
   -> Signal dom Token
   -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Master.AxiMasterOut dom                                         -- weights AXI master
-     , Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom)) -- KV cache AXI masters
+     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)                 -- KV cache AXI masters
      , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
-decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken temperature seed =
+decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed =
   (axiMasterOut, LayerStack.kvAxiMasterOuts layerOutputs, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
@@ -143,7 +143,7 @@ decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken
     layerOutputs = LayerStack.activeLayerProcessor
       cycleCounter
       dramSlaveIn
-      kvDramSlavesPerLayer
+      kvDramSlaves
       layerIdx
       seqPosition
       layerInput
