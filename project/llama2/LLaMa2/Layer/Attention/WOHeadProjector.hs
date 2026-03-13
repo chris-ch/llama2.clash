@@ -25,7 +25,7 @@ woHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
   -> Signal dom Bool                              -- inputValid
   -> Signal dom Bool                              -- downStreamReady
@@ -41,7 +41,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   (axiMaster, woOut, outputValid, readyForInput)
  where
   tag :: String
-  tag = "[WOHP L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+  tag = "[WOHP H" P.++ show headIdx P.++ "] "
 
   rowIndex :: Signal dom (Index ModelDimension)
   rowIndex = register 0 nextRowIndex
@@ -59,7 +59,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
   inputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx headIdx
+    cycleCounter headIdx
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
       , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
@@ -70,7 +70,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
 
   outputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx headIdx
+    cycleCounter headIdx
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone compute
       , otcConsumeSignal = consumeSignal
@@ -121,7 +121,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
 
   rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
-  outputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx headIdx
+  outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
     OutputAccumulator.OutputAccumIn
       { oaRowDone   = RowComputeUnit.rcRowDone compute
       , oaRowIndex  = rowIndex

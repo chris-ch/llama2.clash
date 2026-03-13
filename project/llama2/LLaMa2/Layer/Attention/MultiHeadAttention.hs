@@ -24,7 +24,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom (Unsigned 32)                ->  -- cycle counter
   Slave.AxiSlaveIn dom                    ->  -- weights DRAM
   Vec NumKeyValueHeads (Slave.AxiSlaveIn dom) ->  -- KV cache DRAM (one per KV head)
-  Index NumLayers                         ->
+  Signal dom (Index NumLayers)            ->
   Signal dom (Index SequenceLength)       ->
   Signal dom LayerData                    ->
   Signal dom Bool                         ->  -- validIn

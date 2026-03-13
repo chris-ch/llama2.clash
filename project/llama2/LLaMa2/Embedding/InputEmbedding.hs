@@ -77,9 +77,8 @@ inputEmbedding _cycleCounter dramSlaveIn fetchTrigger tokenSig =
 
   nextState :: Signal dom EmbedState
   nextState =
-    mux newFetchStarting                                              (pure EmbFetching) $
-    mux (state .==. pure EmbFetching .&&. fetchDone)                 (pure EmbReady)    $
-    state
+    mux newFetchStarting (pure EmbFetching) $
+    mux (state .==. pure EmbFetching .&&. fetchDone) (pure EmbReady) state
 
   -- -----------------------------------------------------------------------
   -- Parse and dequantize on fetch completion

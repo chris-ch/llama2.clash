@@ -5,7 +5,7 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
   ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumLayers, NumQueryHeads)
+import LLaMa2.Types.ModelConfig (NumQueryHeads)
 import qualified Prelude as P
 
 import TraceUtils (traceEdgeC)
@@ -28,14 +28,13 @@ newtype InputTransactionOut dom
 inputTransactionController :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
-  -> Index NumLayers
   -> Index NumQueryHeads
   -> InputTransactionIn dom
   -> InputTransactionOut dom
-inputTransactionController cycleCounter layerIdx headIdx inputs =
+inputTransactionController cycleCounter headIdx inputs =
   InputTransactionOut { itcLatchedValid = latchedValidTraced }
   where
-    tag = "[ITC L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+    tag = "[ITC H" P.++ show headIdx P.++ "] "
 
     -- Input valid latch: SET on inputValid, CLR when complete and downstream ready
     latchedValid = register False nextLatchedValid

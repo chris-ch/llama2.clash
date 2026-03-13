@@ -175,7 +175,6 @@ spec = do
   describe "queryHeadProjector - DRAM vs Hardcoded Comparison" $ do
     context "when DRAM matches hardcoded params" $ do
       let maxCycles = 1000
-          layerIdx = 4 :: Index NumLayers
           headIdx = 0 :: Index NumQueryHeads
 
           -- Hardcoded params: mantissa=1, exp=0
@@ -196,7 +195,7 @@ spec = do
               ( queryHeadProjector
                   (pure 0)
                   (createMockDRAMForRow testRow arvalidSignal)
-                  layerIdx
+                  (pure 4)
                   headIdx
                   validIn
                   downStreamReady

@@ -13,6 +13,7 @@ module LLaMa2.Layer.Attention.WeightLoader
   ) where
 
 import Clash.Prelude
+
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, HiddenDimension, NumQueryHeads, NumLayers, NumKeyValueHeads, VocabularySize )
 import LLaMa2.Numeric.Quantization (RowI8E (..))
@@ -47,7 +48,7 @@ assertRowStable _validSig rowSig = rowSig
 qWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)  -- ^ cycleCounter for tracing
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
   -> Signal dom (Index HeadDimension)
   -> Signal dom Bool       -- ^ rowReqValid (pulse)
@@ -60,15 +61,13 @@ qWeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.QMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[WFU] "
 
 -- | Weight loader for K matrices (numRows=HeadDimension, numCols=ModelDimension)
 kWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumKeyValueHeads
   -> Signal dom (Index HeadDimension)
   -> Signal dom Bool
@@ -81,15 +80,13 @@ kWeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.KMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[KWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[KWFU] "
 
 -- | Weight loader for V matrices (numRows=HeadDimension, numCols=ModelDimension)
 vWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumKeyValueHeads
   -> Signal dom (Index HeadDimension)
   -> Signal dom Bool
@@ -102,16 +99,14 @@ vWeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.VMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[VWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[VWFU] "
 
 -- | Weight loader for WO output-projection matrices.
 -- WO is transposed vs Q/K/V: numRows=ModelDimension (64 rows), numCols=HeadDimension (8 cols).
 woWeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads            -- ^ Q-head index (WO has NumQueryHeads heads)
   -> Signal dom (Index ModelDimension)  -- ^ row request (0..ModelDimension-1)
   -> Signal dom Bool
@@ -124,16 +119,14 @@ woWeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.WOMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[WOWFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[WOWFU] "
 
 -- | Weight loader for W1 (gate) FFN matrices.
 -- W1: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
 w1WeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom (Index HiddenDimension)  -- ^ row request (0..HiddenDimension-1)
   -> Signal dom Bool
   -> Signal dom Bool
@@ -145,16 +138,14 @@ w1WeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W1Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[W1WFU L" P.++ show layerIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[W1WFU] "
 
 -- | Weight loader for W3 (up) FFN matrices.
 -- W3: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
 w3WeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom (Index HiddenDimension)  -- ^ row request (0..HiddenDimension-1)
   -> Signal dom Bool
   -> Signal dom Bool
@@ -166,16 +157,14 @@ w3WeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W3Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[W3WFU L" P.++ show layerIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[W3WFU] "
 
 -- | Weight loader for W2 (down) FFN matrices.
 -- W2: MatI8E ModelDimension HiddenDimension — ModelDimension rows × HiddenDimension cols.
 w2WeightLoader :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom (Index ModelDimension)   -- ^ row request (0..ModelDimension-1)
   -> Signal dom Bool
   -> Signal dom Bool
@@ -187,9 +176,7 @@ w2WeightLoader :: forall dom. HiddenClockResetEnable dom
      )
 w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
   weightLoaderGeneric cycleCounter dram Layout.W2Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed tagStr
- where
-  tagStr = "[W2WFU L" P.++ show layerIdx P.++ "] "
+                      rowReq rowReqValid downstreamReady dataConsumed "[W2WFU] "
 
 -- | Weight loader for vocabulary embedding rows (output/logits projection).
 -- Shape: MatI8E VocabularySize ModelDimension — VocabularySize rows × ModelDimension cols.
@@ -207,7 +194,7 @@ embWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      )
 embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed =
-  weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix 0 0
+  weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix (pure 0) 0
                       rowReq rowReqValid downstreamReady dataConsumed "[EMBWFU] "
 
 -- | Generic weight loader for any matrix type and dimensions.
@@ -227,7 +214,7 @@ weightLoaderGeneric :: forall dom numRows numCols.
   => Signal dom (Unsigned 32)       -- ^ cycleCounter for tracing
   -> Slave.AxiSlaveIn dom
   -> Layout.MatrixType              -- ^ Which matrix (QMatrix, KMatrix, VMatrix, WOMatrix)
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Int                            -- ^ Head index as Int
   -> Signal dom (Index numRows)     -- ^ Row request
   -> Signal dom Bool                -- ^ rowReqValid (pulse)
@@ -256,12 +243,13 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   prevValid = register False weightValid
   dvRise    = weightValid .&&. (not <$> prevValid)
 
-  -- Live request and address (combinational)
+  -- Live request and address (combinational) — layerIdx is now a signal
   liveRow  :: Signal dom (Index numRows)
   liveRow  = rowReq
 
   liveAddr :: Signal dom (Unsigned 32)
-  liveAddr = Layout.rowAddressCalculator matrixType layerIdx headIdxInt <$> (fromIntegral <$> liveRow)
+  liveAddr = (\li ri -> Layout.rowAddressCalculator matrixType li headIdxInt (fromIntegral ri))
+               <$> layerIdx <*> liveRow
 
   -- The actual fetch start: requires BOTH loader idle AND fetcher ready
   actualFetchStart :: Signal dom Bool

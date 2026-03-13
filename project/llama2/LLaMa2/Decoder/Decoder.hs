@@ -44,32 +44,6 @@ data DecoderIntrospection dom = DecoderIntrospection
   , cycleCount          :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
 
--- | Layer AXI arbiter: select active layer's AXI request
-layerAxiArbiter :: forall dom.
-  (KnownNat NumLayers)
-  => Signal dom (Index NumLayers)
-  -> Vec NumLayers (Master.AxiMasterOut dom)
-  -> Master.AxiMasterOut dom
-layerAxiArbiter activeLayerIdx axiMasters = Master.AxiMasterOut
-  { arvalid = sel Master.arvalid
-  , ardata  = sel Master.ardata
-  , rready  = sel Master.rready
-  , awvalid = sel Master.awvalid
-  , awdata  = sel Master.awdata
-  , wvalid  = sel Master.wvalid
-  , wdata   = sel Master.wdata
-  , bready  = sel Master.bready
-  }
- where
-  sel :: forall a. (Master.AxiMasterOut dom -> Signal dom a) -> Signal dom a
-  sel field =
-    let fieldVec    :: Vec NumLayers (Signal dom a)
-        fieldVec    = map field axiMasters
-
-        fieldVecSig :: Signal dom (Vec NumLayers a)
-        fieldVecSig = sequenceA fieldVec
-    in (!!) <$> fieldVecSig <*> activeLayerIdx
-
 -- | Main decoder with AXI interface
 decoder :: forall dom. HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                                         -- Cycle counter
@@ -176,9 +150,8 @@ decoder cycleCounter dramSlaveIn kvDramSlavesPerLayer inputToken forceInputToken
       layerValidLatched
 
     -- AXI arbitration: embedding has priority while fetching
-    layerAxiMasterOut = layerAxiArbiter layerIdx (LayerStack.axiMasterOuts layerOutputs)
     axiMasterOut = Master.axiMasterMux classifierActive logitsAxiMaster
-                 $ Master.axiMasterMux embBusy embAxiMaster layerAxiMasterOut
+                 $ Master.axiMasterMux embBusy embAxiMaster (LayerStack.axiMasterOut layerOutputs)
 
     nextLayerData :: Signal dom LayerData
     nextLayerData =

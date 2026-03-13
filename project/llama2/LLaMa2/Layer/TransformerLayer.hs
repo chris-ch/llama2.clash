@@ -20,7 +20,7 @@ ffnController ::
   (HiddenClockResetEnable dom) =>
   Signal dom (Unsigned 32) ->
   Slave.AxiSlaveIn dom ->
-  Index NumLayers ->
+  Signal dom (Index NumLayers) ->
   Signal dom Bool ->
   Signal dom Bool ->
   Signal dom (Vec ModelDimension FixedPoint) ->
@@ -45,7 +45,7 @@ transformerLayer ::
    => Signal dom (Unsigned 32)
    -> Slave.AxiSlaveIn dom                              -- ^ weights DRAM
    -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)       -- ^ KV cache DRAM (one per KV head)
-   -> Index NumLayers
+   -> Signal dom (Index NumLayers)
    -> Signal dom (Index SequenceLength)
    -> Signal dom LayerData
    -> Signal dom Bool

@@ -37,7 +37,7 @@ weightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   ->  Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
   -> WeightFetchIn dom
   -> WeightFetchOut dom
@@ -49,7 +49,7 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[WFU L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+    tag = "[WFU H" P.++ show headIdx P.++ "] "
 
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.qWeightLoader cycleCounter dramSlaveIn layerIdx headIdx

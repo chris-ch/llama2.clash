@@ -41,13 +41,6 @@
 - Intermediates + buffers: ~0.5–0.7 GB
 - → Preference for 8-bit KV when targeting long context
 
-**DRAM Weight Migration Status**
-
-- Completed migration of: Q, K, V, WO, W1/W2/W3, RMS norms, rotary tables, KV cache
-- All backed by AXI → single DRAM slave via 2-level arbiter tree
-- 101 tests passing on `dram` branch
-- Fast nano-model sim ~18 s
-
 **Final Checklist**
 
 - 7B/13B only

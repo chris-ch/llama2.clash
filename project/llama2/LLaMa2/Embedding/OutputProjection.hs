@@ -7,7 +7,7 @@ import qualified Prelude as P
 
 import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumLayers, NumQueryHeads)
+import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumQueryHeads)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
@@ -62,9 +62,6 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   tag :: String
   tag = "[LOGITS] "
 
-  layerIdx :: Index NumLayers
-  layerIdx = 0
-
   headIdx :: Index NumQueryHeads
   headIdx = 0
 
@@ -84,7 +81,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
   inputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx headIdx
+    cycleCounter headIdx
     InputTransactionController.InputTransactionIn
       { itcInputValid      = effectiveInputOuter
       , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
@@ -95,7 +92,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
 
   outputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx headIdx
+    cycleCounter headIdx
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone compute
       , otcConsumeSignal = consumeSignal
@@ -147,7 +144,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
 
   rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
-  outputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx headIdx
+  outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
     OutputAccumulator.OutputAccumIn
       { oaRowDone   = RowComputeUnit.rcRowDone compute
       , oaRowIndex  = rowIndex

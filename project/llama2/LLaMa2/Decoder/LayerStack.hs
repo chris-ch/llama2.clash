@@ -9,19 +9,20 @@ import qualified LLaMa2.Layer.TransformerLayer as TransformerLayer (transformerL
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
+import qualified LLaMa2.Memory.AXI.Types as AXITypes
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
 data LayerOutputs dom = LayerOutputs
-  { axiMasterOuts    :: Vec NumLayers (Master.AxiMasterOut dom)
-  , kvAxiMasterOuts  :: Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
-  , qkvOutput        :: Signal dom LayerData
-  , attnOutput       :: Signal dom LayerData
-  , ffnOutput        :: Signal dom LayerData
-  , writeDone        :: Signal dom Bool
-  , attnDone         :: Signal dom Bool
-  , qkvDone          :: Signal dom Bool
-  , ffnDone          :: Signal dom Bool
-  , qkvReady         :: Signal dom Bool
+  { axiMasterOut    :: Master.AxiMasterOut dom              -- single weights AXI master
+  , kvAxiMasterOuts :: Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
+  , qkvOutput       :: Signal dom LayerData
+  , attnOutput      :: Signal dom LayerData
+  , ffnOutput       :: Signal dom LayerData
+  , writeDone       :: Signal dom Bool
+  , attnDone        :: Signal dom Bool
+  , qkvDone         :: Signal dom Bool
+  , ffnDone         :: Signal dom Bool
+  , qkvReady        :: Signal dom Bool
   }
 
 activeLayerProcessor :: forall dom.
@@ -38,118 +39,75 @@ activeLayerProcessor :: forall dom.
   -> LayerOutputs dom
 activeLayerProcessor cycleCounter dramSlaveIn kvDramSlavesPerLayer activeLayerIdx seqPos inputData inputValid =
   LayerOutputs
-    { axiMasterOuts    = layerAxiMasters
-    , kvAxiMasterOuts  = layerKvAxiMasters
-    , qkvOutput        = selectedQkvOutput
-    , attnOutput       = selectedAttnOutput
-    , ffnOutput        = selectedFfnOutput
-    , writeDone        = selectedWriteDone
-    , attnDone         = selectedAttnDone
-    , qkvDone          = selectedQkvDone
-    , ffnDone          = selectedFfnDone
-    , qkvReady         = selectedQkvReady
+    { axiMasterOut    = singleAxiMaster
+    , kvAxiMasterOuts = distributeKvMasters activeLayerIdx singleKvMasters
+    , qkvOutput       = qkvData
+    , attnOutput      = attnData
+    , ffnOutput       = ffnData
+    , writeDone       = writeDone'
+    , attnDone        = attnDone'
+    , qkvDone         = qkvDone'
+    , ffnDone         = ffnDone'
+    , qkvReady        = qkvReady'
     }
   where
-    -- Run all layers in parallel
-    layerOutputs :: Vec NumLayers (Master.AxiMasterOut dom, Vec NumKeyValueHeads (Master.AxiMasterOut dom),
-      Signal dom LayerData, Signal dom LayerData, Signal dom LayerData,
-      Signal dom Bool, Signal dom Bool,
-      Signal dom Bool, Signal dom Bool, Signal dom Bool)
-    layerOutputs = map (layerPipeline inputData) indicesI
+    -- Select KV slaves for the currently active layer
+    kvDramSlaves :: Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
+    kvDramSlaves = imap (\kvIx _ ->
+        selectSlave activeLayerIdx (map (!! kvIx) kvDramSlavesPerLayer)
+      ) (repeat ())
 
-    -- Extract AXI masters and other outputs
-    layerAxiMasters :: Vec NumLayers (Master.AxiMasterOut dom)
-    layerAxiMasters = map (\(axi, _, _, _, _, _, _, _, _, _) -> axi) layerOutputs
+    -- Single transformer layer instance reused across all layer passes
+    (singleAxiMaster, singleKvMasters, qProj, kProj, vProj, attnOut, ffnOut
+      , qkvDone', writeDone', attnDone', ffnDone', qkvReady', _, _, _) =
+      TransformerLayer.transformerLayer
+        cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos inputData inputValid
 
-    layerKvAxiMasters :: Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
-    layerKvAxiMasters = map (\(_, kv, _, _, _, _, _, _, _, _) -> kv) layerOutputs
+    qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
+                  <$> inputData <*> qProj <*> kProj <*> vProj
+    attnData = (\d attn -> d { attentionOutput = attn }) <$> inputData <*> attnOut
+    ffnData  = (\d ffn  -> d { feedForwardOutput = ffn }) <$> inputData <*> ffnOut
 
-    -- Extract vectors of each signal type
-    qkvOutputs :: Vec NumLayers (Signal dom LayerData)
-    qkvOutputs = map (\(_, _, qkv, _, _, _, _, _, _, _) -> qkv) layerOutputs
+-- | Mux a vector of slave inputs based on a dynamic index.
+selectSlave :: forall dom n.
+  KnownNat n
+  => Signal dom (Index n)
+  -> Vec n (Slave.AxiSlaveIn dom)
+  -> Slave.AxiSlaveIn dom
+selectSlave idx slaves = Slave.AxiSlaveIn
+  { Slave.arready = sel Slave.arready
+  , Slave.rvalid  = sel Slave.rvalid
+  , Slave.rdata   = sel Slave.rdata
+  , Slave.awready = sel Slave.awready
+  , Slave.wready  = sel Slave.wready
+  , Slave.bvalid  = sel Slave.bvalid
+  , Slave.bdata   = sel Slave.bdata
+  }
+  where
+    sel :: forall a. (Slave.AxiSlaveIn dom -> Signal dom a) -> Signal dom a
+    sel field = (!!) <$> sequenceA (map field slaves) <*> idx
 
-    attnOutputs :: Vec NumLayers (Signal dom LayerData)
-    attnOutputs = map (\(_, _, _, attn, _, _, _, _, _, _) -> attn) layerOutputs
-
-    ffnOutputs :: Vec NumLayers (Signal dom LayerData)
-    ffnOutputs = map (\(_, _, _, _, ffn, _, _, _, _, _) -> ffn) layerOutputs
-
-    qkvDones :: Vec NumLayers (Signal dom Bool)
-    qkvDones = map (\(_, _, _, _, _, qkvD, _, _, _, _) -> qkvD) layerOutputs
-
-    writeDones :: Vec NumLayers (Signal dom Bool)
-    writeDones = map (\(_, _, _, _, _, _, writeD, _, _, _) -> writeD) layerOutputs
-
-    attnDones :: Vec NumLayers (Signal dom Bool)
-    attnDones = map (\(_, _, _, _, _, _, _, attnD, _, _) -> attnD) layerOutputs
-
-    ffnDones :: Vec NumLayers (Signal dom Bool)
-    ffnDones = map (\(_, _, _, _, _, _, _, _, ffnD, _) -> ffnD) layerOutputs
-
-    qkvReadys :: Vec NumLayers (Signal dom Bool)
-    qkvReadys = map (\(_, _, _, _, _, _, _, _, _, qkvR) -> qkvR) layerOutputs
-
-    -- Select outputs for the active layer
-    selectedQkvOutput :: Signal dom LayerData
-    selectedQkvOutput = selectActive activeLayerIdx qkvOutputs
-
-    selectedAttnOutput :: Signal dom LayerData
-    selectedAttnOutput = selectActive activeLayerIdx attnOutputs
-
-    selectedFfnOutput :: Signal dom LayerData
-    selectedFfnOutput = selectActive activeLayerIdx ffnOutputs
-
-    selectedQkvDone :: Signal dom Bool
-    selectedQkvDone = selectActive activeLayerIdx qkvDones
-
-    selectedWriteDone :: Signal dom Bool
-    selectedWriteDone = selectActive activeLayerIdx writeDones
-
-    selectedAttnDone :: Signal dom Bool
-    selectedAttnDone = selectActive activeLayerIdx attnDones
-
-    selectedFfnDone :: Signal dom Bool
-    selectedFfnDone = selectActive activeLayerIdx ffnDones
-
-    selectedQkvReady :: Signal dom Bool
-    selectedQkvReady = selectActive activeLayerIdx qkvReadys
-
-    layerPipeline :: Signal dom LayerData
-                  -> Index NumLayers
-                  -> ( Master.AxiMasterOut dom
-                     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
-                     , Signal dom LayerData
-                     , Signal dom LayerData
-                     , Signal dom LayerData
-                     , Signal dom Bool
-                     , Signal dom Bool
-                     , Signal dom Bool
-                     , Signal dom Bool
-                     , Signal dom Bool
-                     )
-    layerPipeline inputData' layerIdx =
-      ( axiMaster, kvAxiMasters, qkvData, attnData, ffnData
-      , qkvDone', writeDone', attnDone', ffnDone', qkvReady )
-      where
-        isThisLayer = activeLayerIdx .==. pure layerIdx
-        validIn' = inputValid .&&. isThisLayer
-
-        kvDramSlaves :: Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
-        kvDramSlaves = kvDramSlavesPerLayer !! layerIdx
-
-        (axiMaster, kvAxiMasters, qProj, kProj, vProj, attnOut, ffnOut
-          , qkvDone', writeDone', attnDone', ffnDone', qkvReady, _, _, _) =
-          TransformerLayer.transformerLayer
-            cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos inputData' validIn'
-
-        qkvData  = (\d q k v -> d { queryVectors = q, keyVectors = k, valueVectors = v })
-                      <$> inputData' <*> qProj <*> kProj <*> vProj
-        attnData = (\d attn -> d { attentionOutput = attn }) <$> inputData' <*> attnOut
-        ffnData  = (\d ffn -> d { feedForwardOutput = ffn }) <$> inputData' <*> ffnOut
-
-    -- Helper function to select from a vector of signals based on dynamic index
-    selectActive :: Signal dom (Index NumLayers) -> Vec NumLayers (Signal dom a) -> Signal dom a
-    selectActive idx vec = (!!) <$> sequenceA vec <*> idx
+-- | Fan out KV masters to all per-layer slots; only the active layer's slot is live.
+distributeKvMasters :: forall dom.
+  Signal dom (Index NumLayers)
+  -> Vec NumKeyValueHeads (Master.AxiMasterOut dom)
+  -> Vec NumLayers (Vec NumKeyValueHeads (Master.AxiMasterOut dom))
+distributeKvMasters activeLayerIdx kvMasters =
+  imap (\layerIx _ ->
+    let isActive = activeLayerIdx .==. pure layerIx
+    in map (\m -> Master.axiMasterMux isActive m idleMaster) kvMasters
+  ) (repeat ())
+  where
+    idleMaster = Master.AxiMasterOut
+      { Master.arvalid = pure False
+      , Master.ardata  = pure (AXITypes.AxiAR 0 0 0 0 0)
+      , Master.rready  = pure False
+      , Master.awvalid = pure False
+      , Master.awdata  = pure (AXITypes.AxiAW 0 0 0 0 0)
+      , Master.wvalid  = pure False
+      , Master.wdata   = pure (AXITypes.AxiW 0 0 False)
+      , Master.bready  = pure False
+      }
 
 layerInputStage :: Index NumLayers
                   -> LayerData

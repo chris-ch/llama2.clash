@@ -61,7 +61,7 @@ queryHeadCore :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
   -> Signal dom Bool                              -- inputValid
   -> Signal dom Bool                              -- downStreamReady
@@ -77,7 +77,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     , qhcDebug       = debugInfo
     }
   where
-    tag = "[QHP L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+    tag = "[QHP H" P.++ show headIdx P.++ "] "
 
     rowIndex :: Signal dom (Index HeadDimension)
     rowIndex = traceChangeC cycleCounter (tag P.++ "rowIndex") $ register 0 nextRowIndex
@@ -92,7 +92,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
     rowSched     = RowScheduler.rowScheduler rsIn
     nextRowIndex = RowScheduler.rsNextRowIndex rowSched
 
-    inputTxn = InputTransactionController.inputTransactionController cycleCounter layerIdx headIdx
+    inputTxn = InputTransactionController.inputTransactionController cycleCounter headIdx
                  InputTransactionController.InputTransactionIn
                    { itcInputValid      = inputValid
                    , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
@@ -102,7 +102,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
     inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
 
-    outputTxn = OutputTransactionController.outputTransactionController cycleCounter layerIdx headIdx
+    outputTxn = OutputTransactionController.outputTransactionController cycleCounter headIdx
                   OutputTransactionController.OutputTransactionIn
                     { otcAllDone       = RowComputeUnit.rcAllDone compute
                     , otcConsumeSignal = consumeSignal
@@ -147,7 +147,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
 
     rowDone = traceEdgeC cycleCounter (tag P.++ "rowDone") $ RowComputeUnit.rcRowDone compute
 
-    outputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx headIdx
+    outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
                     OutputAccumulator.OutputAccumIn
                       { oaRowDone   = RowComputeUnit.rcRowDone compute
                       , oaRowIndex  = rowIndex
@@ -182,7 +182,7 @@ queryHeadProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
   -> Signal dom Bool                                                -- inputValid
   -> Signal dom Bool                                                -- downStreamReady

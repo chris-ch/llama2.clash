@@ -100,7 +100,7 @@ qkvProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
@@ -126,7 +126,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   (rmsAttAxiMaster, rmsAttVec, rmsAttValid, rmsAttBusy) =
     FPVec.fpVecLoader cycleCounter dramSlaveIn
       inputValidRise
-      (pure (Layout.rmsAttAddress layerIdx))
+      (Layout.rmsAttAddress <$> layerIdx)
 
   ----------------------------------------------------------------------------
   -- Serial cos/sin fetch: triggered once rmsAtt completes
@@ -253,7 +253,7 @@ qkvProjectionController ::
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Vec ModelDimension FixedPoint)

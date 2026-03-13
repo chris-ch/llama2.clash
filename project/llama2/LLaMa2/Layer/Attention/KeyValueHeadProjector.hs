@@ -28,7 +28,7 @@ keyValueHeadProjector :: forall dom.
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom                          -- K DRAM slave
   -> Slave.AxiSlaveIn dom                          -- V DRAM slave
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumKeyValueHeads
   -> Signal dom Bool                               -- inputValid
   -> Signal dom Bool                               -- downStreamReady
@@ -57,7 +57,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   -- K PATH
   -------------------------------------------------------------------------
   kTag :: String
-  kTag = "[KHP L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+  kTag = "[KHP KV" P.++ show kvHeadIdx P.++ "] "
 
   kRowIndex :: Signal dom (Index HeadDimension)
   kRowIndex = traceChangeC cycleCounter (kTag P.++ "rowIndex") $ register 0 kNextRowIndex
@@ -74,7 +74,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kNextRowIndex = RowScheduler.rsNextRowIndex kRowSched
 
   kInputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx qTag
+    cycleCounter qTag
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
       , itcOutputValid     = OutputTransactionController.otcOutputValid kOutputTxn
@@ -85,7 +85,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kInputValidLatched = InputTransactionController.itcLatchedValid kInputTxn
 
   kOutputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx qTag
+    cycleCounter qTag
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone kCompute
       , otcConsumeSignal = consumeSignal
@@ -133,7 +133,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   kRowDone = traceEdgeC cycleCounter (kTag P.++ "rowDone") $ RowComputeUnit.rcRowDone kCompute
 
-  kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx qTag
+  kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
     OutputAccumulator.OutputAccumIn
       { oaRowDone   = RowComputeUnit.rcRowDone kCompute
       , oaRowIndex  = kRowIndex
@@ -147,7 +147,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   -- V PATH
   -------------------------------------------------------------------------
   vTag :: String
-  vTag = "[VHP L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+  vTag = "[VHP KV" P.++ show kvHeadIdx P.++ "] "
 
   vRowIndex :: Signal dom (Index HeadDimension)
   vRowIndex = traceChangeC cycleCounter (vTag P.++ "rowIndex") $ register 0 vNextRowIndex
@@ -164,7 +164,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vNextRowIndex = RowScheduler.rsNextRowIndex vRowSched
 
   vInputTxn = InputTransactionController.inputTransactionController
-    cycleCounter layerIdx qTag
+    cycleCounter qTag
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
       , itcOutputValid     = OutputTransactionController.otcOutputValid vOutputTxn
@@ -175,7 +175,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vInputValidLatched = InputTransactionController.itcLatchedValid vInputTxn
 
   vOutputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter layerIdx qTag
+    cycleCounter qTag
     OutputTransactionController.OutputTransactionIn
       { otcAllDone       = RowComputeUnit.rcAllDone vCompute
       , otcConsumeSignal = consumeSignal
@@ -223,7 +223,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   vRowDone = traceEdgeC cycleCounter (vTag P.++ "rowDone") $ RowComputeUnit.rcRowDone vCompute
 
-  vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter layerIdx qTag
+  vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
     OutputAccumulator.OutputAccumIn
       { oaRowDone   = RowComputeUnit.rcRowDone vCompute
       , oaRowIndex  = vRowIndex

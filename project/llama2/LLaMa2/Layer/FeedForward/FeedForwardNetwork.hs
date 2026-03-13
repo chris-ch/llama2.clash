@@ -17,7 +17,7 @@ feedForwardStage
   :: HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                      -- ^ cycle counter
   -> Slave.AxiSlaveIn dom                          -- ^ DRAM slave
-  -> Index NumLayers                               -- ^ layer index
+  -> Signal dom (Index NumLayers)                  -- ^ layer index
   -> Signal dom Bool                               -- ^ validIn
   -> Signal dom Bool                               -- ^ readyIn (from downstream)
   -> Signal dom (Vec ModelDimension FixedPoint)    -- ^ input vector
@@ -39,7 +39,7 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
     (rmsFfnAxiMaster, rmsFfnVec, rmsFfnValid, rmsFfnBusy) =
       FPVec.fpVecLoader cycleCounter dramSlaveIn
         validInRise
-        (pure (Layout.rmsFfnAddress layerIdx))
+        (Layout.rmsFfnAddress <$> layerIdx)
 
     -- Hold validInRise latch until fRMSFfn fetch completes
     pendingInput = register False nextPendingInput

@@ -34,7 +34,7 @@ kWeightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumKeyValueHeads
   -> WeightFetchIn dom
   -> WeightFetchOut dom
@@ -46,7 +46,7 @@ kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[KWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+    tag = "[KWFU KV" P.++ show kvHeadIdx P.++ "] "
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.kWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
                           (wfRowIndex inputs) rowReqPulseTraced
@@ -67,7 +67,7 @@ vWeightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Index NumKeyValueHeads
   -> WeightFetchIn dom
   -> WeightFetchOut dom
@@ -79,7 +79,7 @@ vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     , wfIdleReady    = weightReady
     }
   where
-    tag = "[VWFU L" P.++ show layerIdx P.++ " KV" P.++ show kvHeadIdx P.++ "] "
+    tag = "[VWFU KV" P.++ show kvHeadIdx P.++ "] "
     (axiMaster, weightLoaderOut, weightValidRaw, weightReadyRaw) =
         LOADER.vWeightLoader cycleCounter dramSlaveIn layerIdx kvHeadIdx
                           (wfRowIndex inputs) rowReqPulseTraced

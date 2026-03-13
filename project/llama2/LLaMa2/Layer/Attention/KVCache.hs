@@ -21,7 +21,7 @@ kvBankControllerDRAM ::
   ) =>
   Signal dom (Unsigned 32)              ->
   Slave.AxiSlaveIn dom                  ->  -- ^ dedicated per-bank KV DRAM slave
-  Index NumLayers                       ->
+  Signal dom (Index NumLayers)          ->
   Signal dom (Index SequenceLength)     ->
   Signal dom LayerData                  ->
   Signal dom Bool                       ->  -- ^ qkvValid

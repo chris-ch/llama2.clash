@@ -66,7 +66,7 @@ ffnProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
-  -> Index NumLayers
+  -> Signal dom (Index NumLayers)
   -> Signal dom Bool                              -- ^ validIn
   -> Signal dom Bool                              -- ^ readyIn (from downstream)
   -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ xHat (RMS-normalised input)
@@ -78,7 +78,7 @@ ffnProjector :: forall dom.
 ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   (axiMasterOut, outputResult, validOut, readyOut)
  where
-  tag     = "[FFN L" P.++ show layerIdx P.++ "] "
+  tag     = "[FFN] "
   headIdx = 0 :: Index NumQueryHeads
 
   -------------------------------------------------------------------------
@@ -128,7 +128,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w1EffRow :: Signal dom (Index HiddenDimension)
   w1EffRow = mux (w1OutputValid .&&. w1ConsumeSignal) (pure 0) w1RowIndex
 
-  w1InputTxn = ITC.inputTransactionController cycleCounter layerIdx headIdx
+  w1InputTxn = ITC.inputTransactionController cycleCounter headIdx
     ITC.InputTransactionIn
       { ITC.itcInputValid      = fpState .==. pure FPGate
       , ITC.itcOutputValid     = w1OutputValid
@@ -136,7 +136,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
       , ITC.itcConsumeSignal   = w1ConsumeSignal
       }
 
-  w1OutputTxn = OTC.outputTransactionController cycleCounter layerIdx headIdx
+  w1OutputTxn = OTC.outputTransactionController cycleCounter headIdx
     OTC.OutputTransactionIn
       { OTC.otcAllDone       = RCU.rcAllDone w1Compute
       , OTC.otcConsumeSignal = w1ConsumeSignal
@@ -169,7 +169,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcColumn          = xHatLatched
     }
 
-  w1Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
+  w1Accum = OA.outputAccumulator cycleCounter headIdx OA.OutputAccumIn
     { OA.oaRowDone   = RCU.rcRowDone w1Compute
     , OA.oaRowIndex  = w1RowIndex
     , OA.oaRowResult = RCU.rcResult w1Compute
@@ -197,7 +197,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w3EffRow :: Signal dom (Index HiddenDimension)
   w3EffRow = mux (w3OutputValid .&&. w3ConsumeSignal) (pure 0) w3RowIndex
 
-  w3InputTxn = ITC.inputTransactionController cycleCounter layerIdx headIdx
+  w3InputTxn = ITC.inputTransactionController cycleCounter headIdx
     ITC.InputTransactionIn
       { ITC.itcInputValid      = fpState .==. pure FPUp
       , ITC.itcOutputValid     = w3OutputValid
@@ -205,7 +205,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
       , ITC.itcConsumeSignal   = w3ConsumeSignal
       }
 
-  w3OutputTxn = OTC.outputTransactionController cycleCounter layerIdx headIdx
+  w3OutputTxn = OTC.outputTransactionController cycleCounter headIdx
     OTC.OutputTransactionIn
       { OTC.otcAllDone       = RCU.rcAllDone w3Compute
       , OTC.otcConsumeSignal = w3ConsumeSignal
@@ -238,7 +238,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcColumn          = xHatLatched
     }
 
-  w3Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
+  w3Accum = OA.outputAccumulator cycleCounter headIdx OA.OutputAccumIn
     { OA.oaRowDone   = RCU.rcRowDone w3Compute
     , OA.oaRowIndex  = w3RowIndex
     , OA.oaRowResult = RCU.rcResult w3Compute
@@ -264,7 +264,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w2EffRow :: Signal dom (Index ModelDimension)
   w2EffRow = mux (w2OutputValid .&&. w2ConsumeSignal) (pure 0) w2RowIndex
 
-  w2InputTxn = ITC.inputTransactionController cycleCounter layerIdx headIdx
+  w2InputTxn = ITC.inputTransactionController cycleCounter headIdx
     ITC.InputTransactionIn
       { ITC.itcInputValid      = fpState .==. pure FPDown
       , ITC.itcOutputValid     = w2OutputValid
@@ -272,7 +272,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
       , ITC.itcConsumeSignal   = w2ConsumeSignal
       }
 
-  w2OutputTxn = OTC.outputTransactionController cycleCounter layerIdx headIdx
+  w2OutputTxn = OTC.outputTransactionController cycleCounter headIdx
     OTC.OutputTransactionIn
       { OTC.otcAllDone       = RCU.rcAllDone w2Compute
       , OTC.otcConsumeSignal = w2ConsumeSignal
@@ -305,7 +305,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcColumn          = gateUpLatched
     }
 
-  w2Accum = OA.outputAccumulator cycleCounter layerIdx headIdx OA.OutputAccumIn
+  w2Accum = OA.outputAccumulator cycleCounter headIdx OA.OutputAccumIn
     { OA.oaRowDone   = RCU.rcRowDone w2Compute
     , OA.oaRowIndex  = w2RowIndex
     , OA.oaRowResult = RCU.rcResult w2Compute

@@ -4,7 +4,7 @@ module LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types
-import LLaMa2.Types.ModelConfig
+import LLaMa2.Types.ModelConfig (NumQueryHeads)
 import qualified Prelude as P
 
 import TraceUtils (traceWhenC)
@@ -28,16 +28,15 @@ outputAccumulator :: forall dom numRows.
   , KnownNat numRows
   )
   => Signal dom (Unsigned 32)
-  -> Index NumLayers
   -> Index NumQueryHeads
   -> OutputAccumIn dom numRows
   -> OutputAccumOut dom numRows
-outputAccumulator cycleCounter layerIdx headIdx inputs =
+outputAccumulator cycleCounter headIdx inputs =
   OutputAccumOut
     { oaOutput = qOut
     }
   where
-    tag = "[OA L" P.++ show layerIdx P.++ " H" P.++ show headIdx P.++ "] "
+    tag = "[OA H" P.++ show headIdx P.++ "] "
 
     qOut = register (repeat 0) nextOutput
 
