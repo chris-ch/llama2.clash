@@ -13,7 +13,7 @@ import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import LLaMa2.Types.LayerData ( Token, Temperature, Seed, LayerData (..) )
+import LLaMa2.Types.LayerData ( Token, Temperature, Seed )
 
 import LLaMa2.Types.ModelConfig ( VocabularySize, ModelDimension, NumQueryHeads, NumKeyValueHeads, NumLayers, HiddenDimension, SequenceLength, RotaryPositionalEmbeddingDimension )
 import qualified Tokenizer as T (buildTokenizer, encodeTokens, Tokenizer, decodePiece)
@@ -23,7 +23,7 @@ import qualified Simulation.ParamsPlaceholder as PARAM (decoderConst)
 import qualified LLaMa2.Decoder.Decoder as Decoder
 import Simulation.Parameters (DecoderParameters)
 import qualified Simulation.DRAMBackedAxiSlave as DRAMSlave
-import qualified TraceUtils
+import qualified SimUtils
 
 --------------------------------------------------------------------------------
 -- Main entry point
@@ -125,22 +125,6 @@ decodeToken tokenizer tokenId = T.decodePiece tokenizer (fromIntegral tokenId)
 
 type DecoderInputState = (Token, [Token], Bool)
 
-fromSFixed :: C.SFixed 12 20 -> Float
-fromSFixed x = realToFrac (toRational x)
-
--- | Convert a Clash vector of signed fixed-point numbers to a list of Float.
-vecToFloatList :: C.Vec n (C.SFixed 12 20) -> [Float]
-vecToFloatList = map fromSFixed . C.toList
---   fromSFixed :: SFixed a b -> Rational
---   Rational → Float via implicit conversion
-
--- | Euclidean (L2) norm of a fixed-point vector, returned as Float.
-normVec :: C.Vec n (C.SFixed 12 20) -> Float
-normVec v = sqrt (sum squares)
-          where
-            floats = vecToFloatList v
-            squares = map (\x -> x * x) floats
-
 -- | Autoregressive token generation, one token at a time.
 generateTokensSimAutoregressive
   :: T.Tokenizer
@@ -188,16 +172,14 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     coreOutputs :: [(Token, Bool)]
     coreOutputs = C.sampleN simSteps coreOutputsSignal
 
-    -- Sample introspection fields separately
-    layerIndicesSampled   = C.sampleN simSteps (Decoder.layerIndex introspection)
-    readiesSampled        = C.sampleN simSteps (Decoder.ready introspection)
-    layerValidInsSampled        = C.sampleN simSteps (Decoder.layerValidIn introspection)
+    -- Sample introspection fields
+    layerIndicesSampled  = C.sampleN simSteps (Decoder.layerIndex introspection)
+    readiesSampled       = C.sampleN simSteps (Decoder.ready introspection)
+    layerValidInsSampled = C.sampleN simSteps (Decoder.layerValidIn introspection)
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
-    attnDonesSampled      = C.sampleN simSteps (Decoder.attnDone introspection)
-    ffnDonesSampled       = C.sampleN simSteps (Decoder.ffnDone introspection)
-    layerOutputSampled =  C.sampleN simSteps (Decoder.layerOutput introspection)
-    layerDataSampled :: [LayerData]
-    layerDataSampled =  C.sampleN simSteps (Decoder.layerData introspection)
+    attnDonesSampled     = C.sampleN simSteps (Decoder.attnDone introspection)
+    ffnDonesSampled      = C.sampleN simSteps (Decoder.ffnDone introspection)
+    cycleCountSampled    = C.sampleN simSteps (Decoder.cycleCount introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -216,39 +198,29 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone | norm(attn) | norm(out) |     Tok     | LayerValid"
-  putStrLn "--------------------------------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone |     Tok     | LayerValid"
+  putStrLn "------------------------------------------------------------------------------------"
 
-  -- Loop through sampled outputs and display selected signals
-  let cycleCountSampled = C.sampleN simSteps (Decoder.cycleCount introspection)
   let printCycle ioIdx = do
         let hwCycle = fromIntegral $ cycleCountSampled !! ioIdx
         let
-
-          attnOut :: C.Vec ModelDimension FixedPoint
-          attnOut = attentionOutput (layerDataSampled !! hwCycle)
-
-          li     = fromIntegral (layerIndicesSampled !! hwCycle) :: Int
-          rdy    = readiesSampled !! hwCycle
-          qkv    = qkvDonesSampled !! hwCycle
-          attn    = attnDonesSampled !! hwCycle
-          ffn    = ffnDonesSampled !! hwCycle
-          layerOutputNorm = normVec $ layerOutputSampled !! hwCycle
-          attnOutNorm = normVec attnOut
-          token  = coreOutputs !! hwCycle
+          li          = fromIntegral (layerIndicesSampled !! hwCycle) :: Int
+          rdy         = readiesSampled !! hwCycle
+          qkv         = qkvDonesSampled !! hwCycle
+          attn        = attnDonesSampled !! hwCycle
+          ffn         = ffnDonesSampled !! hwCycle
+          token       = coreOutputs !! hwCycle
           layerValidIn = layerValidInsSampled !! hwCycle
 
         when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %10.4f | %9.4f | %11s | %10s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %11s | %10s"
               hwCycle
               li
               (show rdy)
               (show qkv)
               (show attn)
               (show ffn)
-              attnOutNorm
-              layerOutputNorm
               (show $ decodeToken tokenizer (fst token))
               (show layerValidIn)
 
@@ -272,11 +244,11 @@ bundledOutputs bundledInputs =
   params :: DecoderParameters
   params = PARAM.decoderConst
 
--- Instantiate cycle counter with explicit clock/reset/enable
+  -- Instantiate cycle counter with explicit clock/reset/enable
   cycleCounter :: C.Signal C.System (C.Unsigned 32)
   cycleCounter =
     C.exposeClockResetEnable
-      TraceUtils.makeCycleCounter
+      SimUtils.makeCycleCounter
       C.systemClockGen
       C.resetGen
       C.enableGen

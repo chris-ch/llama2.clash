@@ -90,7 +90,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   weightValid = weightValidRaw
   weightReady = weightReadyRaw
 
-  currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
+  currentRowDram = LOADER.dramRowOut weightLoaderOut
 
   justConsumed :: Signal dom Bool
   justConsumed = register False consumeSignal

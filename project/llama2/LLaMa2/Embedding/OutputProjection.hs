@@ -115,7 +115,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   axiMasterOut :: Master.AxiMasterOut dom
   axiMasterOut = Master.axiMasterMux rmsFinalBusy rmsFinalAxiMaster logitsAxiMaster
 
-  currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
+  currentRowDram = LOADER.dramRowOut weightLoaderOut
 
   justConsumed :: Signal dom Bool
   justConsumed = register False consumeSignal

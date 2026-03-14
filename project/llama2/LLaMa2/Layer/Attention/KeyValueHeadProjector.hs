@@ -105,7 +105,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   kWeightValid = kWeightValidRaw
   kWeightReady = kWeightReadyRaw
 
-  kCurrentRowDram = LOADER.assertRowStable kWeightValid (LOADER.dramRowOut kWeightLoaderOut)
+  kCurrentRowDram = LOADER.dramRowOut kWeightLoaderOut
 
   kEffectiveInputValid = kInputValidLatched
     .&&. (not <$> OutputTransactionController.otcOutputValid kOutputTxn)
@@ -191,7 +191,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   vWeightValid = vWeightValidRaw
   vWeightReady = vWeightReadyRaw
 
-  vCurrentRowDram = LOADER.assertRowStable vWeightValid (LOADER.dramRowOut vWeightLoaderOut)
+  vCurrentRowDram = LOADER.dramRowOut vWeightLoaderOut
 
   vEffectiveInputValid = vInputValidLatched
     .&&. (not <$> OutputTransactionController.otcOutputValid vOutputTxn)

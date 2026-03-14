@@ -52,15 +52,13 @@ rowMultiplier _cycleCounter column row colValid rowValid downReady rowIndex =
     , rmoDebug      = RowMultiplierDebug accValue rowReset rowEnable
     }
   where
-    rowValidTraced = rowValid
-
     -- Core computation
     (rowResult, rowDone, accValue) =
       OPS.parallel64RowProcessor rowReset rowEnable row column
 
     -- FSM control
     (state, fetchReq, rowReset, rowEnable, allDone, idleReady) =
-      OPS.matrixMultiplierStateMachine colValid rowValidTraced downReady rowDone rowIndex
+      OPS.matrixMultiplierStateMachine colValid rowValid downReady rowDone rowIndex
 
 --------------------------------------------------------------------------------
 -- RowComputeUnit

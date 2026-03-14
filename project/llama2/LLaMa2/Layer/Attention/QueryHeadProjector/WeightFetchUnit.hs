@@ -65,4 +65,4 @@ weightFetchUnit cycleCounter dramSlaveIn layerIdx headIdx inputs =
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
 
-    currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
+    currentRowDram = LOADER.dramRowOut weightLoaderOut

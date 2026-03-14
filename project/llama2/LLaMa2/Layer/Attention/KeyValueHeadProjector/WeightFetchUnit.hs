@@ -56,7 +56,7 @@ kWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     prevRowIndex     = register 0 (wfRowIndex inputs)
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
-    currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
+    currentRowDram = LOADER.dramRowOut weightLoaderOut
 
 vWeightFetchUnit :: forall dom.
   HiddenClockResetEnable dom
@@ -87,4 +87,4 @@ vWeightFetchUnit cycleCounter dramSlaveIn layerIdx kvHeadIdx inputs =
     prevRowIndex     = register 0 (wfRowIndex inputs)
     rowIndexChanged  = wfRowIndex inputs ./=. prevRowIndex
     rowReqPulse      = rowReqRise .||. (rowReqValidGated .&&. rowIndexChanged)
-    currentRowDram = LOADER.assertRowStable weightValid (LOADER.dramRowOut weightLoaderOut)
+    currentRowDram = LOADER.dramRowOut weightLoaderOut

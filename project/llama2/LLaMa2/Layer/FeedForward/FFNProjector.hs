@@ -159,7 +159,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcWeightValid     = w1WeightValid
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w1RowIndex
-    , RCU.rcWeightDram      = LOADER.assertRowStable w1WeightValid (LOADER.dramRowOut w1Lo)
+    , RCU.rcWeightDram      = LOADER.dramRowOut w1Lo
     , RCU.rcColumn          = xHatLatched
     }
 
@@ -228,7 +228,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcWeightValid     = w3WeightValid
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w3RowIndex
-    , RCU.rcWeightDram      = LOADER.assertRowStable w3WeightValid (LOADER.dramRowOut w3Lo)
+    , RCU.rcWeightDram      = LOADER.dramRowOut w3Lo
     , RCU.rcColumn          = xHatLatched
     }
 
@@ -295,7 +295,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     , RCU.rcWeightValid     = w2WeightValid
     , RCU.rcDownStreamReady = readyIn
     , RCU.rcRowIndex        = w2RowIndex
-    , RCU.rcWeightDram      = LOADER.assertRowStable w2WeightValid (LOADER.dramRowOut w2Lo)
+    , RCU.rcWeightDram      = LOADER.dramRowOut w2Lo
     , RCU.rcColumn          = gateUpLatched
     }
 

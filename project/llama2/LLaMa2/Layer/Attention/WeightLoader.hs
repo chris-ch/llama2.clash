@@ -9,7 +9,6 @@ module LLaMa2.Layer.Attention.WeightLoader
   , embWeightLoader    -- Vocabulary embedding (output projection)
   , WeightLoaderOutput(..)
   , LoadState(..)
-  , assertRowStable
   ) where
 
 import Clash.Prelude
@@ -29,23 +28,13 @@ data LoadState = LIdle | LFetching | LDone
 
 -- | Output bundle from a weight loader.  'numCols' is the column dimension
 -- of the weight matrix (ModelDimension for Q/K/V, HeadDimension for WO).
-data WeightLoaderOutput dom numCols = WeightLoaderOutput
-  { dramRowOut        :: Signal dom (RowI8E numCols)
-  , dbgRequestedAddr  :: Signal dom (Unsigned 32)
-  , dbgCapturedAddr   :: Signal dom (Unsigned 32)
-  , dbgCapturedRowReq :: Signal dom Int             -- row index as Int
-  , dbgLoadState      :: Signal dom LoadState
+newtype WeightLoaderOutput dom numCols = WeightLoaderOutput
+  { dramRowOut :: Signal dom (RowI8E numCols)
   }
-
--- | Passthrough: returns rowSig unchanged (no cross-check assertions).
-assertRowStable :: Signal dom Bool
-  -> Signal dom (RowI8E n)
-  -> Signal dom (RowI8E n)
-assertRowStable _validSig rowSig = rowSig
 
 -- | Weight loader for Q matrices (numRows=HeadDimension, numCols=ModelDimension)
 qWeightLoader :: forall dom. HiddenClockResetEnable dom
-  => Signal dom (Unsigned 32)  -- ^ cycleCounter for tracing
+  => Signal dom (Unsigned 32)  -- ^ cycleCounter
   -> Slave.AxiSlaveIn dom
   -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
@@ -58,9 +47,8 @@ qWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool     -- ^ weightValid (level)
      , Signal dom Bool     -- ^ weightReady (level)
      )
-qWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
+qWeightLoader cycleCounter dram layerIdx headIdx =
   weightLoaderGeneric cycleCounter dram Layout.QMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed "[WFU] "
 
 -- | Weight loader for K matrices (numRows=HeadDimension, numCols=ModelDimension)
 kWeightLoader :: forall dom. HiddenClockResetEnable dom
@@ -77,9 +65,8 @@ kWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-kWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
+kWeightLoader cycleCounter dram layerIdx kvHeadIdx =
   weightLoaderGeneric cycleCounter dram Layout.KMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed "[KWFU] "
 
 -- | Weight loader for V matrices (numRows=HeadDimension, numCols=ModelDimension)
 vWeightLoader :: forall dom. HiddenClockResetEnable dom
@@ -96,9 +83,8 @@ vWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-vWeightLoader cycleCounter dram layerIdx kvHeadIdx rowReq rowReqValid downstreamReady dataConsumed =
+vWeightLoader cycleCounter dram layerIdx kvHeadIdx =
   weightLoaderGeneric cycleCounter dram Layout.VMatrix layerIdx (fromIntegral kvHeadIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed "[VWFU] "
 
 -- | Weight loader for WO output-projection matrices.
 -- WO is transposed vs Q/K/V: numRows=ModelDimension (64 rows), numCols=HeadDimension (8 cols).
@@ -116,9 +102,8 @@ woWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-woWeightLoader cycleCounter dram layerIdx headIdx rowReq rowReqValid downstreamReady dataConsumed =
+woWeightLoader cycleCounter dram layerIdx headIdx =
   weightLoaderGeneric cycleCounter dram Layout.WOMatrix layerIdx (fromIntegral headIdx)
-                      rowReq rowReqValid downstreamReady dataConsumed "[WOWFU] "
 
 -- | Weight loader for W1 (gate) FFN matrices.
 -- W1: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
@@ -135,9 +120,8 @@ w1WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w1WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
+w1WeightLoader cycleCounter dram layerIdx =
   weightLoaderGeneric cycleCounter dram Layout.W1Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed "[W1WFU] "
 
 -- | Weight loader for W3 (up) FFN matrices.
 -- W3: MatI8E HiddenDimension ModelDimension — HiddenDimension rows × ModelDimension cols.
@@ -154,9 +138,8 @@ w3WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w3WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
+w3WeightLoader cycleCounter dram layerIdx =
   weightLoaderGeneric cycleCounter dram Layout.W3Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed "[W3WFU] "
 
 -- | Weight loader for W2 (down) FFN matrices.
 -- W2: MatI8E ModelDimension HiddenDimension — ModelDimension rows × HiddenDimension cols.
@@ -173,9 +156,8 @@ w2WeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-w2WeightLoader cycleCounter dram layerIdx rowReq rowReqValid downstreamReady dataConsumed =
+w2WeightLoader cycleCounter dram layerIdx =
   weightLoaderGeneric cycleCounter dram Layout.W2Matrix layerIdx 0
-                      rowReq rowReqValid downstreamReady dataConsumed "[W2WFU] "
 
 -- | Weight loader for vocabulary embedding rows (output/logits projection).
 -- Shape: MatI8E VocabularySize ModelDimension — VocabularySize rows × ModelDimension cols.
@@ -192,9 +174,8 @@ embWeightLoader :: forall dom. HiddenClockResetEnable dom
      , Signal dom Bool
      , Signal dom Bool
      )
-embWeightLoader cycleCounter dram rowReq rowReqValid downstreamReady dataConsumed =
+embWeightLoader cycleCounter dram =
   weightLoaderGeneric cycleCounter dram Layout.EmbeddingMatrix (pure 0) 0
-                      rowReq rowReqValid downstreamReady dataConsumed "[EMBWFU] "
 
 -- | Generic weight loader for any matrix type and dimensions.
 --
@@ -210,7 +191,7 @@ weightLoaderGeneric :: forall dom numRows numCols.
   , KnownNat (Layout.WordsPerRow numCols)
   , KnownNat (If (OrdCond (CmpNat numCols 63) 'True 'True 'False) 1 (1 + Div numCols 64) T.* 64)
   )
-  => Signal dom (Unsigned 32)       -- ^ cycleCounter for tracing
+  => Signal dom (Unsigned 32)       -- ^ cycleCounter
   -> Slave.AxiSlaveIn dom
   -> Layout.MatrixType              -- ^ Which matrix (QMatrix, KMatrix, VMatrix, WOMatrix)
   -> Signal dom (Index NumLayers)
@@ -219,13 +200,12 @@ weightLoaderGeneric :: forall dom numRows numCols.
   -> Signal dom Bool                -- ^ rowReqValid (pulse)
   -> Signal dom Bool                -- ^ downstreamReady (level)
   -> Signal dom Bool                -- ^ dataConsumed (pulse)
-  -> String                         -- ^ Tag string for tracing
   -> ( Master.AxiMasterOut dom
      , WeightLoaderOutput dom numCols
      , Signal dom Bool              -- ^ weightValid (level)
      , Signal dom Bool              -- ^ weightReady (level)
      )
-weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowReqValid downstreamReady dataConsumed tagStr =
+weightLoaderGeneric _cycleCounter dram matrixType layerIdx headIdxInt rowReq rowReqValid downstreamReady dataConsumed =
   (axiMaster, out, weightValid, weightReady)
  where
   -- Loader FSM
@@ -242,7 +222,7 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   prevValid = register False weightValid
   dvRise    = weightValid .&&. (not <$> prevValid)
 
-  -- Live request and address (combinational) — layerIdx is now a signal
+  -- Live request and address (combinational) — layerIdx is a signal
   liveRow  :: Signal dom (Index numRows)
   liveRow  = rowReq
 
@@ -255,23 +235,8 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   actualFetchStart = weightReady .&&. fetcherReady .&&. rowReqValid
 
   -- AXI multi-word fetcher
-  (axiMaster, fetchedWords, fetchValid, fetcherReady, fetcherDebug) =
+  (axiMaster, fetchedWords, fetchValid, fetcherReady, _) =
     Layout.axiMultiWordRowFetcher @_ @numCols dram actualFetchStart liveAddr
-
-  -- Transaction record captured on THE SAME handshake as the fetcher's address
-  txnReg :: Signal dom (Txn numRows)
-  txnReg = regEn (Txn 0 0) actualFetchStart (Txn <$> liveRow <*> liveAddr)
-
-  -- ARADDR ASSERTION (passthrough)
-  dramRowWithArCheck :: Signal dom (RowI8E numCols)
-  dramRowWithArCheck = assertArAddrMatchGeneric
-      cycleCounter
-      (Layout.dbgArAccepted fetcherDebug)
-      (Layout.dbgLatchedAddr fetcherDebug)
-      (tAddr <$> txnReg)
-      (tRow <$> txnReg)
-      tagStr
-      dramRowCommitted
 
   -- Parse and stage the DRAM row
   parsedRow :: Signal dom (RowI8E numCols)
@@ -287,16 +252,6 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
   dramRowCommitted :: Signal dom (RowI8E numCols)
   dramRowCommitted = regEn zeroRow dvRise dramRowAssembled
 
-  dramRowWithTrace :: Signal dom (RowI8E numCols)
-  dramRowWithTrace = traceRowIndicesGeneric
-      cycleCounter
-      actualFetchStart
-      dvRise
-      liveRow
-      (tRow <$> txnReg)
-      tagStr
-      dramRowWithArCheck
-
   -- Loader FSM next-state
   nextState =
     mux (loadState .==. pure LIdle .&&. actualFetchStart)
@@ -307,45 +262,6 @@ weightLoaderGeneric cycleCounter dram matrixType layerIdx headIdxInt rowReq rowR
         (pure LIdle)
         loadState
 
-  -- Outputs
   out :: WeightLoaderOutput dom numCols
-  out = WeightLoaderOutput
-    { dramRowOut        = dramRowWithTrace
-    , dbgRequestedAddr  = liveAddr
-    , dbgCapturedAddr   = tAddr <$> txnReg
-    , dbgCapturedRowReq = fromIntegral . tRow <$> txnReg
-    , dbgLoadState      = loadState
-    }
+  out = WeightLoaderOutput { dramRowOut = dramRowCommitted }
 
---------------------------------------------------------------------------------
--- Helper functions (generalized over numRows / numCols)
---------------------------------------------------------------------------------
-
-traceRowIndicesGeneric :: forall dom numRows numCols.
-     Signal dom (Unsigned 32)           -- cycleCounter
-  -> Signal dom Bool                    -- actualFetchStart
-  -> Signal dom Bool                    -- dvRise
-  -> Signal dom (Index numRows)         -- liveRow
-  -> Signal dom (Index numRows)         -- txnReg.tRow
-  -> String                             -- tag string
-  -> Signal dom (RowI8E numCols)        -- pass-through signal
-  -> Signal dom (RowI8E numCols)
-traceRowIndicesGeneric _cyc _start _rise _lRow _txnRow _tagStr' rowIn = rowIn
-
--- | Passthrough: returns rowIn unchanged (no P.error assertions).
-assertArAddrMatchGeneric :: forall dom numRows numCols.
-     Signal dom (Unsigned 32)
-  -> Signal dom Bool
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (Unsigned 32)
-  -> Signal dom (Index numRows)
-  -> String
-  -> Signal dom (RowI8E numCols)
-  -> Signal dom (RowI8E numCols)
-assertArAddrMatchGeneric _cyc _arAccepted _fetcherAddr _loaderAddr _rowIdx _tagStr' rowIn =
-  rowIn
-
-data Txn numRows = Txn
-  { tRow  :: Index numRows
-  , tAddr :: Unsigned 32
-  } deriving (Generic, NFDataX, Show, Eq)

@@ -1,4 +1,4 @@
-module LLaMa2.Decoder.LayerStack (
+module LLaMa2.Decoder.LayerRunner (
   activeLayerProcessor, layerInputStage, LayerOutputs(..)
 ) where
 

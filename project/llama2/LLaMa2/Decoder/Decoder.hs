@@ -4,12 +4,11 @@ module LLaMa2.Decoder.Decoder (
 
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
-import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension, SequenceLength)
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Decoder.DataFlowController as Controller
-import qualified LLaMa2.Decoder.LayerStack as LayerStack
+import qualified LLaMa2.Decoder.LayerRunner as LayerStack
 import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 import qualified LLaMa2.Sampling.Sampler as Sampler
 
@@ -27,19 +26,15 @@ initialLayerData = LayerData
   , feedForwardOutput = repeat 0
   }
 
--- | Introspection signals for debugging
+-- | Simulation introspection signals
 data DecoderIntrospection dom = DecoderIntrospection
-  { stage               :: Signal dom Controller.DataStage
-  , layerIndex          :: Signal dom (Index NumLayers)
-  , ready               :: Signal dom Bool
-  , layerValidIn        :: Signal dom Bool
-  , attnDone            :: Signal dom Bool
-  , qkvDone             :: Signal dom Bool
-  , ffnDone             :: Signal dom Bool
-  , layerOutput         :: Signal dom (Vec ModelDimension FixedPoint)
-  , layerData           :: Signal dom LayerData
-  , seqPos              :: Signal dom (Index SequenceLength)
-  , cycleCount          :: Signal dom (Unsigned 32)
+  { layerIndex  :: Signal dom (Index NumLayers)
+  , ready       :: Signal dom Bool
+  , layerValidIn :: Signal dom Bool
+  , attnDone    :: Signal dom Bool
+  , qkvDone     :: Signal dom Bool
+  , ffnDone     :: Signal dom Bool
+  , cycleCount  :: Signal dom (Unsigned 32)
   } deriving (Generic, NFDataX)
 
 -- | Main decoder with AXI interface
@@ -189,17 +184,13 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken tempera
     -- INTROSPECTION
     -- =======================================================================
     introspection = DecoderIntrospection
-      { stage               = processingStage
-      , layerIndex          = layerIdx
-      , ready               = readyPulse
-      , layerValidIn        = layerValid
-      , attnDone            = layerAttnDone
-      , qkvDone             = layerQkvDone
-      , ffnDone             = layerFfnDone
-      , layerOutput         = ffnOutput
-      , layerData           = nextLayerData
-      , seqPos              = seqPosition
-      , cycleCount          = cycleCounter
+      { layerIndex  = layerIdx
+      , ready       = readyPulse
+      , layerValidIn = layerValid
+      , attnDone    = layerAttnDone
+      , qkvDone     = layerQkvDone
+      , ffnDone     = layerFfnDone
+      , cycleCount  = cycleCounter
       }
 
 -- | Synthesis wrapper: generates cycle counter internally, drops introspection

@@ -383,43 +383,15 @@ cycleByClycleTraceTests = describe "WeightLoaderDbg - Cycle-by-Cycle Trace" $ do
                (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
             CS.systemClockGen CS.resetGen CS.enableGen
 
-        (axiDRAM, outDRAM, dvDRAM, readyOut) =
+        (axiDRAM, _, dvDRAM, _) =
           exposeClockResetEnable
             (qWeightLoader (pure 0) (realDRAM axiDRAM) 0 0 reqSig reqValidSig readySig (pure True))
             CS.systemClockGen CS.resetGen CS.enableGen
 
-        -- Sample all debug signals
+        -- Sample outputs
         validsSampled = sampleN maxCycles dvDRAM
-        readysSampled = sampleN maxCycles readyOut
-        statesSampled = sampleN maxCycles (dbgLoadState outDRAM)
-        capRowsSampled = sampleN maxCycles (dbgCapturedRowReq outDRAM)
-        capAddrsSampled = sampleN maxCycles (dbgCapturedAddr outDRAM)
-        liveAddrsSampled = sampleN maxCycles (dbgRequestedAddr outDRAM)
-        reqsSampled = sampleN maxCycles reqSig
-        reqValidsSampled = sampleN maxCycles reqValidSig
 
-    P.putStrLn "\n=== Cycle-by-Cycle Trace (rows 0-3) ==="
-    P.putStrLn "Cyc | Req | RqV | Rdy | State    | Trig | FVal | DV  | CapRow | CapAddr | LiveAddr"
-    P.putStrLn (P.replicate 95 '-')
-
-    forM_ [0..99] $ \n -> do
-      let req = reqsSampled P.!! n
-          rqv = reqValidsSampled P.!! n
-          rdy = readysSampled P.!! n
-          st = statesSampled P.!! n
-          dv = validsSampled P.!! n
-          capRow = capRowsSampled P.!! n
-          capAddr = capAddrsSampled P.!! n
-          liveAddr = liveAddrsSampled P.!! n
-
-      -- Only print interesting cycles (state changes or signals active)
-      when (dv || rqv || n < 5) $
-        P.putStrLn $ printf "%3d | %3d | %3s | %4s | %4s | %3s | %6d | %7d | %8d"
-          n (fromEnum req :: Int) (show rqv) (show rdy) (show st)
-          (show dv)
-          (fromEnum capRow :: Int) capAddr liveAddr
-
-    -- Verify all 4 completed
+    -- Verify all HeadDimension rows completed
     let validCycles = [n | n <- [0..maxCycles-1], validsSampled P.!! n]
     P.putStrLn $ "\nValid output cycles: " P.++ show validCycles
     P.length validCycles `shouldSatisfy` (>= natToNum @HeadDimension)
@@ -451,7 +423,7 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
                 (DRAMSlave.DRAMConfig 1 0 1) dramContents masterOut')
               CS.systemClockGen CS.resetGen CS.enableGen
 
-          (axiMaster, outDRAM, dvDRAM, readyOut) =
+          (axiMaster, _, dvDRAM, _) =
             exposeClockResetEnable
               (qWeightLoader (pure 0) (realDRAM axiMaster) 0 0 reqSig reqValidSig readySig (pure True))
               CS.systemClockGen CS.resetGen CS.enableGen
@@ -460,11 +432,7 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
           arValidSampled = sampleN maxCycles (Master.arvalid axiMaster)
           arAddrSampled = sampleN maxCycles (araddr <$> Master.ardata axiMaster)
 
-          -- Sample debug signals
-          liveAddrSampled = sampleN maxCycles (dbgRequestedAddr outDRAM)
-          capAddrSampled = sampleN maxCycles (dbgCapturedAddr outDRAM)
           dvSampled = sampleN maxCycles dvDRAM
-          capRowSampled = sampleN maxCycles (dbgCapturedRowReq outDRAM)
 
       P.putStrLn "\n=== AXI Address Trace ==="
       P.putStrLn "Expected addresses:"
@@ -474,20 +442,17 @@ axiAddressDbg = describe "WeightLoaderDbg - AXI Address Debug" $ do
       P.putStrLn $ "  Head 1 Row 0: " P.++ show (Layout.rowAddressCalculator Layout.QMatrix 0 1 0)
       P.putStrLn ""
 
-      P.putStrLn "Cyc | ARval | AR addr | LiveAddr | CapAddr | Trig | FVal | DV | CapRow"
-      P.putStrLn (P.replicate 80 '-')
+      P.putStrLn "Cyc | ARval | AR addr | DV"
+      P.putStrLn (P.replicate 40 '-')
 
       forM_ [0..99] $ \n -> do
         let arv = arValidSampled P.!! n
             ara = arAddrSampled P.!! n
-            live = liveAddrSampled P.!! n
-            cap = capAddrSampled P.!! n
             dv = dvSampled P.!! n
-            row = capRowSampled P.!! n
 
         when (arv || dv || n < 5) $
-          P.putStrLn $ printf "%3d | %5s | %7d | %8d | %7d | %2s | %d"
-            n (show arv) ara live cap (show dv) (fromEnum row :: Int)
+          P.putStrLn $ printf "%3d | %5s | %7d | %2s"
+            n (show arv) ara (show dv)
 
       -- Find cycles where AR was valid
       let arValidCycles = [(n, arAddrSampled P.!! n) | n <- [0..maxCycles-1], arValidSampled P.!! n]
