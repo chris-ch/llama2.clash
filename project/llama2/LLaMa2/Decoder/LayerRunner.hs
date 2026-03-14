@@ -24,6 +24,7 @@ data LayerOutputs dom = LayerOutputs
   , qkvReady        :: Signal dom Bool
   }
 
+{-# NOINLINE activeLayerProcessor #-}
 activeLayerProcessor :: forall dom.
   ( HiddenClockResetEnable dom
   , KnownNat (WordsPerFPVec HeadDimension)

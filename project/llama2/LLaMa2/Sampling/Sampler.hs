@@ -10,6 +10,7 @@ import LLaMa2.Types.ModelConfig  ( VocabularySize )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Sampling.Distribution (pickSample, uniformRandom01Generator)
 
+{-# NOINLINE tokenSampler #-}
 -- Pure sampling function (combinational)
 tokenSampler :: forall dom
    . HiddenClockResetEnable dom

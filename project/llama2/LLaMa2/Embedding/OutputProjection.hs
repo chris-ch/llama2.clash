@@ -18,6 +18,7 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionContr
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 
+{-# NOINLINE logitsProjector #-}
 logitsProjector :: forall dom .
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                        -- ^ cycle counter

@@ -37,6 +37,7 @@ deqRow RowI8E { rowMantissas = mant, rowExponent = e } =
 -- outputValid: False until the first fetch completes; True thereafter.
 -- isBusy:      True while an AXI fetch is in flight.
 --------------------------------------------------------------------------------
+{-# NOINLINE inputEmbedding #-}
 inputEmbedding :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)                       -- ^ cycleCounter
