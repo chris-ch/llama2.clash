@@ -20,7 +20,6 @@ import LLaMa2.Numeric.Quantization (RowI8E (..))
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
-import qualified Prelude as P
 import Data.Type.Bool (If)
 import Data.Type.Ord (OrdCond)
 import qualified GHC.TypeNats as T
