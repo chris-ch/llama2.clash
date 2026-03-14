@@ -63,13 +63,6 @@
 - Phase 2: Custom ZU9EG board prototype (5 units) → 6 months, $120k NRE
 - Phase 3: First production batch (100 units) → target retail $1,799, 12 months total timeline
 
-**Quick Reference**
-
-- ~5.2 tok/s (7B)
-- 7B & 13B support
-- Fixed-point compute (SFixed 12 20)
-- I8E weights cached in DDR
-- Context < 16k tokens (8-bit KV recommended for long context)
 **Hardware implementation – parallel64 & resource estimates**
 
 - parallel64: 64-wide matrix multiply → 64 DSPs per instance

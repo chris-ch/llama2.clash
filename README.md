@@ -93,35 +93,6 @@ cabal test llama2-test -f model-nano -f -model-260k \
   --test-options='--match "Layer 0 output norm"'
 ```
 
-## C Version
-
-```shell
-haskell@a050ba3ea910:/workspaces/llama2.clash$ /usr/bin/time -v ./run data/stories110M.bin -t 0.8 -n 256 -s 123 -i "In that little town"
-achieved tok/s: 15.105312
-        Command being timed: "./run data/stories110M.bin -t 0.8 -n 256 -i In that little town"
-        User time (seconds): 14.15
-        System time (seconds): 0.05
-        Percent of CPU this job got: 99%
-        Elapsed (wall clock) time (h:mm:ss or m:ss): 0:14.21
-        Average shared text size (kbytes): 0
-        Average unshared data size (kbytes): 0
-        Average stack size (kbytes): 0
-        Average total size (kbytes): 0
-        Maximum resident set size (kbytes): 447516
-        Average resident set size (kbytes): 0
-        Major (requiring I/O) page faults: 0
-        Minor (reclaiming a frame) page faults: 11291
-        Voluntary context switches: 1
-        Involuntary context switches: 40
-        Swaps: 0
-        File system inputs: 0
-        File system outputs: 0
-        Socket messages sent: 0
-        Socket messages received: 0
-        Signals delivered: 0
-        Page size (bytes): 4096
-        Exit status: 0
-```
 # Verilog / VHDL generation
 
 `clash-ghc` is declared as a `build-tool-depends` in `llama2.cabal`, so cabal
@@ -156,38 +127,6 @@ large comparison tree in-memory. The NANO model used ~21 GB before OOM on a
 ≥ 64 GB RAM is recommended. FPGA resource counts (LUT/FF/BRAM) require Vivado
 or Quartus on the generated Verilog.
 
-## Handshaking conventions
-
-| Signal        | Direction | Purpose                        | Behavior                                                                                                 |
-| ------------- | --------- | ------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| **Ready Out** | Output    | Indicates consumer readiness   | Asserted (high) when the consumer can accept/process data; deasserted when busy (e.g., stalled or full). |
-| **Valid Out** | Output    | Indicates valid output data    | Asserted (high, level) when new data is available; held high until the transaction completes (i.e., until `readyIn` is also high). |
-| **Ready In**  | Input     | Indicates downstream readiness | Producer transfers data only when `readyIn` is high; holds `validOut` and data stable if `readyIn` is low. |
-| **Valid In**  | Input     | Indicates valid input data     | Consumer processes `dataIn` only when `validIn` is high and it asserts `readyOut`.                       |
-
-## SUMMARY OF TOKEN FLOW
-1. Pipeline controller enters Stage1 for layer L
-2. isStage1ThisLayer goes HIGH (inValid to QKV controller)
-3. QKV controller transitions: Idle -> Computing
-4. computeEnable stays HIGH, feeding all matrix multipliers
-5. All heads compute in parallel (multiple cycles per matvec)
-6. When ALL heads complete, matVecValid goes HIGH
-7. QKV controller transitions: Computing -> Done (outValid HIGH)
-8. Pipeline controller sees qkvValidThisLayer, advances to Stage2
-9. Pipeline advances, isStage1ThisLayer goes LOW (outReady asserted)
-10. QKV controller transitions: Done -> Idle
-
-
-# Key Design Decisions Summary
-
-| Aspect | Choice | Rationale |
-|--------|--------|-----------|
-| **Weight Storage** | eMMC 5.1 | Non-volatile, reprogrammable, high-density embedded storage |
-| **Weight Format** | I8E (8-bit + 7-bit exp) | 4× compression vs FixedPoint, minimal quality loss |
-| **Compute Format** | FixedPoint (SFixed 12 20) | Native FPGA arithmetic, good precision |
-| **Working Memory** | DDR4 DRAM | Fast random access for KV cache, affordable |
-| **Layer Strategy** | One at a time + prefetch | Fits in available memory, hides ROM latency |
-| **KV Cache** | External DDR4 | Too large for on-chip, needs fast random access |
 
 # Simulation timing (260K model, all DRAM-backed)
 
