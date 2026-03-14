@@ -161,6 +161,8 @@ library
       TraceUtils
   hs-source-dirs:
       project/llama2
+  build-tool-depends:
+      clash-ghc:clash
   if flag(model-nano)
     ghc-options: -DMODEL_NANO
   elif flag(model-260k)

@@ -2,14 +2,16 @@
 
 **Pre-synthesis tasks**
 
-1. **Merge KV DRAM to single bank per head** — current interface is `Vec NumLayers (Vec NumKeyValueHeads (Slave.AxiSlaveIn dom))` (e.g. 32×8 = 256 AXI ports), which is infeasible for synthesis. Since `KVCacheLayout` already encodes `layerIdx` as an address offset, collapse to `Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)` — one bank per KV head covering all layers via addressing. Update `LayerStack`, `MultiHeadAttention`, `KVCache`, `KVCacheBankController`, and `Decoder` interfaces accordingly.
+1. **Trial synthesis + resource estimation** — run Clash + FPGA toolchain to confirm the design synthesises cleanly and check LUT/FF/BRAM utilisation.
 
-2. **Strip all trace scaffolding from `llama2/LLaMa2/`** — remove all `traceEdgeC`, `traceChangeC`, `traceWhenC` calls and the `TraceUtils` import throughout the design. These were implementation aids only and must be absent from the synthesis-ready codebase.
+   **Findings (2026-03-14):**
+   - ✓ All 50+ modules compile through GHC+Clash in ~17 s — design is type-correct and synthesis-annotated.
+   - ✓ `clash-ghc` added as `build-tool-depends` in `llama2.cabal`; `synth.sh` uses `cabal exec -- clash` — no global install required.
+   - ✗ HDL elaboration of `topEntity` OOM'd on this machine (30 GB, NANO took 21 GB before kill; 260K ran 10+ h).
+   - Root cause: `Vec VocabularySize FixedPoint` (512 elements even on NANO) forces Clash to normalise a large comparison tree in RAM. Blocked until one of the mitigations below is applied.
+   - FPGA resource counts (LUT/FF/BRAM) require Vivado or Quartus on the generated Verilog — not installed here.
 
-3. **Remove vestigial `loadTrigger` / `layerChanged` from Decoder** — these signals appear to be remnants of the old weight-prefetch scheme. Verify they serve no purpose with on-demand AXI weight loading and delete if dead.
-
-4. ~~**Annotate `Decoder` as the top-level synthesis entity**~~ ✓ — `topEntity = exposeClockResetEnable decoderTop` with full `Synthesize` port-name annotation added to `Decoder.hs`.
-
-5. ~~**End-to-end simulation test**~~ ✓ — `DecoderSpec.hs` (MODEL_NANO) now asserts all `NumLayers` layers complete (attnDone + ffnDone) for both prompt tokens, at least one token is sampled, and every sampled token is within vocabulary range.
-
-6. **Trial synthesis + resource estimation** — run Clash + FPGA toolchain to confirm the design synthesises cleanly and check LUT/FF/BRAM utilisation.
+   **Mitigation options for elaboration OOM (choose one):**
+   - **Split sampler**: annotate `tokenSampler` / `outputProjection` as a separate `topEntity` in its own module; synthesise independently from the rest of the decoder.
+   - **BRAM argmax**: replace the combinatorial `Vec VocabularySize` argmax with a sequential BRAM-backed scan, reducing the normalised comparison tree to O(1) per cycle.
+   - **Larger machine**: run synthesis on a host with ≥ 64 GB RAM without code changes.

@@ -124,25 +124,37 @@ achieved tok/s: 15.105312
 ```
 # Verilog / VHDL generation
 
-Install:
+`clash-ghc` is declared as a `build-tool-depends` in `llama2.cabal`, so cabal
+fetches and builds the correct version automatically — no global install needed.
+
+Use `synth.sh` to generate Verilog for either model configuration:
 
 ```shell
-cabal install clash-ghc --overwrite-policy=always
+# 260K model (default)
+./synth.sh model-260k
+
+# Tiny NANO model (fast, for smoke-testing the flow)
+./synth.sh model-nano
 ```
 
-Run:
+Output Verilog files are written to `/tmp/clash-verilog-<model>/` and a
+`clash.log` is kept there for inspection.
+
+Or invoke Clash directly through cabal:
 
 ```shell
-cabal exec -- clash --verilog \
+cabal exec -- clash --verilog -DMODEL_260K \
   -iproject/llama2 \
-  -package llama2 \
   -outputdir /tmp/clash-build \
-  -DMODEL_260K \
-  -fclash-inline-limit=20 \
-  -fclash-spec-limit=10 \
-  -fclash-clear \
   project/llama2/LLaMa2/Decoder/Decoder.hs
 ```
+
+**Memory note:** HDL elaboration of `topEntity` is RAM-intensive because
+`Vec VocabularySize FixedPoint` (512 elements) forces Clash to normalise a
+large comparison tree in-memory. The NANO model used ~21 GB before OOM on a
+30 GB machine; the 260K model did not finish in 10+ hours. A machine with
+≥ 64 GB RAM is recommended. FPGA resource counts (LUT/FF/BRAM) require Vivado
+or Quartus on the generated Verilog.
 
 ## Handshaking conventions
 
