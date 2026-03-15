@@ -1,0 +1,21 @@
+{
+	"build": {
+        "dockerfile": "Dockerfile",
+        "context": "."
+    },
+	"customizations": {
+			"vscode": {
+					"extensions": [
+						"haskell.haskell",
+						"yzhang.markdown-all-in-one",
+						"shd101wyy.markdown-preview-enhanced",
+						"Anthropic.claude-code"
+					]
+			}
+	},
+	"remoteUser": "haskell",
+	"mounts": [
+		"source=${localEnv:HOME}/.ssh,target=/home/haskell/.ssh,type=bind,readonly"
+	],
+	"postStartCommand": "cabal update"
+}

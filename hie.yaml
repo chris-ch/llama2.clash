@@ -1,0 +1,9 @@
+cradle:
+  cabal:
+    cabalProject: "./cabal.project"
+    components:
+      - path: "project/llama2"
+        component: "lib:llama2"
+        arguments: [--flag, llama2:model-260k]
+      - path: "test"
+        component: "test:llama2-test"

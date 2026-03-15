@@ -1,0 +1,223 @@
+cabal-version:  3.4
+
+name:           llama2
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/chris-ch/llama2.clash#readme>
+homepage:       https://github.com/chris-ch/llama2.clash#readme
+bug-reports:    https://github.com/chris-ch/llama2.clash/issues
+author:         Christophe Alexandre
+maintainer:     christophe.alexandre@pm.me
+category:       LLM
+copyright:      2023 Christophe Alexandre
+license:        MIT
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+
+source-repository head
+  type: git
+  location: https://github.com/chris-ch/llama2.clash
+
+-- Define flags for model sizes
+flag model-260k
+  description: Build with MODEL_260K configuration
+  default: True
+  manual: True
+
+flag model-15m
+  description: Build with MODEL_15M configuration
+  default: False
+  manual: True
+
+flag model-nano
+  description: Build with MODEL_NANO configuration (tiny dims, fast simulation tests)
+  default: False
+  manual: True
+
+-- package-wide defaults
+common project-defaults
+  default-language: Haskell2010
+  default-extensions:
+    AllowAmbiguousTypes
+    BangPatterns
+    DataKinds
+    DeriveAnyClass
+    DeriveGeneric
+    DerivingVia
+    DoAndIfThenElse
+    FlexibleContexts
+    FlexibleInstances
+    GeneralizedNewtypeDeriving
+    ImplicitParams
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    MonoLocalBinds
+    NamedFieldPuns
+    NoImplicitPrelude
+    NumericUnderscores
+    OverloadedStrings
+    RecordWildCards
+    ScopedTypeVariables
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+    UndecidableInstances
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -O2
+    -threaded
+    -haddock
+    -rtsopts
+    -with-rtsopts=-N
+  build-depends:
+      base
+    , binary
+    , bytestring
+    , clash-prelude
+    , clash-lib
+    , containers
+    , directory
+    , mtl
+    , random
+    , vector
+    , optparse-applicative
+    , ghc-typelits-extra
+    , time
+
+library
+  import: project-defaults
+  exposed-modules:
+      LLaMa2.Decoder.Decoder
+      LLaMa2.Decoder.LayerRunner
+      LLaMa2.Decoder.DataFlowController
+      LLaMa2.Embedding.InputEmbedding
+      LLaMa2.Embedding.OutputProjection
+      LLaMa2.Layer.Attention.AttentionHead
+      LLaMa2.Layer.Attention.FSM
+      LLaMa2.Layer.Attention.KVCache
+      LLaMa2.Layer.Attention.KVCacheBankController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowComputeUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.RowScheduler
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.WeightFetchUnit
+      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputTransactionController
+      LLaMa2.Layer.Attention.MultiHeadAttention
+      LLaMa2.Layer.Attention.WOHeadProjector
+      LLaMa2.Layer.Attention.QKVProjection
+      LLaMa2.Layer.Attention.QueryHeadProjector
+      LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController
+      LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler
+      LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
+      LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit
+      LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
+      LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
+      LLaMa2.Layer.Attention.RotaryEncoding
+      LLaMa2.Layer.Attention.WeightLoader
+      LLaMa2.Layer.FeedForward.Activation
+      LLaMa2.Layer.FeedForward.FFNProjector
+      LLaMa2.Layer.FeedForward.FeedForwardNetwork
+      LLaMa2.Layer.TransformerLayer
+      LLaMa2.Memory.AXI.Arbiter
+      LLaMa2.Memory.AXI.Master
+      LLaMa2.Memory.FPVecLoader
+      LLaMa2.Memory.AXI.Slave
+      LLaMa2.Memory.AXI.Types
+      LLaMa2.Memory.AxiReadMaster
+      LLaMa2.Memory.AxiWriteMaster
+      LLaMa2.Memory.DualPortRAM
+      LLaMa2.Memory.KVCacheBank
+      LLaMa2.Memory.KVCacheLayout
+      LLaMa2.Memory.WeightsLayout
+      LLaMa2.Numeric.FixedPoint
+      LLaMa2.Numeric.Quantization
+      LLaMa2.Numeric.Operations
+      LLaMa2.Numeric.Types
+      Simulation.ParamsPlaceholder 
+      LLaMa2.Sampling.Distribution
+      LLaMa2.Sampling.Sampler
+      LLaMa2.Types.LayerData
+      LLaMa2.Types.ModelConfig
+      Parser
+      Simulation.DRAMBackedAxiSlave
+      Simulation.MatVecSim
+      Simulation.Parameters
+      Simulation.ParametersQuantization
+      Simulation.SimulationTypes
+      Tokenizer
+      SimUtils
+  hs-source-dirs:
+      project/llama2
+  build-tool-depends:
+      clash-ghc:clash
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  elif flag(model-15m)
+    ghc-options: -DMODEL_15M
+  elif flag(model-260k)
+    ghc-options: -DMODEL_260K
+  else
+    buildable: False
+
+executable llama2
+  import: project-defaults
+  main-is: Main.hs
+  hs-source-dirs: project/app
+  build-depends: llama2
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  elif flag(model-15m)
+    ghc-options: -DMODEL_15M
+  elif flag(model-260k)
+    ghc-options: -DMODEL_260K
+  else
+    buildable: False
+
+test-suite llama2-test
+  import: project-defaults
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      LLaMa2.Decoder.DecoderSpec
+      LLaMa2.Layer.Attention.QKVProjectionSpec
+      LLaMa2.Layer.Attention.WeightLoaderSpec
+      LLaMa2.Layer.Attention.WeightLoaderDebugSpec
+      LLaMa2.Layer.TransformerLayerSpec
+      LLaMa2.Layer.TransformerLayer.ControlOneHeadSpec
+      LLaMa2.Memory.WeightsLayoutSpec
+      LLaMa2.Memory.WeightsLayoutRoundtripSpec
+      LLaMa2.Numeric.OperationsSpec
+      Simulation.AxiWriteMasterSpec
+      Simulation.DRAMBackedAxiSlaveSpec
+      Simulation.DynamicMatMulSpec
+  hs-source-dirs:
+      test
+  build-depends:
+      base
+    , clash-prelude
+    , hspec
+    , llama2
+    , QuickCheck
+  ghc-options:
+    -Wall
+    -threaded
+    -rtsopts
+    "-with-rtsopts=-N -K64m"
+    -main-is Spec.main
+  if flag(model-nano)
+    ghc-options: -DMODEL_NANO
+  else
+    ghc-options: -DMODEL_260K
