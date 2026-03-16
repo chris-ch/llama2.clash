@@ -50,7 +50,7 @@ bundledOutputs bundledInputs =
   -- Decoder with AXI feedback loop
   (ddrMaster, kvMasters, tokenOut, validOut, introspection) =
     exposeClockResetEnable
-      (Decoder.decoder (pure 0) dramSlaveIn kvDramSlaves token isValid temperature seed)
+      (Decoder.decoder (pure 0) dramSlaveIn kvDramSlaves token isValid (pure False) temperature seed)
       systemClockGen
       resetGen
       enableGen

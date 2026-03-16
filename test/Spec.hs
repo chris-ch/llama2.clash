@@ -12,6 +12,7 @@ import qualified Simulation.DynamicMatMulSpec (spec)
 import qualified LLaMa2.Memory.WeightsLayoutSpec (spec)
 import qualified LLaMa2.Layer.Attention.QKVProjectionSpec (spec)
 import qualified LLaMa2.Decoder.DecoderSpec (spec)
+import qualified LLaMa2.Decoder.DataFlowControllerSpec (spec)
 import qualified LLaMa2.Memory.WeightsLayoutRoundtripSpec (spec)
 import qualified LLaMa2.Layer.Attention.WeightLoaderSpec (spec)
 import qualified LLaMa2.Layer.Attention.WeightLoaderDebugSpec (spec)
@@ -31,6 +32,7 @@ main = hspec $ do
   LLaMa2.Memory.WeightsLayoutSpec.spec
   LLaMa2.Layer.Attention.QKVProjectionSpec.spec
   LLaMa2.Decoder.DecoderSpec.spec
+  LLaMa2.Decoder.DataFlowControllerSpec.spec
   LLaMa2.Layer.Attention.WeightLoaderSpec.spec
   LLaMa2.Memory.WeightsLayoutRoundtripSpec.spec
   LLaMa2.Layer.Attention.WeightLoaderDebugSpec.spec

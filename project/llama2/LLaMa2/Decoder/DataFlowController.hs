@@ -32,10 +32,11 @@ data DataFlowController dom = DataFlowController
 -- | Data flow controller - manages layer boundaries and token completion
 dataFlowController :: forall dom .
   HiddenClockResetEnable dom
-  => Signal dom Bool           -- ^ ffnDone: layer processing complete
+  => Signal dom Bool           -- ^ softReset: restart token generation from the beginning
+  -> Signal dom Bool           -- ^ ffnDone: layer processing complete
   -> Signal dom Bool           -- ^ classifierDone: token classification complete
   -> DataFlowController dom
-dataFlowController ffnDone classifierDone =
+dataFlowController softReset ffnDone classifierDone =
   DataFlowController
     { processingStage = stageS
     , currentLayer    = layerS
@@ -67,9 +68,10 @@ dataFlowController ffnDone classifierDone =
       mux (stageS .==. pure Classifier) classifierDone $
       pure False
 
-    -- Advance only when control signals completion
+    -- Advance only when control signals completion; soft reset wins
     nextState :: Signal dom ControllerState
-    nextState = mux controlDone (advance <$> state) state
+    nextState = mux softReset (pure initState)
+              $ mux controlDone (advance <$> state) state
 
     -- State machine: layer boundaries and token completion
     advance :: ControllerState -> ControllerState
@@ -95,6 +97,10 @@ dataFlowController ffnDone classifierDone =
     firstCycle :: Signal dom Bool
     firstCycle = register True (pure False)
 
+    -- Pulse layerValidIn one cycle after softReset deasserts to kick off layer 0
+    softResetRelease :: Signal dom Bool
+    softResetRelease = register False softReset .&&. (not <$> softReset)
+
     layerValidInS :: Signal dom Bool
-    layerValidInS = firstCycle .||. 
+    layerValidInS = firstCycle .||. softResetRelease .||.
                     ((stageS .==. pure ProcessingLayer) .&&. register False controlDone)

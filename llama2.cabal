@@ -192,6 +192,7 @@ test-suite llama2-test
   main-is: Spec.hs
   other-modules:
       LLaMa2.Decoder.DecoderSpec
+      LLaMa2.Decoder.DataFlowControllerSpec
       LLaMa2.Layer.Attention.QKVProjectionSpec
       LLaMa2.Layer.Attention.WeightLoaderSpec
       LLaMa2.Layer.Attention.WeightLoaderDebugSpec

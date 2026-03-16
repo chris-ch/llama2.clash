@@ -1,23 +1,22 @@
-
 # Product
 
 **Design choices and constraints**
 
 - Toolchain: Clash 1.8.2, GHC 9.8.4
 - Models: LLaMA 2 7B primary, 13B supported (70B excluded)
-- Context: < 16k tokens
-- AXI policy: streaming reads only for inference core; writes disabled in synthesized compute path (boot-time write path optional)
+- Context: 4k tokens
+- AXI policy: streaming reads for inference core; KV cache writes enabled for autoregressive decode
 - Memory access: no register mirrors; strict streaming reads with burst support (≤256 beats)
 - Boot flow: offline external binary; optional FP32→I8E conversion on first boot → persist I8E to eMMC
 
 **Software implementation – AXI Interface & Weight Management**
 
-- Weights (7–13 GB) stored on eMMC → active layer cached in DDR4 (~1.2 GB)
-- Compute core performs row-wise AXI bursts from DDR4 (I8E → SFixed 12 20 dequantization inside core)
-- Three main AXI masters:
-  - Read from eMMC (boot/staging/conversion)
-  - Read from DDR4 (inference – active weights)
-  - Write to DDR4 (boot-time caching / conversion only; disabled in production inference build)
+- Weights (7–13 GB) stored on eMMC; streamed to compute via AXI in row-wise bursts
+- Compute core performs row-wise AXI bursts from DRAM (I8E → SFixed 12 20 dequantization inside core)
+- AXI masters:
+  - Read path for model weights / embedding / rotary / RMS vectors
+  - KV cache read path for attention
+  - KV cache write path for K/V updates during token generation
 
 **LLaMA 7B/13B Accelerator – Final Spec (revised)**
 
@@ -50,10 +49,11 @@
 
 **Key Characteristics**
 
-- Models supported: LLaMA 2 7B (primary), 13B (supported); 70B out of scope
-- Context window: < 16k tokens (recommend 8-bit KV cache for longer contexts)
+- Models supported: LLaMA 2 7B (primary), 13B (supported)
+- Context window: 4k tokens
 - Compute precision: SFixed 12.20 (during matrix operations)
-- Weight storage: I8E format on eMMC → cached/dequantized in DDR4
+- Weight storage: I8E format on eMMC/DRAM with on-core dequantization
+- KV cache storage: FixedPoint
 - Interface: USB-C (data), barrel jack (power)
 - Performance target: ~5.2 tok/s (7B model)
 
@@ -72,17 +72,15 @@
 
 **Memory Layout & Budget**
 
-- Active layer (dequantized): ~1.2 GB
-- KV cache (16k context):
-  - 8-bit → ~4 GB
-  - 16-bit → ~8 GB
-- Intermediates + buffers: ~0.5–0.7 GB
-- → Preference for 8-bit KV when targeting long context
+- Weights streamed via AXI row fetch; no full-model on-chip mirroring
+- KV cache (4k context): FixedPoint K/V banks in DRAM
+- Intermediates + buffers: budgeted within platform DDR envelope
+- DDR bandwidth is managed via burst reads and staged fetch/compute overlap
 
 **Final Checklist**
 
 - 7B/13B only
-- Context <16k, DDR budget met with 8-bit KV
+- Context 4k
 - AXI bursts ≤256 beats per row (verified for both models)
 - 32-bit address sufficient
 - Timing closure @400 MHz feasible
@@ -91,8 +89,8 @@
 
 **Notes & Recommendations**
 
-- Keep write path behind conditional compilation (inference = read-only)
+- Keep KV write path enabled for decode operation
 - Use compile-time WordsPerRow assertions
-- Add CI check for KV cache budget vs. DDR size
+- Add CI checks for KV cache budget vs. DDR size
 
 ---

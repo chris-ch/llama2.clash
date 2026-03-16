@@ -264,7 +264,7 @@ bundledOutputs temperature seed bundledInputs =
   -- Decoder with AXI feedback loop
   (ddrMaster, kvMasters, tokenOut, validOut, introspection) =
     C.exposeClockResetEnable
-      (Decoder.decoder cycleCounter dramSlaveIn kvDramSlaves token isValid (pure temperature) (pure seed))
+      (Decoder.decoder cycleCounter dramSlaveIn kvDramSlaves token isValid (pure False) (pure temperature) (pure seed))
       C.systemClockGen
       C.resetGen
       C.enableGen

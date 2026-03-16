@@ -44,6 +44,7 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)                      -- KV cache DRAM
   -> Signal dom Token
   -> Signal dom Bool
+  -> Signal dom Bool                                                   -- ^ softReset: restart token generation (clears seqPos, layer state, and data registers)
   -> Signal dom Temperature                                           -- ^ reserved: temperature sampling (argmax only for now)
   -> Signal dom Seed                                                  -- ^ reserved: random seed (unused until softmax sampler is added)
   -> ( Master.AxiMasterOut dom                                         -- weights AXI master
@@ -51,13 +52,14 @@ decoder :: forall dom. HiddenClockResetEnable dom
      , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
-decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed =
+decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softReset temperature seed =
   (axiMasterOut, LayerStack.kvAxiMasterOuts layerOutputs, outputToken, readyPulse, introspection)
   where
     -- =======================================================================
     -- CONTROLLER
     -- =======================================================================
     controller = Controller.dataFlowController
+      softReset        -- Soft reset: restart token generation
       layerFfnDone     -- Layer processing complete
       samplerValid     -- Classifier/token complete
 
@@ -202,6 +204,7 @@ decoderTop :: HiddenClockResetEnable dom
   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)
   -> Signal dom Token
   -> Signal dom Bool
+  -> Signal dom Bool
   -> Signal dom Temperature
   -> Signal dom Seed
   -> ( Master.AxiMasterOut dom
@@ -209,12 +212,12 @@ decoderTop :: HiddenClockResetEnable dom
      , Signal dom Token
      , Signal dom Bool
      )
-decoderTop dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed =
+decoderTop dramSlaveIn kvDramSlaves inputToken forceInputToken softReset temperature seed =
   (axiOut, kvOut, tokenOut, readyOut)
   where
     cycleCounter   = register (0 :: Unsigned 32) (cycleCounter + 1)
     (axiOut, kvOut, tokenOut, readyOut, _) =
-      decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed
+      decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softReset temperature seed
 
 {-# ANN topEntity
   (Synthesize
@@ -227,6 +230,7 @@ decoderTop dramSlaveIn kvDramSlaves inputToken forceInputToken temperature seed 
         , PortProduct "kv_dram"      []
         , PortName "input_token"
         , PortName "force_input_token"
+        , PortName "soft_reset"
         , PortName "temperature"
         , PortName "seed"
         ]
@@ -245,6 +249,7 @@ topEntity
   -> Slave.AxiSlaveIn System
   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn System)
   -> Signal System Token
+  -> Signal System Bool
   -> Signal System Bool
   -> Signal System Temperature
   -> Signal System Seed
