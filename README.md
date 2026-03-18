@@ -184,85 +184,149 @@ Clash normalization is RAM-intensive for large models, and runtime scales signif
 
 **Downstream EDA is out of scope for this repository.** FPGA implementation (LUT/FF/BRAM resource counts, timing closure, place-and-route) requires running the generated Verilog through a vendor tool such as Vivado (Xilinx/AMD) or Quartus (Intel/Altera). The design targets 400 MHz with an estimated ~512 DSP blocks, as noted in `PRODUCT.md`.
 
+## FPGA mapping — Vivado exploratory results
+
+### Target device
+
+The part list available under the free Vivado WebPACK edition does not include the KV260's
+exact `xck26-sfvc784-2LV-c` part. The closest available proxy is **`xczu5eg-sfvc784-2-e`**
+(same silicon die and package as the K26 SOM) and was used for the experiments below.
+
+### Synthesis error: `ram_init` variable too large
+
+Running Vivado 2025.2 synthesis on the `model-7b` Verilog output produced the following
+error:
+
+```
+[Synth 8-4556] size of variable 'ram_init' is too large to handle;
+               the size of the variable is 1024000, the limit is 1000000
+  ["…/LLaMa2.Sampling.Sampler.samplerTop/LLaMa2_Sampling_Sampler_samplerTop_tokenSampler.v":577]
+[Synth 8-6156] failed synthesizing module 'LLaMa2_Sampling_Sampler_samplerTop_tokenSampler'
+[Synth 8-6156] failed synthesizing module 'token_sampler'
+```
+
+#### Root cause in the Clash source
+
+The error originates from a single line in
+[`LLaMa2/Sampling/Sampler.hs`](project/llama2/LLaMa2/Sampling/Sampler.hs#L67):
+
+```haskell
+bramOut = blockRam (repeat (0 :: FixedPoint) :: Vec VocabularySize FixedPoint)
+                   bramRdAddr bramWrCmd
+```
+
+Clash's `blockRam` primitive takes an initial-contents vector as its first argument and
+emits it as an inline `ram_init` register array in the generated Verilog. For `model-7b`:
+
+| Parameter | Value |
+|---|---|
+| `VocabularySize` | 32,000 |
+| `FixedPoint` (`SFixed 12 20`) | 32 bits |
+| `ram_init` size | 32,000 × 32 = **1,024,000 bits** |
+| Vivado limit | 1,000,000 bits |
+
+The array exceeds Vivado's synthesis limit by 2.4%. The smaller model variants
+(`model-nano`, `model-260k`) use `VocabularySize = 512`, which produces a 16,384-bit
+`ram_init` — well within limits.
+
+#### Why the current strategy is wrong for large models
+
+Embedding a 32,000-entry initialisation table directly into Verilog source is the wrong
+shape for FPGA synthesis once vocabularies exceed ~31,000 × 32 bits. The correct
+approaches are:
+
+- **`blockRamU`** (uninitialized BRAM) — the simplest fix. The `tokenSampler` BRAM is
+  always written before it is read (the `SFill` phase populates every slot before
+  `SExpScan` or `SCDFScan` consume them), so zero-initialisation serves no functional
+  purpose. Switching to `blockRamU` eliminates `ram_init` entirely.
+- **`blockRamFile`** — Clash emits `$readmemh` pointing to an external `.mem` file;
+  Vivado handles large ROM/RAM initialisations this way without hitting the inline-array
+  limit.
+- **XPM_MEMORY / Block Memory Generator IP** — the idiomatic Xilinx path for BRAMs that
+  must carry initial content; initialization is supplied via a `.coe` file, not inlined
+  in RTL.
+- **Runtime AXI load** — for weights and tables that change between runs, load over AXI
+  from DDR/PS rather than baking values into the bitstream at all.
+
+---
+
 ## Migrating to LLaMa 3
 
-LLaMa 3 shares the same decoder-only transformer skeleton as LLaMa 2, so the bulk of this
-implementation carries over unchanged. The changes are localised to five areas.
+LLaMa 3 shares the same decoder-only transformer skeleton, so the RTL blocks (`Decoder`,
+`LayerRunner`, `MultiHeadAttention`, `FeedForwardNetwork`, AXI memory subsystem) carry
+over unchanged. This section describes a **clean cut-over** — LLaMa 2 support is dropped
+entirely. No CPP guards are kept for the old model; files are updated in place.
 
 ### 1. Model configuration (`LLaMa2/Types/ModelConfig.hs`)
 
-Add new CPP guards for LLaMa 3 shapes. The two release configurations are:
+Delete all existing `#elif MODEL_*` branches and replace the two synthesis-target
+configurations with:
 
-| Model        | dim  | hidden | layers | Q heads | KV heads | head dim | vocab   | seq   |
-| ------------ | ---- | ------ | ------ | ------- | -------- | -------- | ------- | ----- |
-| LLaMa 3 8B   | 4096 | 14336  | 32     | 32      | 8        | 128      | 128,256 | 8192  |
-| LLaMa 3 70B  | 8192 | 28672  | 80     | 64      | 8        | 128      | 128,256 | 8192  |
+| Model       | dim  | hidden | layers | Q heads | KV heads | head dim | vocab   | seq  |
+| ----------- | ---- | ------ | ------ | ------- | -------- | -------- | ------- | ---- |
+| LLaMa 3 8B  | 4096 | 14336  | 32     | 32      | 8        | 128      | 128,256 | 8192 |
+| LLaMa 3 70B | 8192 | 28672  | 80     | 64      | 8        | 128      | 128,256 | 8192 |
 
-`NumKeyValueHeads` already exists as a type parameter, so GQA (grouped query attention) is
-structurally supported — only the numeric values change. The large vocabulary
-(`VocabularySize = 128256`) will widen the embedding and output-projection matrices; verify
-that `BankDepth` and `BankAddress` still fit in your chosen index type.
+`NumKeyValueHeads` already exists as a type parameter, so GQA is structurally supported.
+The jump to `VocabularySize = 128256` is the most impactful change: it widens both the
+embedding table and the output-projection matrix, and it directly drives the `ram_init`
+overflow issue described above — making the `blockRamU` fix a prerequisite for synthesis.
+Verify that `BankDepth` and `BankAddress` still fit in your chosen index type under the
+new `SequenceLength = 8192`.
 
 ### 2. Rotary positional encoding (`LLaMa2/Layer/Attention/RotaryEncoding.hs`)
 
-LLaMa 3 changes the RoPE base frequency from **10,000** (LLaMa 2) to **500,000**. The
-`freqCosF` / `freqSinF` tables baked into `RotaryEncodingComponentF` must be recomputed
-with the new theta before simulation or synthesis. No structural change to
-`rotaryPositionEncoder` itself is required.
+Update the RoPE base frequency in place: **10,000 → 500,000**. Recompute the
+`freqCosF` / `freqSinF` tables baked into `RotaryEncodingComponentF` with the new theta.
+No structural change to `rotaryPositionEncoder` is required.
 
 ### 3. Tokenizer (`Tokenizer.hs`)
 
-LLaMa 2 uses a **SentencePiece** model stored as a custom binary blob (`tokenizer.bin`);
-the current `buildTokenizer` parser reads that format directly. LLaMa 3 ships a
-**tiktoken BPE** tokenizer (`tokenizer.model` in tiktoken format). The replacement steps
-are:
+Replace `buildTokenizer` entirely. The LLaMa 2 SentencePiece binary parser is gone;
+LLaMa 3 uses a **tiktoken BPE** tokenizer (`tokenizer.model`):
 
-- Replace the binary parser in `buildTokenizer` with a tiktoken-format reader (base-64
-  encoded merge rules + a rank table).
-- Update `encodeTokens` to implement BPE merging on the new rank table instead of the
-  SentencePiece score-based merge loop.
-- The `decodePiece` byte-fallback logic (`<0xNN>` tokens) needs adapting to tiktoken's
-  byte-level vocabulary encoding.
+- Write a new tiktoken-format reader: base-64 encoded merge rules + a rank table.
+- Replace `encodeTokens` with a BPE merge loop on the new rank table (drop the
+  SentencePiece score-based merge logic).
+- Update `decodePiece` byte-fallback to tiktoken's byte-level vocabulary encoding
+  (`<0xNN>` handling changes slightly).
 
-The hardware path (`InputEmbedding`, `OutputProjection`) is unaffected; only the host-side
-software tokenizer changes.
+The hardware path (`InputEmbedding`, `OutputProjection`) is unaffected.
 
 ### 4. Checkpoint / weight parser (`Parser.hs`)
 
-LLaMa 2 checkpoints are raw binary files laid out by the C reference implementation.
-LLaMa 3 weights are distributed in the **safetensors** format. Replacing the parser
-requires:
+Replace the raw-binary checkpoint parser entirely. LLaMa 3 weights ship as **safetensors**:
 
-- Reading the safetensors JSON header to extract tensor names, dtypes, and byte offsets.
-- Mapping Meta's canonical tensor name convention
-  (`model.layers.N.self_attn.q_proj.weight`, etc.) to the flat weight layout expected by
-  `WeightsLayout.hs`.
-- LLaMa 3 weights are released in **bfloat16**; the existing `ParametersQuantization`
-  path assumes float32 input. Add a bfloat16 → float32 conversion step before
-  quantization.
+- Read the safetensors JSON header to extract tensor names, dtypes, and byte offsets.
+- Map Meta's canonical tensor names (`model.layers.N.self_attn.q_proj.weight`, etc.) to
+  the flat weight layout expected by `WeightsLayout.hs`.
+- LLaMa 3 weights are **bfloat16**; add a bfloat16 → float32 conversion step at the
+  parser boundary before handing values to `ParametersQuantization`.
 
 ### 5. Weights memory layout (`LLaMa2/Memory/WeightsLayout.hs`, `KVCacheLayout.hs`)
 
-The drastically reduced KV head count in LLaMa 3 (8 KV heads for both 8B and 70B) shrinks
-the K and V weight matrices relative to Q. Verify that the DRAM address arithmetic in
-`WeightsLayout` still produces non-overlapping regions under the new
-`NumQueryHeads / NumKeyValueHeads` ratio, and that `KVCacheLayout`'s `BankDepth`
-calculation is correct for the wider `SequenceLength = 8192`.
+LLaMa 3 drops to 8 KV heads for both the 8B and 70B variants, significantly shrinking K
+and V weight matrices relative to Q. Update the DRAM address arithmetic in `WeightsLayout`
+for the new `NumQueryHeads / NumKeyValueHeads` ratio and confirm regions remain
+non-overlapping. Recalculate `KVCacheLayout`'s `BankDepth` for `SequenceLength = 8192`.
+
+### 6. Cabal flags (`llama2.cabal`)
+
+Remove all `model-7b`, `model-13b`, `model-70b` (and smaller LLaMa 2) flags. Replace with
+`model-llama3-8b` and `model-llama3-70b`. Keep `model-nano` and `model-260k` as fast
+simulation targets if desired, but update their CPP guards to be LLaMa-3-neutral names.
 
 ### Summary of files to change
 
 | File | Change |
 | ---- | ------ |
-| `LLaMa2/Types/ModelConfig.hs` | Add `MODEL_LLAMA3_8B` / `MODEL_LLAMA3_70B` CPP guards |
+| `LLaMa2/Types/ModelConfig.hs` | Replace all `MODEL_*` branches with `MODEL_LLAMA3_8B` / `MODEL_LLAMA3_70B` |
 | `LLaMa2/Layer/Attention/RotaryEncoding.hs` | Update RoPE theta base (10,000 → 500,000) |
 | `Tokenizer.hs` | Replace SentencePiece parser with tiktoken BPE reader |
 | `Parser.hs` | Replace binary checkpoint parser with safetensors reader + bfloat16 conversion |
-| `LLaMa2/Memory/WeightsLayout.hs` | Verify address map under new GQA ratio and vocab size |
-| `LLaMa2/Memory/KVCacheLayout.hs` | Verify bank sizing for `SequenceLength = 8192` |
-| `llama2.cabal` | Add new `model-llama3-8b` / `model-llama3-70b` flag entries |
-
-The RTL blocks (`Decoder`, `LayerRunner`, `MultiHeadAttention`, `FeedForwardNetwork`, AXI
-memory subsystem) do not require structural changes.
+| `LLaMa2/Memory/WeightsLayout.hs` | Update address map for new GQA ratio and vocab size |
+| `LLaMa2/Memory/KVCacheLayout.hs` | Recalculate bank sizing for `SequenceLength = 8192` |
+| `llama2.cabal` | Replace LLaMa 2 flags with `model-llama3-8b` / `model-llama3-70b` |
 
 ---
 
