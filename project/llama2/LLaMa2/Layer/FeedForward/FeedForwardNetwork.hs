@@ -43,7 +43,7 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
 
     -- Sequential rmsNorm: triggered on the rising edge of rmsFfnValid.
     rmsFfnDone = rmsFfnValid .&&. (not <$> register False rmsFfnValid)
-    (rmsNormValid, xHat) = rmsNormSeq rmsFfnDone inputVector rmsFfnVec
+    (rmsNormValid, xHat, _) = rmsNormSeq rmsFfnDone inputVector rmsFfnVec
 
     -- effectiveValidIn: fires once on the rising edge of rmsNormValid while pending.
     -- pendingInput clears on effectiveValidIn (not on rmsNormValid directly —

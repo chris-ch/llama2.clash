@@ -47,8 +47,9 @@ rmsNormSeq
   -> Signal dom (Vec n FixedPoint) -- ^ w  (weight vector, must be stable on validIn)
   -> ( Signal dom Bool               -- ^ outputValid (level, held from RNDone)
      , Signal dom (Vec n FixedPoint) -- ^ result
+     , Signal dom (Index n)          -- ^ counter (drives BRAM read address)
      )
-rmsNormSeq validIn xSig wSig = (outputValid, outReg)
+rmsNormSeq validIn xSig wSig = (outputValid, outReg, counter)
   where
     -- Compile-time reciprocal: floor(2^20 / n) as FixedPoint bit pattern.
     invNBits :: Signed 32

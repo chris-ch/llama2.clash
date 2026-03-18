@@ -25,7 +25,7 @@ runSim
 runSim validIns xs ws cycles =
   P.take cycles $ P.zip valids results
  where
-  (validSig, resultSig) =
+  (validSig, resultSig, _) =
     exposeClockResetEnable
       (rmsNormSeq
         (fromList validIns)

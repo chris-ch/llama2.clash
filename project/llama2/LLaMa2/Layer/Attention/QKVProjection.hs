@@ -150,7 +150,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   -- Sequential rmsNorm: starts when rmsAtt weights arrive (rmsAttDone already
   -- exists above as the cos-fetch trigger).  Runs in parallel with cos/sin
   -- fetches; effectiveInputValid waits for whichever finishes last.
-  (rmsNormValid, xNorm) = rmsNormSeq rmsAttDone xVec rmsAttVec
+  (rmsNormValid, xNorm, _) = rmsNormSeq rmsAttDone xVec rmsAttVec
 
   -- Hold latch until all three (rmsAtt + cos + sin) have been fetched AND
   -- rmsNorm has completed for THIS token.
