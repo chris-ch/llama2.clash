@@ -62,9 +62,15 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
   --   SExpScan phase: overwrite with exp values
   --   SCDFScan phase: read exp values for CDF walk
   -- 1-cycle read latency: rdAddr set in cycle N → bramOut valid in cycle N+1
+  --
+  -- blockRamU (uninitialized) is used intentionally: the FSM always completes
+  -- SFill (writing every slot) before SExpScan or SCDFScan read any slot, so
+  -- the initial contents are never observed. blockRam with an explicit init
+  -- vector emits an inline ram_init array of VocabularySize×32 bits, which
+  -- exceeds Vivado's 1,000,000-bit synthesis limit at VocabularySize ≥ 31,250.
   -- -------------------------------------------------------------------------
   bramOut :: Signal dom FixedPoint
-  bramOut = blockRam (repeat (0 :: FixedPoint) :: Vec VocabularySize FixedPoint) bramRdAddr bramWrCmd
+  bramOut = blockRamU NoClearOnReset (SNat @VocabularySize) (const (errorX "blockRam: uninitialized")) bramRdAddr bramWrCmd
 
   -- BRAM read address: the index we want data for NEXT cycle
   bramRdAddr :: Signal dom (Index VocabularySize)

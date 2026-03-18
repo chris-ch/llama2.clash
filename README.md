@@ -207,63 +207,6 @@ row-wise burst throughput) and 96 UltraRAM blocks, which are well-suited for KV 
 storage. The ZU5EG (`xczu5eg-sfvc784-2-e`) is the closest K26/KV260 proxy but offers
 fewer resources and a lower speed grade — it is outclassed by the ZU7EV for this workload.
 
-### Synthesis error: `ram_init` variable too large
-
-Running Vivado 2025.2 synthesis on the `model-7b` Verilog output produced the following
-error:
-
-```
-[Synth 8-4556] size of variable 'ram_init' is too large to handle;
-               the size of the variable is 1024000, the limit is 1000000
-  ["…/LLaMa2.Sampling.Sampler.samplerTop/LLaMa2_Sampling_Sampler_samplerTop_tokenSampler.v":577]
-[Synth 8-6156] failed synthesizing module 'LLaMa2_Sampling_Sampler_samplerTop_tokenSampler'
-[Synth 8-6156] failed synthesizing module 'token_sampler'
-```
-
-#### Root cause in the Clash source
-
-The error originates from a single line in
-[`LLaMa2/Sampling/Sampler.hs`](project/llama2/LLaMa2/Sampling/Sampler.hs#L67):
-
-```haskell
-bramOut = blockRam (repeat (0 :: FixedPoint) :: Vec VocabularySize FixedPoint)
-                   bramRdAddr bramWrCmd
-```
-
-Clash's `blockRam` primitive takes an initial-contents vector as its first argument and
-emits it as an inline `ram_init` register array in the generated Verilog. For `model-7b`:
-
-| Parameter | Value |
-|---|---|
-| `VocabularySize` | 32,000 |
-| `FixedPoint` (`SFixed 12 20`) | 32 bits |
-| `ram_init` size | 32,000 × 32 = **1,024,000 bits** |
-| Vivado limit | 1,000,000 bits |
-
-The array exceeds Vivado's synthesis limit by 2.4%. The smaller model variants
-(`model-nano`, `model-260k`) use `VocabularySize = 512`, which produces a 16,384-bit
-`ram_init` — well within limits.
-
-#### Why the current strategy is wrong for large models
-
-Embedding a 32,000-entry initialisation table directly into Verilog source is the wrong
-shape for FPGA synthesis once vocabularies exceed ~31,000 × 32 bits. The correct
-approaches are:
-
-- **`blockRamU`** (uninitialized BRAM) — the simplest fix. The `tokenSampler` BRAM is
-  always written before it is read (the `SFill` phase populates every slot before
-  `SExpScan` or `SCDFScan` consume them), so zero-initialisation serves no functional
-  purpose. Switching to `blockRamU` eliminates `ram_init` entirely.
-- **`blockRamFile`** — Clash emits `$readmemh` pointing to an external `.mem` file;
-  Vivado handles large ROM/RAM initialisations this way without hitting the inline-array
-  limit.
-- **XPM_MEMORY / Block Memory Generator IP** — the idiomatic Xilinx path for BRAMs that
-  must carry initial content; initialization is supplied via a `.coe` file, not inlined
-  in RTL.
-- **Runtime AXI load** — for weights and tables that change between runs, load over AXI
-  from DDR/PS rather than baking values into the bitstream at all.
-
----
 
 ## Migrating to LLaMa 3
 
