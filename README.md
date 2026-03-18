@@ -189,8 +189,23 @@ Clash normalization is RAM-intensive for large models, and runtime scales signif
 ### Target device
 
 The part list available under the free Vivado WebPACK edition does not include the KV260's
-exact `xck26-sfvc784-2LV-c` part. The closest available proxy is **`xczu5eg-sfvc784-2-e`**
-(same silicon die and package as the K26 SOM) and was used for the experiments below.
+exact `xck26-sfvc784-2LV-c` part. After reviewing all available parts, the recommended
+target is **`xczu7ev-ffvc1156-3-e`** — the highest-tier device in the list and the best
+fit for this design.
+
+| Feature | Original target (ZU9EG) | Recommended (ZU7EV-3-E) |
+| --- | --- | --- |
+| DSPs | 2,520 | 1,728 |
+| LUTs | ~274k | 230,400 |
+| Speed grade | -1 / -2 | **-3** (highest available) |
+| UltraRAM | varies | **96 blocks (32.4 Mb)** |
+| Processors | Quad-core A53 | Quad-core A53 |
+
+The ZU9EG has more DSPs and logic, but it is not in the WebPACK part list at all. The
+ZU7EV-3-E compensates with the highest speed grade (critical for AXI streaming and
+row-wise burst throughput) and 96 UltraRAM blocks, which are well-suited for KV cache
+storage. The ZU5EG (`xczu5eg-sfvc784-2-e`) is the closest K26/KV260 proxy but offers
+fewer resources and a lower speed grade — it is outclassed by the ZU7EV for this workload.
 
 ### Synthesis error: `ram_init` variable too large
 
