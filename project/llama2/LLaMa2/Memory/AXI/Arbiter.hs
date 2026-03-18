@@ -12,9 +12,9 @@ import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..))
 -- For each head, computes its circular distance from the start position, then
 -- folds over a priority-encoded Vec to find the earliest requester.
 -- Uses fold (comparator tree) instead of recursion to avoid Clash specialization limits.
-{-# NOINLINE findNextRequester #-}
-findNextRequester :: forall n. KnownNat n => Vec n Bool -> Index n -> Index n
-findNextRequester reqs lastR =
+{-# NOINLINE roundRobinGrant #-}
+roundRobinGrant :: forall n. KnownNat n => Vec n Bool -> Index n -> Index n
+roundRobinGrant reqs lastR =
   snd (foldl pick (nW, lastR) (imap mkEntry reqs))
  where
   start = if lastR == maxBound then 0 else lastR + 1
@@ -53,7 +53,7 @@ axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
 
     -- Round-robin selection: find next requesting head
     nextRequester :: Signal dom (Index n)
-    nextRequester = findNextRequester <$> bundle arRequests <*> lastGranted
+    nextRequester = roundRobinGrant <$> bundle arRequests <*> lastGranted
 
     -- Active index: locked to owner when in-flight, otherwise round-robin
     activeIdx :: Signal dom (Index n)
@@ -92,9 +92,9 @@ axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
       , ardata  = (!!) <$> bundle (map Master.ardata masters) <*> activeIdx
       , rready  = (!!) <$> bundle (map Master.rready masters) <*> transactionOwner
       , awvalid = pure False
-      , awdata  = pure (AxiAW 0 0 0 0 0)
+      , awdata  = pure (AxiAW { awaddr = 0, awlen = 0, awsize = 0, awburst = 0, awid = 0 })
       , wvalid  = pure False
-      , wdata   = pure (AxiW 0 0 False)
+      , wdata   = pure (AxiW { wdata = 0, wstrb = 0, wlast = False })
       , bready  = pure False
       }
 
@@ -110,7 +110,7 @@ axiArbiterWithRouting slaveIn masters = (masterOut, perHeadSlaves)
       , awready = pure False
       , wready  = pure False
       , bvalid  = pure False
-      , bdata   = pure (AxiB 0 0)
+      , bdata   = pure (AxiB { bresp = 0, bid = 0 })
       }
       where
         isActiveAndIdle = (activeIdx .==. pure headIdx) .&&. (not <$> inFlight)

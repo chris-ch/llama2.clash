@@ -41,7 +41,7 @@ uniformRandom01Generator readyPulse seed =
   -- Mask to lower 20 bits (the fractional-bit positions of SFixed 12 20),
   -- then bitCoerce to FixedPoint.  The sign and integer bits are zero,
   -- so the result is in [0, 1) without any division or overflow.
-  (bitCoerce . (.&. 0x000FFFFF)) <$> pseudoRandomGenerator readyPulse seed
+  bitCoerce . (.&. 0x000FFFFF) <$> pseudoRandomGenerator readyPulse seed
 
 -- categorical sampling from FixedPoint probabilities
 categoricalSampler :: forall n. (KnownNat (n + 1), KnownNat n) => FixedPoint -> Vec (n + 1) FixedPoint -> Unsigned 32

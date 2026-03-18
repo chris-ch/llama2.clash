@@ -155,7 +155,7 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
                                                                       (pure SExpScan)
     $ mux (state .==. pure SExpScan .&&. scanCount .==. pure vocSize) (pure SCDFScan)
     $ mux inFillPhase                                                 (pure SFill)
-    $ state
+    state
 
   -- -------------------------------------------------------------------------
   -- Scan counter (0 = BRAM warm-up cycle; 1..vocSize = active processing)
@@ -166,7 +166,7 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
     $ mux (state .==. pure SExpScan .&&. scanCount .<. pure vocSize)  (scanCount + 1)
     $ mux (state .==. pure SCDFScan .&&. scanCount .<. pure vocSize
            .&&. (not <$> cdfHit))                                     (scanCount + 1)
-    $ scanCount
+    scanCount
 
   -- -------------------------------------------------------------------------
   -- Argmax registers
@@ -176,7 +176,7 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
   nextArgVal =
     mux (state .==. pure SDone) (pure minBound)  -- reset for next token
     $ mux isNewBest logitValue
-    $ argVal
+    argVal
 
   -- -------------------------------------------------------------------------
   -- Softmax accumulators
@@ -184,17 +184,17 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
   nextSumExp =
     mux (state .==. pure SExpScan .&&. scanCount .>. 0) (sumExpR + expVal)
     $ mux (state .==. pure SDone)                        (pure 0)
-    $ sumExpR
+    sumExpR
 
   nextRand =
     mux (state .==. pure SFill .&&. logitsAllDone .&&. (not <$> useArgmax))
         randUniform
-    $ randR
+    randR
 
   nextCdf =
     mux (state .==. pure SCDFScan .&&. scanCount .>. 0) (cdfR + probVal)
     $ mux (state .==. pure SExpScan .&&. scanCount .==. pure vocSize)  (pure 0)
-    $ cdfR
+    cdfR
 
   -- -------------------------------------------------------------------------
   -- Output token
@@ -207,7 +207,7 @@ tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed =
     $ mux cdfHit (scanCount - 1)
     -- CDF fallback: last index
     $ mux cdfEnd (pure (fromIntegral (maxBound :: Index VocabularySize)))
-    $ tokenReg
+    tokenReg
 
   -- nextValid pulses True in the cycle after justDone (registers update)
   nextValid = justDone

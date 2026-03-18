@@ -2,9 +2,8 @@ module LLaMa2.Numeric.Operations
   ( accumulator
   , MultiplierState(..)
   , matrixMultiplierStateMachine
-  , parallelRowMatrixMultiplierDyn
   , parallel64RowProcessor
-  , parallelRowMatrixMultiplier -- to be migrated to dynamic version
+  , parallelRowMatrixMultiplier
   , cyclicalCounter64 -- should be internal only
   ) where
 
@@ -505,61 +504,4 @@ parallel64RowMatrixMultiplier validIn readyIn rowVectors inputVector =
     nextOutput = mux rowDone
                      (replace <$> rowIndex <*> rowResult <*> outputVector)
                      outputVector
-
---------------------------------------------------------------------------------
--- Dynamic matrix-vector multiplier: accepts Signal dom (MatI8E rows cols)
--- Mirrors parallel64RowMatrixMultiplier but with runtime-selectable matrix.
---------------------------------------------------------------------------------
-parallelRowMatrixMultiplierDyn :: forall dom rows cols.
-  ( HiddenClockResetEnable dom
-  , KnownNat rows, KnownNat cols
-  )
-  => Signal dom Bool                      -- ^ inputValid
-  -> Signal dom Bool                      -- ^ downStreamReady
-  -> Signal dom (MatI8E rows cols)        -- ^ matrix (runtime, from RAM or const)
-  -> Signal dom (Vec cols FixedPoint)     -- ^ input vector
-  -> ( Signal dom (Vec rows FixedPoint)   -- ^ output vector
-     , Signal dom Bool                    -- ^ outputValid
-     , Signal dom Bool                    -- ^ readyForInput
-     )
-parallelRowMatrixMultiplierDyn inputValid downStreamReady matSig inputVector =
-  (outputVector, outputValid, readyForInput)
- where
-  -- Row counter
-  rowIndex :: Signal dom (Index rows)
-  rowIndex = register 0 nextRowIndex
-
-  -- Fetch current row from the runtime matrix
-  currentRow :: Signal dom (RowI8E cols)
-  currentRow = (!!) <$> matSig <*> rowIndex
-
-  initialRow :: RowI8E cols
-  initialRow = RowI8E { rowMantissas = repeat 0, rowExponent = 0}
-
-  -- Parallel row engine
-  currentRowReg :: Signal dom (RowI8E cols)
-  currentRowReg = register initialRow currentRow
-
-  (rowResult, rowDone, _accValue) =
-      parallel64RowProcessor rowReset rowEnable currentRowReg inputVector
-
-  -- Protocol FSM
-  -- For non-DRAM: fetchDone is always True (data immediately available)
-  (state, _fetchTrigger, rowReset, rowEnable, outputValid, readyForInput) =
-    matrixMultiplierStateMachine inputValid (pure True) downStreamReady rowDone rowIndex
-    -- Note: we ignore fetchTrigger since we don't fetch anything
-
-  -- Row index sequencing
-  nextRowIndex =
-    mux (rowDone .&&. (rowIndex ./=. pure maxBound))
-        (rowIndex + 1)
-        (mux ((state .==. pure MDone) .&&. downStreamReady)
-             (pure 0)
-             rowIndex)
-
-  -- Accumulate per-row results into the output vector
-  outputVector = register (repeat 0) nextOutput
-  nextOutput   = mux rowDone
-                   (replace <$> rowIndex <*> rowResult <*> outputVector)
-                   outputVector
 

@@ -445,9 +445,9 @@ axiRowFetcher slaveIn reqPulse addrIn =
     , ardata  = ardataOut
     , rready  = rreadyOut
     , awvalid = pure False
-    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , awdata  = pure (AxiAW { awaddr = 0, awlen = 0, awsize = 0, awburst = 0, awid = 0 })
     , wvalid  = pure False
-    , wdata   = pure (AxiW 0 0 False)
+    , wdata   = pure (AxiW { wdata = 0, wstrb = 0, wlast = False })
     , bready  = pure False
     }
 -- | Parse multiple 512-bit words into a RowI8E using the NEW layout:
@@ -459,7 +459,7 @@ multiWordRowParser :: forall dim numWords.
   , BitPack Exponent
   ) =>
   Vec numWords (BitVector 512) -> RowI8E dim
-multiWordRowParser words' = RowI8E mantissas exponent'
+multiWordRowParser words' = RowI8E { rowMantissas = mantissas, rowExponent = exponent' }
   where
     -- Flatten bytes in beat order: w0 b0..b63, w1 b0..b63, ...
     allBytes :: Vec (numWords T.* 64) (BitVector 8)
@@ -739,9 +739,9 @@ axiMultiWordRowFetcher slaveIn reqPulse addrIn =
     , ardata  = ardataOut
     , rready  = rreadyOut
     , awvalid = pure False
-    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , awdata  = pure (AxiAW { awaddr = 0, awlen = 0, awsize = 0, awburst = 0, awid = 0 })
     , wvalid  = pure False
-    , wdata   = pure (AxiW 0 0 False)
+    , wdata   = pure (AxiW { wdata = 0, wstrb = 0, wlast = False })
     , bready  = pure False
     }
 
@@ -862,9 +862,9 @@ axiNWordFetcher slaveIn reqPulse addrIn =
     , ardata  = ardataOut
     , rready  = rreadyOut
     , awvalid = pure False
-    , awdata  = pure (AxiAW 0 0 0 0 0)
+    , awdata  = pure (AxiAW { awaddr = 0, awlen = 0, awsize = 0, awburst = 0, awid = 0 })
     , wvalid  = pure False
-    , wdata   = pure (AxiW 0 0 False)
+    , wdata   = pure (AxiW { wdata = 0, wstrb = 0, wlast = False })
     , bready  = pure False
     }
 

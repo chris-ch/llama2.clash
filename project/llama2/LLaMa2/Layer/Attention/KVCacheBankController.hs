@@ -135,8 +135,8 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
 
     writeAddr :: Signal dom (Unsigned 32)
     writeAddr = mux isWritingK
-      ((\li sp -> kvCacheKAddress li kvHeadIdx sp) <$> layerIdx <*> latchedSeqPos)
-      ((\li sp -> kvCacheVAddress li kvHeadIdx sp) <$> layerIdx <*> latchedSeqPos)
+      ((`kvCacheKAddress` kvHeadIdx) <$> layerIdx <*> latchedSeqPos)
+      ((`kvCacheVAddress` kvHeadIdx) <$> layerIdx <*> latchedSeqPos)
 
     writeDataBeat :: Signal dom (BitVector 512)
     writeDataBeat = mux isWritingK
@@ -159,10 +159,10 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     fetchVReq = risingEdge (pure KVBAttendV) .&&. vFetchReady
 
     kFetchAddr :: Signal dom (Unsigned 32)
-    kFetchAddr = (\li rc -> kvCacheKAddress li kvHeadIdx rc) <$> layerIdx <*> rowCounter
+    kFetchAddr = (`kvCacheKAddress` kvHeadIdx) <$> layerIdx <*> rowCounter
 
     vFetchAddr :: Signal dom (Unsigned 32)
-    vFetchAddr = (\li rc -> kvCacheVAddress li kvHeadIdx rc) <$> layerIdx <*> rowCounter
+    vFetchAddr = (`kvCacheVAddress` kvHeadIdx) <$> layerIdx <*> rowCounter
 
     (kReadMaster, kWordsOut, kDataValid, kFetchReady, _kDbg) =
       axiNWordFetcher @dom @(WordsPerFPVec HeadDimension)

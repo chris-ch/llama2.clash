@@ -12,7 +12,7 @@ import qualified Prelude as P
 
 import LLaMa2.Memory.AXI.Types
     ( AxiW(wdata),
-      AxiAW(AxiAW, awid, awaddr, awlen),
+      AxiAW(AxiAW, awid, awaddr, awlen, awsize, awburst),
       AxiR(..),
       AxiAR(AxiAR, arid, arlen, araddr),
       AxiB(AxiB) )
@@ -87,22 +87,22 @@ buildMemoryFromParams params =
       let layer = PARAM.modelLayers params !! li
           mha   = PARAM.multiHeadAttention layer
           ffn   = PARAM.feedforwardNetwork layer
-          
+
           -- Q matrices: all 8 Q heads
-          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker 
+          qWords = P.concatMap (\h -> Layout.matrixMultiWordPacker
                     (PARAM.qMatrix (PARAM.qHeads mha !! h)))
                   [0..numQHeads-1]
-          
+
           -- K matrices: directly from 4 KV heads (NO MAPPING!)
-          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+          kWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker
                     (PARAM.kMatrix (PARAM.kvHeads mha !! kvh)))
                   [0..numKVHeads-1]
-          
+
           -- V matrices: directly from 4 KV heads (NO MAPPING!)
-          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker 
+          vWords = P.concatMap (\kvh -> Layout.matrixMultiWordPacker
                     (PARAM.vMatrix (PARAM.kvHeads mha !! kvh)))
                   [0..numKVHeads-1]
-          
+
           -- WO still per Q head
           woWords = P.concatMap (\h -> Layout.matrixMultiWordPacker (PARAM.mWoQ mha !! h))
                     [0..numQHeads-1]
@@ -213,14 +213,14 @@ createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
     beatOffsetBytes = (`shiftL` 6) . fromIntegral <$> currentBeat
 
     currentAddress :: Signal dom (Unsigned 32)
-    currentAddress = (+) <$> (araddr <$> capturedAR) <*> beatOffsetBytes
+    currentAddress = ((+) P.. araddr P.<$> capturedAR) <*> beatOffsetBytes
 
     addrWordU :: Signal dom (Unsigned 32)
     addrWordU = (`shiftR` 6) <$> currentAddress
 
     readAddrIdx :: Signal dom (Index n)
     readAddrIdx =
-      (fromIntegral :: Unsigned 32 -> Index n) <$> ((`mod` nWordsU32) <$> addrWordU)
+      (fromIntegral :: Unsigned 32 -> Index n) P.. (`mod` nWordsU32) P.<$> addrWordU
 
     rvalidSig :: Signal dom Bool
     rvalidSig = (\s del ok -> case s of
@@ -233,7 +233,7 @@ createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
                   let isLast = case s of
                                  RProcessing b l -> b >= l
                                  _               -> False
-                  in AxiR dat 0 isLast (arid ar)
+                  in AxiR { rdata = dat, rresp = 0, rlast = isLast, rid = arid ar }
                ) <$> readState <*> capturedAR <*> ramOut
 
     nextARDelay :: Signal dom (Index 16)
@@ -262,7 +262,7 @@ createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
     writeState = register WIdle nextWriteState
 
     capturedAW :: Signal dom AxiAW
-    capturedAW = regEn (AxiAW 0 0 0 0 0) awAccepted (Master.awdata masterIn)
+    capturedAW = regEn (AxiAW { awaddr = 0, awlen = 0, awsize = 0, awburst = 0, awid = 0 }) awAccepted (Master.awdata masterIn)
 
     awreadySig :: Signal dom Bool
     awreadySig = writeState .==. pure WIdle
@@ -289,8 +289,7 @@ createDRAMBackedAxiSlaveFromVec _cycleCounter config initVec masterIn =
 
     writeAddrIdx :: Signal dom (Index n)
     writeAddrIdx =
-      (fromIntegral :: Unsigned 32 -> Index n)
-      <$> ((`mod` nWordsU32) <$> ( (`shiftR` 6) <$> writeAddress ))
+      ((fromIntegral :: Unsigned 32 -> Index n) P.. (`mod` nWordsU32)) P.. (`shiftR` 6) P.<$> writeAddress
 
     wHandshake :: Signal dom Bool
     wHandshake = wreadySig .&&. Master.wvalid masterIn
@@ -367,5 +366,5 @@ createKVCacheDRAMSlave ::
   Master.AxiMasterOut dom ->
   Slave.AxiSlaveIn dom
 createKVCacheDRAMSlave cycleCounter =
-  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig 1 0 1)
+  createDRAMBackedAxiSlaveFromVec cycleCounter (DRAMConfig { rValidDelay = 1, arReadyDelay = 0, rBeatDelay = 1 })
     (repeat 0 :: Vec KVLayout.KvCacheWords WordData)

@@ -62,8 +62,7 @@ activeLayerProcessor cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos
     attnData = (\d attn -> d { attentionOutput = attn }) <$> inputData <*> attnOut
     ffnData  = (\d ffn  -> d { feedForwardOutput = ffn }) <$> inputData <*> ffnOut
 
-activeLayerProcessorFlat
-  :: ( HiddenClockResetEnable dom
+activeLayerProcessorFlat :: ( HiddenClockResetEnable dom
      , KnownNat (WordsPerFPVec HeadDimension)
      )
   => Signal dom (Unsigned 32)
@@ -118,8 +117,7 @@ activeLayerProcessorFlat cc dram kv li sp inp iv =
         , PortName "qkv_ready"
         ]
     }) #-}
-layerRunnerTop
-  :: Clock System
+layerRunnerTop :: Clock System
   -> Reset System
   -> Enable System
   -> Signal System (Unsigned 32)
