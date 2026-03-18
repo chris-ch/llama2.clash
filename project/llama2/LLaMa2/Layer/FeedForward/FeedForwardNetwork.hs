@@ -3,7 +3,7 @@ module LLaMa2.Layer.FeedForward.FeedForwardNetwork (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Numeric.FixedPoint ( rmsNormFwFix )
+import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
 import LLaMa2.Types.ModelConfig
     ( ModelDimension, NumLayers )
 import LLaMa2.Numeric.Types ( FixedPoint )
@@ -41,18 +41,22 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
         validInRise
         (Layout.rmsFfnAddress <$> layerIdx)
 
-    -- Hold validInRise latch until fRMSFfn fetch completes
+    -- Sequential rmsNorm: triggered on the rising edge of rmsFfnValid.
+    rmsFfnDone = rmsFfnValid .&&. (not <$> register False rmsFfnValid)
+    (rmsNormValid, xHat) = rmsNormSeq rmsFfnDone inputVector rmsFfnVec
+
+    -- effectiveValidIn: fires once on the rising edge of rmsNormValid while pending.
+    -- pendingInput clears on effectiveValidIn (not on rmsNormValid directly —
+    -- rmsNormValid from the previous layer is still True when the next validInRise
+    -- fires, which would prematurely clear pendingInput before the new run starts).
+    effectiveValidIn = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
+
     pendingInput = register False nextPendingInput
      where
       nextPendingInput =
-        mux (pendingInput .&&. rmsFfnValid) (pure False) $
+        mux effectiveValidIn (pure False) $
         mux validInRise (pure True)
         pendingInput
-
-    effectiveValidIn = pendingInput .&&. rmsFfnValid
-
-    -- Pre-normalize with DRAM-fetched RMS weights
-    xHat = rmsNormFwFix <$> inputVector <*> rmsFfnVec
 
     --------------------------------------------------------------------------
     -- DRAM-backed FFN core: W1 (gate) -> W3 (up) -> W2 (down)

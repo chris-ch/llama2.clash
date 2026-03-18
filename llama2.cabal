@@ -145,6 +145,7 @@ library
       LLaMa2.Numeric.FixedPoint
       LLaMa2.Numeric.Quantization
       LLaMa2.Numeric.Operations
+      LLaMa2.Numeric.RmsNormSeq
       LLaMa2.Numeric.Types
       Simulation.ParamsPlaceholder 
       LLaMa2.Sampling.Distribution
@@ -201,9 +202,9 @@ test-suite llama2-test
       LLaMa2.Memory.WeightsLayoutSpec
       LLaMa2.Memory.WeightsLayoutRoundtripSpec
       LLaMa2.Numeric.OperationsSpec
+      LLaMa2.Numeric.RmsNormSeqSpec
       Simulation.AxiWriteMasterSpec
       Simulation.DRAMBackedAxiSlaveSpec
-      Simulation.DynamicMatMulSpec
   hs-source-dirs:
       test
   build-depends:

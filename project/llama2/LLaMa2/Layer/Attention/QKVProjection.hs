@@ -14,7 +14,7 @@ import LLaMa2.Types.ModelConfig
       NumQueryHeads,
       SequenceLength )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
+import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -147,27 +147,28 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
       cosDone
       (Layout.rotarySinAddress <$> seqPos)
 
-  -- Rising edge of sinValid: fires exactly once when sin fetch completes.
-  -- Using the rising edge (not the level) prevents immediate firing on token N+1
-  -- when sinValid is still True from token N's completed fetch.
-  sinDone :: Signal dom Bool
-  sinDone = sinValid .&&. (not <$> register False sinValid)
+  -- Sequential rmsNorm: starts when rmsAtt weights arrive (rmsAttDone already
+  -- exists above as the cos-fetch trigger).  Runs in parallel with cos/sin
+  -- fetches; effectiveInputValid waits for whichever finishes last.
+  (rmsNormValid, xNorm) = rmsNormSeq rmsAttDone xVec rmsAttVec
 
-  -- Hold latch until all three (rmsAtt + cos + sin) have been fetched for THIS token.
-  -- Cleared by sinDone (rising edge) so it stays False if sinValid is already True.
+  -- Hold latch until all three (rmsAtt + cos + sin) have been fetched AND
+  -- rmsNorm has completed for THIS token.
+  -- Fire on the rising edge of (sinValid AND rmsNormValid) so it fires exactly
+  -- once regardless of which signal arrives last.
+  bothReady :: Signal dom Bool
+  bothReady = sinValid .&&. rmsNormValid
+
   pendingInput :: Signal dom Bool
   pendingInput = register False nextPendingInput
    where
     nextPendingInput =
-      mux (pendingInput .&&. sinDone) (pure False) $
+      mux (pendingInput .&&. effectiveInputValid) (pure False) $
       mux inputValidRise (pure True)
       pendingInput
 
   effectiveInputValid :: Signal dom Bool
-  effectiveInputValid = pendingInput .&&. sinDone
-
-  -- Pre-normalise with DRAM-fetched RMS weights
-  xNorm = rmsNormFwFix <$> xVec <*> rmsAttVec
+  effectiveInputValid = pendingInput .&&. bothReady .&&. (not <$> register False bothReady)
 
   -- Coordinated consume signal: all heads clear together
   consumeSignal = outputValid .&&. downStreamReady

@@ -3,7 +3,7 @@ module LLaMa2.Embedding.OutputProjection
 ) where
 import Clash.Prelude
 
-import LLaMa2.Numeric.FixedPoint (rmsNormFwFix)
+import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumQueryHeads)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -42,19 +42,25 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
       inputValidRise
       (pure Layout.rmsFinalAddress)
 
+  -- Sequential rmsNorm: triggered on the rising edge of rmsFinalValid.
+  rmsFinalDone :: Signal dom Bool
+  rmsFinalDone = rmsFinalValid .&&. (not <$> register False rmsFinalValid)
+
+  (rmsNormValid, tokenWithRms) = rmsNormSeq rmsFinalDone tokenVecSig rmsFinalVec
+
+  -- effectiveInputOuter: fires once on rising edge of rmsNormValid while pending.
+  -- pendingInput clears on effectiveInputOuter — see FeedForwardNetwork for why
+  -- clearing on rmsNormValid directly would cause a premature clear on layer 2+.
+  effectiveInputOuter :: Signal dom Bool
+  effectiveInputOuter = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
+
   pendingInput :: Signal dom Bool
   pendingInput = register False nextPendingInput
    where
     nextPendingInput =
-      mux (pendingInput .&&. rmsFinalValid) (pure False) $
+      mux effectiveInputOuter (pure False) $
       mux inputValidRise (pure True)
       pendingInput
-
-  effectiveInputOuter :: Signal dom Bool
-  effectiveInputOuter = pendingInput .&&. rmsFinalValid
-
-  tokenWithRms :: Signal dom (Vec ModelDimension FixedPoint)
-  tokenWithRms = rmsNormFwFix <$> tokenVecSig <*> rmsFinalVec
 
   headIdx :: Index NumQueryHeads
   headIdx = 0
