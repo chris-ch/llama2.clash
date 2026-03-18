@@ -12,7 +12,7 @@
 **Software implementation – AXI Interface & Weight Management**
 
 - Weights (7–13 GB) stored on eMMC; streamed to compute via AXI in row-wise bursts
-- Compute core performs row-wise AXI bursts from DRAM (I8E → SFixed 12 20 dequantization inside core)
+- Compute core performs row-wise AXI bursts from DRAM (I8E → SFixed 12.20 dequantization inside core)
 - AXI masters:
   - Read path for model weights / embedding / rotary / RMS vectors
   - KV cache read path for attention
@@ -22,20 +22,21 @@
 
 - **Target performance**: ~5.2 tokens/s @ 7B (13B proportionally slower)
 - **Retail price**: ~$1,799
-- **Target cost (BOM)**: ~$1,220 per unit
+- **Target cost (BOM)**: ~$1,255 per unit
 - **NRE (one-time)**: $120K
+- **NRE breakeven**: 220 units ($544 margin/unit); first batch (100 units) does not recover NRE — profitability requires continued sales beyond Phase 3
 
 **Bill of Materials**
 
 - Xilinx Zynq UltraScale+ ZU9EG – $700
-- 8GB DDR4-2666 (2×4GB) – $60
+- 16GB DDR4-2666 (2×8GB) – $95 _(upgraded from 8GB; 13B KV cache requires 6.25 GB leaving insufficient headroom in 8 GB)_
 - 64GB eMMC 5.1 – $30
 - 8-layer PCB + assembly – $120
 - Power circuitry + 12V adapter – $55
 - Heatsink + 40mm fan – $25
 - USB 3.1 controller, LEDs, buttons, enclosure – $80
 - Manufacturing & testing – $150
-→ **Total BOM per unit**: $1,220  
+→ **Total BOM per unit**: $1,255
 → **Suggested retail**: $1,799
 
 **Physical Specifications**
@@ -59,7 +60,7 @@
 
 **Development Path**
 
-- Phase 1: Validation on Kria KV260 → 3 months
+- Phase 1: Block-level validation on Kria KV260 (individual blocks only — KV260 cannot fit full 7B decoder) → 3 months
 - Phase 2: Custom ZU9EG board prototype (5 units) → 6 months, $120k NRE
 - Phase 3: First production batch (100 units) → target retail $1,799, 12 months total timeline
 
@@ -67,8 +68,8 @@
 
 - parallel64: 64-wide matrix multiply → 64 DSPs per instance
 - Required instances: ~8 active (QKV proj ×3, Attn out ×1, FFN ×3, vocab proj ×1)
-- DSP usage: ~512 / 1728 (30%)
-- LUT & BRAM usage comfortable for ZU9EG
+- DSP usage: ~512 / 4272 (12%)
+- LUT & BRAM usage comfortable for ZU9EG (274K LUTs, 912 BRAMs available)
 
 **Memory Layout & Budget**
 
