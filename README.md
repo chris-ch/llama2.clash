@@ -290,16 +290,55 @@ simulation targets if desired, but update their CPP guards to be LLaMa-3-neutral
 
 ## Simulation timing (260K model, all DRAM-backed)
 
-With all weight matrices fetched from DRAM via AXI, each transformer layer takes approximately 7,000 simulation cycles. A complete token (5 layers + classifier) takes roughly 38,000 cycles.
+Measured on `--temperature 0 --seed 123 "Hi"` with the 260K model (dim=64, 5 layers, 8Q/4KV heads, vocab=512).
 
-Layer-level norm reference values for `--temperature 0 --seed 123 "Hi"` (token 0, BOS):
+### Stage durations per layer
 
-| Layer | norm(attn) | norm(output) |
-| ----- | ---------- | ------------ |
-| 0     | 3.0385     | 8.2357       |
-| 1     | 9.1765     | 10.3825      |
-| 2     | 11.2580    | 12.2522      |
-| 3     | 14.7369    | 16.0392      |
-| 4     | 16.4430    | 18.7545      |
+| Stage | Cycles | Notes |
+| ----- | ------ | ----- |
+| QKV projection | ~792–801 | slightly longer for layer 0 (embedding fetch on first token) |
+| Multi-head attention + WO | ~1569–1591 | grows by ~11 cycles per token as KV sequence lengthens |
+| FFN (RMS norm + W1/W3/W2) | ~4900 | constant — no sequence-length dependence |
+| **Per-layer total** | **~7261–7280** | |
+| Output projection + sampling | ~5777 | constant |
+| **Per-token total** | **~42,095–42,203** | grows slowly with sequence position |
+
+### Per-token cycle events (prompt `[1, 320, 417]` → `" H"`, `"i"`, `"b"`)
+
+**Token 0 (BOS, seq pos 0)**
+
+| Layer | Start | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
+| ----- | ----- | ------- | -------- | ------- | ------------ |
+| 0     | 0     | 801     | 2370     | 7270    | 0.3445       |
+| 1     | 7271  | 8063    | 9632     | 14532   | 0.7467       |
+| 2     | 14533 | 15325   | 16894    | 21794   | 0.6990       |
+| 3     | 21795 | 22587   | 24156    | 29056   | 0.6362       |
+| 4     | 29057 | 29849   | 31418    | 36318   | 0.9740       |
+
+Ready pulse at cycle 42095. Output token: `" H"`.
+
+**Token 1 (" H", seq pos 1)**
+
+| Layer | Start | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
+| ----- | ----- | ------- | -------- | ------- | ------------ |
+| 0     | 42096 | 42895   | 44475    | 49375   | −0.1266      |
+| 1     | 49376 | 50168   | 51748    | 56648   | −0.1755      |
+| 2     | 56649 | 57441   | 59021    | 63921   | 0.1231       |
+| 3     | 63922 | 64714   | 66294    | 71194   | 0.7042       |
+| 4     | 71195 | 71987   | 73567    | 78467   | 1.7086       |
+
+Ready pulse at cycle 84244. Output token: `"i"`.
+
+**Token 2 ("i", seq pos 2)**
+
+| Layer | Start  | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
+| ----- | ------ | ------- | -------- | ------- | ------------ |
+| 0     | 84245  | 85044   | 86635    | 91535   | 0.4646       |
+| 1     | 91536  | 92328   | 93919    | 98819   | 0.8395       |
+| 2     | 98820  | 99612   | 101203   | 106103  | 1.1952       |
+| 3     | 106104 | 106896  | 108487   | 113387  | 1.2483       |
+| 4     | 113388 | 114180  | 115771   | 120671  | 1.3673       |
+
+Ready pulse at cycle 126448. Output token: `"b"`.
 
 Generated tokens: `" H"`, `"i"`, `"b"` … (matching the gold-standard `" Hibo and Anna…"` output).

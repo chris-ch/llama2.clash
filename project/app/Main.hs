@@ -171,6 +171,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
     attnDonesSampled     = C.sampleN simSteps (Decoder.attnDone introspection)
     ffnDonesSampled      = C.sampleN simSteps (Decoder.ffnDone introspection)
+    ffnOut0Sampled       = C.sampleN simSteps (Decoder.ffnOut0 introspection)
     cycleCountSampled    = C.sampleN simSteps (Decoder.cycleCount introspection)
 
     -- Extract top-level outputs
@@ -201,12 +202,13 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
           qkv         = qkvDonesSampled !! hwCycle
           attn        = attnDonesSampled !! hwCycle
           ffn         = ffnDonesSampled !! hwCycle
+          ffnOut0     = ffnOut0Sampled !! hwCycle
           token       = coreOutputs !! hwCycle
           layerValidIn = layerValidInsSampled !! hwCycle
 
         when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %11s | %10s"
+            printf "%5d | %5d | %7s | %7s | %8s | %8s | %11s | %10s%s"
               hwCycle
               li
               (show rdy)
@@ -215,6 +217,7 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
               (show ffn)
               (show $ decodeToken tokenizer (fst token))
               (show layerValidIn)
+              (if ffn then " ffnOut0=" ++ show ffnOut0 else "")
 
   mapM_ printCycle [0 :: Int ..]
 

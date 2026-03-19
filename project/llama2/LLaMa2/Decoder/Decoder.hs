@@ -5,6 +5,7 @@ module LLaMa2.Decoder.Decoder (
 import Clash.Prelude
 import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
 import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads)
+import LLaMa2.Numeric.Types (FixedPoint)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Sampling.Sampler as Sampler (tokenSampler)
@@ -35,6 +36,7 @@ data DecoderIntrospection dom = DecoderIntrospection
   , qkvDone     :: Signal dom Bool
   , ffnDone     :: Signal dom Bool
   , cycleCount  :: Signal dom (Unsigned 32)
+  , ffnOut0     :: Signal dom FixedPoint  -- ^ feedForwardOutput[0] when ffnDone fires
   } deriving (Generic, NFDataX)
 
 -- | Main decoder with AXI interface
@@ -196,6 +198,7 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
       , qkvDone     = layerQkvDone
       , ffnDone     = layerFfnDone
       , cycleCount  = cycleCounter
+      , ffnOut0     = fmap head ffnOutput
       }
 
 -- | Synthesis wrapper: generates cycle counter internally, drops introspection
