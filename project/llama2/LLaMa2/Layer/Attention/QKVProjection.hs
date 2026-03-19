@@ -5,16 +5,15 @@ module LLaMa2.Layer.Attention.QKVProjection
 
 import Clash.Prelude
 
-
 import LLaMa2.Types.ModelConfig
     ( HeadDimension,
-      ModelDimension,
       NumKeyValueHeads,
       NumLayers,
       NumQueryHeads,
       SequenceLength )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
+import LLaMa2.Types.LayerData (ActivationBramAddr, ActivationBramDepth)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -96,6 +95,10 @@ import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
 -- The AXI arbiter routes Q + K + V masters (NumQueryHeads + 2*NumKeyValueHeads
 -- total) to the single DRAM slave.
 --
+-- Slot 0 base address in the activation BRAM (inputVector slot).
+slot0BramBase :: ActivationBramAddr
+slot0BramBase = 0
+
 qkvProjector :: forall dom.
   HiddenClockResetEnable dom
   => Signal dom (Unsigned 32)
@@ -104,16 +107,17 @@ qkvProjector :: forall dom.
   -> Signal dom Bool
   -> Signal dom Bool
   -> Signal dom (Index SequenceLength)
-  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom FixedPoint             -- ^ bramRdData: BRAM output (slot 0, 1-cycle latency from bramRdAddr)
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
+     , Signal dom ActivationBramAddr   -- ^ bramRdAddr: drive this to BRAM read port (slot 0)
      )
-qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos xVec =
-  (axiMasterOut, qkvOut, outputValid, readyForInput)
+qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos bramRdData =
+  (axiMasterOut, qkvOut, outputValid, readyForInput, bramRdAddr)
  where
   ----------------------------------------------------------------------------
   -- DRAM-backed rmsAttF fetch (once per inputValid; gates QKV start)
@@ -150,7 +154,12 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   -- Sequential rmsNorm: starts when rmsAtt weights arrive (rmsAttDone already
   -- exists above as the cos-fetch trigger).  Runs in parallel with cos/sin
   -- fetches; effectiveInputValid waits for whichever finishes last.
-  (rmsNormValid, xNorm, _) = rmsNormSeq rmsAttDone xVec rmsAttVec
+  -- bramRdData provides xi element-by-element; rdNext drives the BRAM read address
+  -- one cycle ahead so data[counter] arrives in time (1-cycle BRAM latency).
+  (rmsNormValid, xNorm, _, rdNext) = rmsNormSeq rmsAttDone bramRdData rmsAttVec
+
+  bramRdAddr :: Signal dom ActivationBramAddr
+  bramRdAddr = (slot0BramBase +) <$> (fromIntegral <$> rdNext)
 
   -- Hold latch until all three (rmsAtt + cos + sin) have been fetched AND
   -- rmsNorm has completed for THIS token.
@@ -257,7 +266,7 @@ qkvProjectionController ::
   -> Signal dom (Index NumLayers)
   -> Signal dom Bool
   -> Signal dom Bool
-  -> Signal dom (Vec ModelDimension FixedPoint)
+  -> Signal dom FixedPoint             -- ^ bramRdData (BRAM slot 0, 1-cycle latency)
   -> Signal dom (Index SequenceLength)
   -> ( Master.AxiMasterOut dom
      , Signal dom ( Vec NumQueryHeads    (Vec HeadDimension FixedPoint)
@@ -265,16 +274,17 @@ qkvProjectionController ::
                   , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
      , Signal dom Bool
      , Signal dom Bool
+     , Signal dom ActivationBramAddr   -- ^ bramRdAddr (drive to BRAM read port)
      )
-qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady input seqPos =
-  (axiMasterOut, result, outputValid, readyForInput)
+qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady bramRdData seqPos =
+  (axiMasterOut, result, outputValid, readyForInput, bramRdAddr)
  where
   (enable, outputValid, inReadyRaw) =
     FSM.processingControllerFSM inputValid downStreamReady matVecValid
 
-  (axiMasterOut, result, matVecValid, projReadyOut) =
+  (axiMasterOut, result, matVecValid, projReadyOut, bramRdAddr) =
     qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
-                 seqPos input
+                 seqPos bramRdData
 
   projReadyOut_d = register True projReadyOut
   readyForInput  = inReadyRaw .&&. projReadyOut_d

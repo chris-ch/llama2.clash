@@ -3,37 +3,47 @@ module LLaMa2.Layer.FeedForward.FeedForwardNetwork (
 ) where
 
 import Clash.Prelude
+import qualified GHC.TypeNats as TN
 import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
 import LLaMa2.Types.ModelConfig
     ( ModelDimension, NumLayers )
 import LLaMa2.Numeric.Types ( FixedPoint )
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 
 import LLaMa2.Layer.FeedForward.FFNProjector (ffnProjector)
 import qualified LLaMa2.Memory.AXI.Slave  as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified LLaMa2.Memory.FPVecLoader as FPVec
+
+-- Base address of slot 2 (attentionOutput) in the activation BRAM.
+slot2BramBase :: ActivationBramAddr
+slot2BramBase = natToNum @(2 TN.* ModelDimension)
+
+-- Base address of slot 3 (feedForwardOutput) in the activation BRAM.
+slot3BramBase :: ActivationBramAddr
+slot3BramBase = natToNum @(3 TN.* ModelDimension)
+
 feedForwardStage
   :: HiddenClockResetEnable dom
-  => Signal dom (Unsigned 32)                      -- ^ cycle counter
-  -> Slave.AxiSlaveIn dom                          -- ^ DRAM slave
-  -> Signal dom (Index NumLayers)                  -- ^ layer index
-  -> Signal dom Bool                               -- ^ validIn
-  -> Signal dom Bool                               -- ^ readyIn (from downstream)
-  -> Signal dom (Vec ModelDimension FixedPoint)    -- ^ input vector
+  => Signal dom (Unsigned 32)                               -- ^ cycle counter
+  -> Slave.AxiSlaveIn dom                                   -- ^ DRAM slave
+  -> Signal dom (Index NumLayers)                           -- ^ layer index
+  -> Signal dom Bool                                        -- ^ validIn
+  -> Signal dom Bool                                        -- ^ readyIn (from downstream)
+  -> Signal dom FixedPoint                                  -- ^ bramRdData (BRAM slot 2, 1-cycle latency)
   -> ( Master.AxiMasterOut dom
-     , Signal dom (Vec ModelDimension FixedPoint)  -- ^ output vector (residual added)
-     , Signal dom Bool                             -- ^ validOut
-     , Signal dom Bool                             -- ^ readyOut (to upstream)
+     , Signal dom Bool                                      -- ^ writeDone (slot 3 fully written)
+     , Signal dom Bool                                      -- ^ readyOut (to upstream)
+     , Signal dom ActivationBramAddr                        -- ^ bramRdAddr (drive to BRAM read port)
+     , Signal dom (Maybe (ActivationBramAddr, FixedPoint))  -- ^ bramWrite (drive to BRAM write port)
      )
-feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
-  (axiMasterOut, outputVector, validOut, readyOut)
+feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
+  (axiMasterOut, writeDone, readyOut, bramRdAddr, bramWrite)
   where
     --------------------------------------------------------------------------
     -- DRAM-backed fRMSFfnF fetch (once per inputValid; gates FFN start)
     --------------------------------------------------------------------------
-    -- Rising edge: fpVecLoader needs a one-shot trigger (processingControllerFSM
-    -- keeps 'enable' high for the entire PROCESSING_RUN state).
     validInRise = validIn .&&. (not <$> register False validIn)
 
     (rmsFfnAxiMaster, rmsFfnVec, rmsFfnValid, rmsFfnBusy) =
@@ -41,14 +51,11 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
         validInRise
         (Layout.rmsFfnAddress <$> layerIdx)
 
-    -- Sequential rmsNorm: triggered on the rising edge of rmsFfnValid.
+    -- Sequential rmsNorm: bramRdData supplies xi element-by-element.
+    -- rdNext drives the BRAM read address one cycle ahead (1-cycle BRAM latency).
     rmsFfnDone = rmsFfnValid .&&. (not <$> register False rmsFfnValid)
-    (rmsNormValid, xHat, _) = rmsNormSeq rmsFfnDone inputVector rmsFfnVec
+    (rmsNormValid, xHat, _, rdNext) = rmsNormSeq rmsFfnDone bramRdData rmsFfnVec
 
-    -- effectiveValidIn: fires once on the rising edge of rmsNormValid while pending.
-    -- pendingInput clears on effectiveValidIn (not on rmsNormValid directly —
-    -- rmsNormValid from the previous layer is still True when the next validInRise
-    -- fires, which would prematurely clear pendingInput before the new run starts).
     effectiveValidIn = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
 
     pendingInput = register False nextPendingInput
@@ -59,16 +66,65 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn inputVector =
         pendingInput
 
     --------------------------------------------------------------------------
+    -- BRAM read address: rmsNorm phase uses rdNext; residual phase uses resCounter
+    --------------------------------------------------------------------------
+    rmsNormRdAddr = (slot2BramBase +) . fromIntegral <$> rdNext
+
+    --------------------------------------------------------------------------
     -- DRAM-backed FFN core: W1 (gate) -> W3 (up) -> W2 (down)
     --------------------------------------------------------------------------
     (ffnAxiMaster, ffnCore, coreValidOut, readyOut) =
       ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn readyIn xHat
 
-    -- rmsAtt fetch has priority (finishes before FFN starts due to pendingInput gate)
     axiMasterOut = Master.axiMasterMux rmsFfnBusy rmsFfnAxiMaster ffnAxiMaster
 
-    -- Residual connection: register inputVector aligned with core output timing
-    inputVectorDelayed = regEn (repeat 0) coreValidOut inputVector
-    outputVector = zipWith (+) <$> inputVectorDelayed <*> ffnCore
+    --------------------------------------------------------------------------
+    -- Sequential residual add FSM
+    --   Reads slot 2 element-by-element (1-cycle BRAM latency).
+    --   Writes slot3[i] = slot2[i] + ffnCore[i] to BRAM.
+    --   After ModelDimension + 2 cycles, writeDone fires.
+    --------------------------------------------------------------------------
+    coreValidOutRise = coreValidOut .&&. (not <$> register False coreValidOut)
 
-    validOut = coreValidOut
+    -- Snapshot ffnCore at coreValidOutRise so the residual FSM has a stable
+    -- value for all 64 cycles (ffnCore goes invalid once the projector resets).
+    ffnCoreCapture = regEn (repeat 0) coreValidOutRise ffnCore
+
+    -- resActive: True for ModelDimension cycles while issuing BRAM reads.
+    resActive = register False $
+      mux coreValidOutRise (pure True) $
+      mux resLoadAtMax     (pure False)
+      resActive
+
+    resLoadCounter = register 0 $
+      mux resActive (satSucc SatWrap <$> resLoadCounter) (pure 0 :: Signal dom (Index ModelDimension))
+
+    resLoadAtMax = resActive .&&. resLoadCounter .==. pure maxBound
+
+    -- resDrain: one extra cycle after resActive ends to capture the last element.
+    resDrain = register False resLoadAtMax
+
+    writeDone = register False resDrain
+
+    -- Slot 2 read address during the residual phase.
+    resRdAddr = (slot2BramBase +) . fromIntegral <$> resLoadCounter
+
+    -- Time-multiplex the single BRAM read port between rmsNorm and residual phases.
+    -- Both phases are strictly sequential (rmsNorm ends before coreValidOut fires).
+    bramRdAddr = mux resActive resRdAddr rmsNormRdAddr
+
+    -- Write path: one cycle behind the read (BRAM latency).
+    prevResCounter = register (0 :: Index ModelDimension) resLoadCounter
+
+    prevResActive = register False resActive
+
+    -- Write condition: previous cycle was an active load OR we're in the drain cycle.
+    inWritePhase = prevResActive .||. resDrain
+
+    ffnElem = (!!) <$> ffnCoreCapture <*> prevResCounter
+
+    slot3WrAddr = (slot3BramBase +) . fromIntegral <$> prevResCounter
+
+    bramWrite = mux inWritePhase
+      (Just <$> ((,) <$> slot3WrAddr <*> ((+) <$> bramRdData <*> ffnElem)))
+      (pure Nothing)

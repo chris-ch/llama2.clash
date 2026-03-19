@@ -120,30 +120,30 @@ createTestParams testMatrix =
     }
   where
     testRow0 = head testMatrix
-    
+
     -- Global rotary (stored once)
     mockRotary =
       PARAM.RotaryEncodingComponentF
         { PARAM.freqCosF = repeat (repeat 1.0),
           PARAM.freqSinF = repeat (repeat 0.0)
         }
-    
+
     -- Q heads (8 heads, each with just Q matrix)
     mockQHeadParams =
       PARAM.QueryHeadComponentQ
         { PARAM.qMatrix = testMatrix
         }
-    
+
     -- KV heads (4 heads, each with K and V matrices)
     mockKVHeadParams =
       PARAM.KeyValueHeadComponentQ
         { PARAM.kMatrix = testMatrix,
           PARAM.vMatrix = testMatrix
         }
-    
+
     testRow' = RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: RowI8E HeadDimension
     testWOMatrix = repeat testRow' :: MatI8E ModelDimension HeadDimension
-    
+
     mhaParams =
       PARAM.MultiHeadAttentionComponentQ
         { PARAM.qHeads = repeat mockQHeadParams,    -- 8 Q heads
@@ -151,11 +151,11 @@ createTestParams testMatrix =
           PARAM.mWoQ = repeat testWOMatrix,
           PARAM.rmsAttF = repeat 1.0 :< 0
         }
-    
+
     ffnW1 = repeat testRow0 :: MatI8E HiddenDimension ModelDimension
     ffnW2 = repeat RowI8E {rowMantissas = repeat 1, rowExponent = 0} :: MatI8E ModelDimension HiddenDimension
     ffnW3 = repeat testRow0 :: MatI8E HiddenDimension ModelDimension
-    
+
     ffnParams =
       PARAM.FeedForwardNetworkComponentQ
         { PARAM.fW1Q = ffnW1,
@@ -163,7 +163,7 @@ createTestParams testMatrix =
           PARAM.fW3Q = ffnW3,
           PARAM.fRMSFfnF = repeat 1.0 :< 0
         }
-    
+
     layerParams =
       PARAM.TransformerLayerComponent
         { PARAM.multiHeadAttention = mhaParams,
@@ -210,6 +210,20 @@ spec = do
 
           arvalidSignal = Master.arvalid masterOut
 
+          -- Sample each signal once (shared across all diagnostics)
+          rowIdxs    = sampleN maxCycles (qhRowIndex debugInfo)
+          states     = sampleN maxCycles (qhState debugInfo)
+          rowResets  = sampleN maxCycles (qhRowReset debugInfo)
+          rowEnables = sampleN maxCycles (qhRowEnable debugInfo)
+          fetchValids = sampleN maxCycles (qhFetchValid debugInfo)
+          firstMants = sampleN maxCycles (qhFirstMant debugInfo)
+          accumVals  = sampleN maxCycles (qhAccumValue debugInfo)
+          rowResults = sampleN maxCycles (qhRowResult debugInfo)
+          rowDones   = sampleN maxCycles (qhRowDone debugInfo)
+          qOutVecs   = sampleN maxCycles (qhQOut debugInfo)
+          expsWLs    = sampleN maxCycles (qhCurrentRowExp debugInfo)
+          mant0WLs   = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
+
           diagnostics = flip P.map [0 .. maxCycles - 1] $ \i ->
             CycleDiagnostic
               { cycleNum = i,
@@ -226,19 +240,6 @@ spec = do
                 expsWL = expsWLs P.!! i,
                 mant0WL = mant0WLs P.!! i
               }
-            where
-              rowIdxs = sampleN maxCycles (qhRowIndex debugInfo)
-              states = sampleN maxCycles (qhState debugInfo)
-              rowResets = sampleN maxCycles (qhRowReset debugInfo)
-              rowEnables = sampleN maxCycles (qhRowEnable debugInfo)
-              fetchValids = sampleN maxCycles (qhFetchValid debugInfo)
-              firstMants = sampleN maxCycles (qhFirstMant debugInfo)
-              accumVals = sampleN maxCycles (qhAccumValue debugInfo)
-              rowResults = sampleN maxCycles (qhRowResult debugInfo)
-              rowDones = sampleN maxCycles (qhRowDone debugInfo)
-              qOutVecs = sampleN maxCycles (qhQOut debugInfo)
-              expsWLs = sampleN maxCycles (qhCurrentRowExp debugInfo)
-              mant0WLs = sampleN maxCycles (qhCurrentRowMant0 debugInfo)
 
       it "completes all rows successfully" $ do
         let doneCycles = P.filter rowDone diagnostics

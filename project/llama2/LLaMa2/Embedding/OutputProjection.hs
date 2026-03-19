@@ -46,7 +46,8 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   rmsFinalDone :: Signal dom Bool
   rmsFinalDone = rmsFinalValid .&&. (not <$> register False rmsFinalValid)
 
-  (rmsNormValid, tokenWithRms, _) = rmsNormSeq rmsFinalDone tokenVecSig rmsFinalVec
+  (rmsNormValid, tokenWithRms, rmsCounter, _) = rmsNormSeq rmsFinalDone xi rmsFinalVec
+  xi = (!!) <$> tokenVecSig <*> rmsCounter
 
   -- effectiveInputOuter: fires once on rising edge of rmsNormValid while pending.
   -- pendingInput clears on effectiveInputOuter — see FeedForwardNetwork for why

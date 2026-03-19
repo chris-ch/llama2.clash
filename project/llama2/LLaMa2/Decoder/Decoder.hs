@@ -3,9 +3,9 @@ module LLaMa2.Decoder.Decoder (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.LayerData (LayerData(..), Temperature, Seed, Token)
-import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads)
-import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Types.LayerData (ActivationBramAddr, Temperature, Seed, Token)
+import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension)
+import Data.Maybe (isJust)
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Sampling.Sampler as Sampler (tokenSampler)
@@ -15,28 +15,16 @@ import qualified LLaMa2.Embedding.InputEmbedding as InputEmbedding
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave (AxiSlaveIn(..))
 import qualified LLaMa2.Memory.AXI.Master as Master (AxiMasterOut(..), axiMasterMux)
-
--- | Initial layer data (all zeros)
-initialLayerData :: LayerData
-initialLayerData = LayerData
-  { inputVector       = repeat 0
-  , queryVectors      = repeat (repeat 0)
-  , keyVectors        = repeat (repeat 0)
-  , valueVectors      = repeat (repeat 0)
-  , attentionOutput   = repeat 0
-  , feedForwardOutput = repeat 0
-  }
+import LLaMa2.Numeric.Types (FixedPoint)
 
 -- | Simulation introspection signals
 data DecoderIntrospection dom = DecoderIntrospection
-  { layerIndex  :: Signal dom (Index NumLayers)
-  , ready       :: Signal dom Bool
-  , layerValidIn :: Signal dom Bool
-  , attnDone    :: Signal dom Bool
-  , qkvDone     :: Signal dom Bool
-  , ffnDone     :: Signal dom Bool
-  , cycleCount  :: Signal dom (Unsigned 32)
-  , ffnOut0     :: Signal dom FixedPoint  -- ^ feedForwardOutput[0] when ffnDone fires
+  { layerIndex     :: Signal dom (Index NumLayers)
+  , ready          :: Signal dom Bool
+  , layerValidIn   :: Signal dom Bool
+  , layerDone      :: Signal dom Bool
+  , cycleCount     :: Signal dom (Unsigned 32)
+  , ffnOut0        :: Signal dom FixedPoint  -- ^ ffnOutputVec[0] (debug: check residual correctness)
   } deriving (Generic, NFDataX)
 
 -- | Main decoder with AXI interface
@@ -46,11 +34,11 @@ decoder :: forall dom. HiddenClockResetEnable dom
   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)                      -- KV cache DRAM
   -> Signal dom Token
   -> Signal dom Bool
-  -> Signal dom Bool                                                   -- ^ softReset: restart token generation (clears seqPos, layer state, and data registers)
-  -> Signal dom Temperature                                           -- ^ reserved: temperature sampling (argmax only for now)
-  -> Signal dom Seed                                                  -- ^ reserved: random seed (unused until softmax sampler is added)
-  -> ( Master.AxiMasterOut dom                                         -- weights AXI master
-     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)                 -- KV cache AXI masters
+  -> Signal dom Bool                                                   -- ^ softReset
+  -> Signal dom Temperature
+  -> Signal dom Seed
+  -> ( Master.AxiMasterOut dom
+     , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
      , Signal dom Token
      , Signal dom Bool
      , DecoderIntrospection dom )
@@ -61,23 +49,19 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
     -- CONTROLLER
     -- =======================================================================
     controller = Controller.dataFlowController
-      softReset        -- Soft reset: restart token generation
-      layerFfnDone     -- Layer processing complete
-      samplerValid     -- Classifier/token complete
+      softReset
+      layerFfnDone
+      samplerValid
 
-    processingStage = Controller.processingStage controller
-    seqPosition     = Controller.seqPosition controller
-    layerIdx        = Controller.currentLayer controller
-    readyPulse      = Controller.readyPulse controller
+    seqPosition = Controller.seqPosition controller
+    layerIdx    = Controller.currentLayer controller
+    readyPulse  = Controller.readyPulse controller
 
-    -- Extract enable signals from controller
-    layerValid      = Controller.layerValidIn controller
+    controllerLayerValid = Controller.layerValidIn controller
 
     -- =======================================================================
-    -- LAYER PROCESSING (with AXI)
+    -- INPUT EMBEDDING FETCH
     -- =======================================================================
-
-    -- Trigger embedding fetch one cycle after token is stable
     firstCycle :: Signal dom Bool
     firstCycle = register True (pure False)
 
@@ -89,93 +73,127 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
         cycleCounter dramSlaveIn
         embFetchTrigger outputToken
 
-    layerInput :: Signal dom LayerData
-    layerInput = LayerStack.layerInputStage
-      <$> layerIdx
-      <*> layerDataReg
-      <*> embeddedVector
+    -- =======================================================================
+    -- SLOT 0 INIT: sequential write of embedding to BRAM slot 0 (layer 0 only)
+    -- The TransformerLayer auto-copies slot 3 → slot 0 between layers,
+    -- so initWrPort is only needed for layer 0's embedding.
+    -- =======================================================================
+    -- Trigger: layer 0 is starting AND embedding is ready AND layer is idle.
+    layer0Start :: Signal dom Bool
+    layer0Start = (layerIdx .==. 0) .&&. embeddingOk .&&. LayerStack.readyOut layerOutputs
 
-    -- Capture the controller's layerValid signal from earlier
-    controllerLayerValid = Controller.layerValidIn controller
-
-    -- Embedding is ready for layer 0: valid and not mid-fetch
-    embeddingOk :: Signal dom Bool
     embeddingOk = embOutputValid .&&. (not <$> embBusy)
 
-    -- Hold layer-0 start request until embedding is ready.
-    -- Other layers start immediately on controllerLayerValid.
-    pendingLayer0 :: Signal dom Bool
-    pendingLayer0 = register False nextPendingLayer0
-      where
-        consumed = pendingLayer0 .&&. embeddingOk .&&. (not <$> layerValidLatched)
-        nextPendingLayer0 =
-          mux consumed (pure False) $
-          mux (controllerLayerValid .&&. (layerIdx .==. 0)) (pure True)
-          pendingLayer0
+    -- Sequential counter that runs for ModelDimension cycles to write embedding.
+    initActive = register False $
+      mux initAtMax (pure False) $
+      mux layer0StartPulse (pure True)
+      initActive
 
-    -- Latched version that holds until handshake completes
-    layerValidLatched :: Signal dom Bool
+    layer0StartPulse = layer0Start .&&. (not <$> register False layer0Start)
+
+    initCounter = register (0 :: Index ModelDimension) $
+      mux initActive (satSucc SatWrap <$> initCounter) (pure 0)
+
+    initAtMax = initActive .&&. initCounter .==. pure maxBound
+
+    initDone = register False initAtMax
+
+    -- Drive initWrPort: write embedding[i] to slot 0 addr i.
+    initWrPort :: Signal dom (Maybe (ActivationBramAddr, FixedPoint))
+    initWrPort = mux initActive
+      (Just <$> ((,) <$> (fromIntegral <$> initCounter)
+                       <*> ((!!) <$> embeddedVector <*> initCounter)))
+      (pure Nothing)
+
+    -- =======================================================================
+    -- LAYER VALID: fire after init is done (layer 0) or immediately (layer N>0)
+    -- =======================================================================
+    pendingLayer0 = register False $
+      mux (pendingLayer0 .&&. initDone) (pure False) $
+      mux (controllerLayerValid .&&. (layerIdx .==. 0)) (pure True)
+      pendingLayer0
+
     layerValidLatched = register False nextLayerValidLatched
       where
-        layerReady = LayerStack.qkvReady layerOutputs
-
-        -- Layer 0: wait for embedding; other layers: fire immediately
+        layerReady = LayerStack.readyOut layerOutputs
         effectiveValid =
           ((layerIdx ./=. 0) .&&. controllerLayerValid) .||.
-          (pendingLayer0 .&&. embeddingOk)
-
-        setLatch  = effectiveValid .&&. (not <$> layerValidLatched)
+          (pendingLayer0 .&&. initDone)
+        setLatch   = effectiveValid .&&. (not <$> layerValidLatched)
         clearLatch = layerValidLatched .&&. layerReady
-
         nextLayerValidLatched = mux setLatch (pure True)
                               (mux clearLatch (pure False) layerValidLatched)
 
-    -- Layer processing with AXI
+    -- =======================================================================
+    -- LAYER PROCESSING
+    -- =======================================================================
     layerOutputs = LayerStack.activeLayerProcessor
       cycleCounter
       dramSlaveIn
       kvDramSlaves
       layerIdx
       seqPosition
-      layerInput
+      initWrPort
       layerValidLatched
 
-    -- AXI arbitration: embedding has priority while fetching
+    layerFfnDone = LayerStack.layerDone layerOutputs
+
+    -- =======================================================================
+    -- AXI arbitration
+    -- =======================================================================
     axiMasterOut = Master.axiMasterMux classifierActive logitsAxiMaster
-                 $ Master.axiMasterMux embBusy embAxiMaster (LayerStack.axiMasterOut layerOutputs)
+                 $ Master.axiMasterMux embBusy embAxiMaster
+                 (LayerStack.axiMasterOut layerOutputs)
 
-    nextLayerData :: Signal dom LayerData
-    nextLayerData =
-        mux layerFfnDone
-          (LayerStack.ffnOutput layerOutputs)
-          (mux layerAttnDone
-              (LayerStack.attnOutput layerOutputs)
-              (mux layerQkvDone
-                  (LayerStack.qkvOutput layerOutputs)
-                  layerDataReg))
+    -- =======================================================================
+    -- FFN OUTPUT ACCUMULATOR
+    -- Captures the slot-3 stream emitted by TransformerLayer during the copy
+    -- phase and assembles it into a Vec for the logits projector.
+    -- The stream runs for ModelDimension+2 cycles; we index by a counter that
+    -- advances on each Just element.
+    -- =======================================================================
+    ffnStream = LayerStack.ffnStreamOut layerOutputs
 
-    layerDataReg = register initialLayerData nextLayerData
+    ffnStreamValid = isJust <$> ffnStream
+    ffnStreamData  = (\mx -> case mx of { Just x -> x; Nothing -> 0 }) <$> ffnStream
 
-    layerAttnDone = LayerStack.attnDone layerOutputs
-    layerQkvDone  = LayerStack.qkvDone layerOutputs
-    layerFfnDone  = LayerStack.ffnDone layerOutputs
+    -- Detect the rising edge of ffnStreamValid so each new layer's stream
+    -- resets the accumulation index to 0 (the copy phase emits 2 extra
+    -- elements per layer due to prevCopyActive latency, drifting the counter
+    -- by +2 per layer if not corrected).
+    ffnStreamStart = ffnStreamValid .&&. (not <$> register False ffnStreamValid)
+
+    -- Reset register to 1 on stream start (element 0 is written at index 0 via
+    -- ffnEffectiveIdx override; subsequent elements use the register directly).
+    ffnAccumCounter = register (0 :: Index ModelDimension) $
+      mux ffnStreamStart (pure 1) $
+      mux ffnStreamValid (satSucc SatWrap <$> ffnAccumCounter)
+      ffnAccumCounter
+
+    -- Override index to 0 on stream start so element 0 always lands at slot 0.
+    ffnEffectiveIdx = mux ffnStreamStart (pure 0) ffnAccumCounter
+
+    ffnOutputVec = register (repeat 0 :: Vec ModelDimension FixedPoint) $
+      mux ffnStreamValid
+        ((\vec i d -> replace i d vec) <$> ffnOutputVec <*> ffnEffectiveIdx <*> ffnStreamData)
+        ffnOutputVec
+
+    lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
 
     -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
     -- =======================================================================
-    ffnOutput = feedForwardOutput <$> nextLayerData
-    lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
-
-    classifierActive = processingStage .==. pure Controller.Classifier
+    classifierActive = Controller.processingStage controller .==. pure Controller.Classifier
 
     (logitsAxiMaster, logitIdx, logitValue, logitValid, logitsAllDone) =
       OutputProjection.logitsProjector
         cycleCounter
         dramSlaveIn
         lastLayerComplete
-        (pure True) -- always ready to consume
-        logitsAllDone -- self-consuming: OTC clears on next cycle after outputValid
-        ffnOutput
+        (pure True)
+        logitsAllDone
+        ffnOutputVec
 
     (sampledToken, samplerValid) =
       Sampler.tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed
@@ -191,17 +209,15 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
     -- INTROSPECTION
     -- =======================================================================
     introspection = DecoderIntrospection
-      { layerIndex  = layerIdx
-      , ready       = readyPulse
-      , layerValidIn = layerValid
-      , attnDone    = layerAttnDone
-      , qkvDone     = layerQkvDone
-      , ffnDone     = layerFfnDone
-      , cycleCount  = cycleCounter
-      , ffnOut0     = fmap head ffnOutput
+      { layerIndex   = layerIdx
+      , ready        = readyPulse
+      , layerValidIn = controllerLayerValid
+      , layerDone    = layerFfnDone
+      , cycleCount   = cycleCounter
+      , ffnOut0      = fmap (!! (0 :: Index ModelDimension)) ffnOutputVec
       }
 
--- | Synthesis wrapper: generates cycle counter internally, drops introspection
+-- | Synthesis wrapper
 decoderTop :: HiddenClockResetEnable dom
   => Slave.AxiSlaveIn dom
   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)

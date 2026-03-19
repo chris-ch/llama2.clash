@@ -4,7 +4,6 @@ module LLaMa2.Layer.Attention.KVCache (
 
 import Clash.Prelude
 import LLaMa2.Types.ModelConfig (NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
-import LLaMa2.Types.LayerData (LayerData (..))
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 import LLaMa2.Layer.Attention.KVCacheBankController (kvCacheBankController)
@@ -23,7 +22,9 @@ kvBankControllerDRAM ::
   Slave.AxiSlaveIn dom                  ->  -- ^ dedicated per-bank KV DRAM slave
   Signal dom (Index NumLayers)          ->
   Signal dom (Index SequenceLength)     ->
-  Signal dom LayerData                  ->
+  Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ keyVec for this bank
+  Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ valVec for this bank
+  Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint)) ->  -- ^ queries
   Signal dom Bool                       ->  -- ^ qkvValid
   Signal dom Bool                       ->  -- ^ enableWriteKV
   Signal dom Bool                       ->  -- ^ enableAttend
@@ -33,14 +34,11 @@ kvBankControllerDRAM ::
   , Vec NumQueryHeads (Signal dom Bool)
   , Signal dom Bool                          -- ^ this bank's write done
   )
-kvBankControllerDRAM cycleCounter dramSlaveIn layerIdx seqPos layerData
+kvBankControllerDRAM cycleCounter dramSlaveIn layerIdx seqPos
+                     keyVec valVec queries
                      qkvValid enableWriteKV enableAttend kvIx =
   (axiMaster, headOutputs, headDones, wrDone)
   where
-    keyVec  = (\ld -> keyVectors   ld !! kvIx) <$> layerData
-    valVec  = (\ld -> valueVectors ld !! kvIx) <$> layerData
-    queries = imap (\qIx _ -> (\ld -> queryVectors ld !! qIx) <$> layerData) (repeat ())
-
     (axiMaster, bankOutputs, bankDones, wrDone) =
       kvCacheBankController
         cycleCounter dramSlaveIn layerIdx kvIx

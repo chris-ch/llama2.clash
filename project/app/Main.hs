@@ -168,11 +168,9 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
     layerIndicesSampled  = C.sampleN simSteps (Decoder.layerIndex introspection)
     readiesSampled       = C.sampleN simSteps (Decoder.ready introspection)
     layerValidInsSampled = C.sampleN simSteps (Decoder.layerValidIn introspection)
-    qkvDonesSampled      = C.sampleN simSteps (Decoder.qkvDone introspection)
-    attnDonesSampled     = C.sampleN simSteps (Decoder.attnDone introspection)
-    ffnDonesSampled      = C.sampleN simSteps (Decoder.ffnDone introspection)
-    ffnOut0Sampled       = C.sampleN simSteps (Decoder.ffnOut0 introspection)
+    layerDonesSampled    = C.sampleN simSteps (Decoder.layerDone introspection)
     cycleCountSampled    = C.sampleN simSteps (Decoder.cycleCount introspection)
+    ffnOut0Sampled       = C.sampleN simSteps (Decoder.ffnOut0 introspection)
 
     -- Extract top-level outputs
     (outputTokens, readyFlags) = unzip coreOutputs
@@ -191,33 +189,29 @@ generateTokensSimAutoregressive tokenizer stepCount promptTokens temperature see
   putStrLn "This may take a moment..."
 
   -- Print header
-  putStrLn "\nCycle | Layer | Tok Rdy | QKVDone | AttnDone | FFNDone |     Tok     | LayerValid"
-  putStrLn "------------------------------------------------------------------------------------"
+  putStrLn "\nCycle | Layer | Tok Rdy | LayerDone |     Tok     | LayerValid"
+  putStrLn "---------------------------------------------------------------"
 
   let printCycle ioIdx = do
         let hwCycle = fromIntegral $ cycleCountSampled !! ioIdx
         let
           li          = fromIntegral (layerIndicesSampled !! hwCycle) :: Int
           rdy         = readiesSampled !! hwCycle
-          qkv         = qkvDonesSampled !! hwCycle
-          attn        = attnDonesSampled !! hwCycle
-          ffn         = ffnDonesSampled !! hwCycle
-          ffnOut0     = ffnOut0Sampled !! hwCycle
+          done        = layerDonesSampled !! hwCycle
           token       = coreOutputs !! hwCycle
           layerValidIn = layerValidInsSampled !! hwCycle
 
-        when (hwCycle `mod` 10000 == 0 || rdy || qkv || attn || ffn || layerValidIn) $
+        let ffnOut0 = ffnOut0Sampled !! hwCycle
+        when (hwCycle `mod` 10000 == 0 || rdy || done || layerValidIn) $
           putStrLn $
-            printf "%5d | %5d | %7s | %7s | %8s | %8s | %11s | %10s%s"
+            printf "%5d | %5d | %7s | %8s | %11s | %10s | ffnOut0=%s"
               hwCycle
               li
               (show rdy)
-              (show qkv)
-              (show attn)
-              (show ffn)
+              (show done)
               (show $ decodeToken tokenizer (fst token))
               (show layerValidIn)
-              (if ffn then " ffnOut0=" ++ show ffnOut0 else "")
+              (if done then show (realToFrac ffnOut0 :: Double) else "-")
 
   mapM_ printCycle [0 :: Int ..]
 

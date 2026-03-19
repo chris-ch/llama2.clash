@@ -42,14 +42,15 @@ data RmsNormState
 {-# NOINLINE rmsNormSeq #-}
 rmsNormSeq
   :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
-  => Signal dom Bool               -- ^ validIn: one-cycle pulse, x and w must be stable
-  -> Signal dom (Vec n FixedPoint) -- ^ x  (input vector, must be stable on validIn)
+  => Signal dom Bool               -- ^ validIn: one-cycle pulse
+  -> Signal dom FixedPoint         -- ^ xi (element at counter; from BRAM output or @(Vec.!!) xVec counter@)
   -> Signal dom (Vec n FixedPoint) -- ^ w  (weight vector, must be stable on validIn)
   -> ( Signal dom Bool               -- ^ outputValid (level, held from RNDone)
      , Signal dom (Vec n FixedPoint) -- ^ result
-     , Signal dom (Index n)          -- ^ counter (drives BRAM read address)
+     , Signal dom (Index n)          -- ^ counter  (current element index)
+     , Signal dom (Index n)          -- ^ rdNext   (next element index; use as BRAM pre-issue address)
      )
-rmsNormSeq validIn xSig wSig = (outputValid, outReg, counter)
+rmsNormSeq validIn xi wSig = (outputValid, outReg, counter, nextCounter)
   where
     -- Compile-time reciprocal: floor(2^20 / n) as FixedPoint bit pattern.
     invNBits :: Signed 32
@@ -73,10 +74,12 @@ rmsNormSeq validIn xSig wSig = (outputValid, outReg, counter)
     outReg  = register (repeat 0) nextOutReg
 
     -- ----------------------------------------------------------------
-    -- Element selection (dynamic index → mux tree, O(log n) LUT depth)
+    -- Element selection
     -- ----------------------------------------------------------------
-    xi :: Signal dom FixedPoint
-    xi = (!!) <$> xSig <*> counter
+    -- xi is provided by the caller (from BRAM output or Vec.!! counter).
+    -- Callers driving BRAM use rdNext as the pre-issue address; the
+    -- 1-cycle BRAM latency then delivers xi = x[counter] on the right cycle.
+    -- Callers using a Vec use xi = ((!!) <$> xVec <*> counter) directly.
 
     wi :: Signal dom FixedPoint
     wi = (!!) <$> wSig <*> counter

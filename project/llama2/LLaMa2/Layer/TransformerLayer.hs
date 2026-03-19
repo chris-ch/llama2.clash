@@ -4,98 +4,137 @@ module LLaMa2.Layer.TransformerLayer
 where
 
 import Clash.Prelude
-import LLaMa2.Layer.Attention.FSM (processingControllerFSM)
+import qualified GHC.TypeNats as TN
 import qualified LLaMa2.Layer.FeedForward.FeedForwardNetwork as FeedForwardNetwork (feedForwardStage)
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData (LayerData (..))
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 import LLaMa2.Types.ModelConfig
-  ( HeadDimension, ModelDimension, NumKeyValueHeads, NumQueryHeads, SequenceLength, NumLayers)
+  ( HeadDimension, ModelDimension, NumKeyValueHeads, SequenceLength, NumLayers)
 import LLaMa2.Layer.Attention.MultiHeadAttention (multiHeadAttentionStage)
+import LLaMa2.Memory.ActivationBRAM
+  ( ActivationBramReadPort (..), ActivationBramWritePort (..), activationBram )
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 
-ffnController ::
-  (HiddenClockResetEnable dom) =>
-  Signal dom (Unsigned 32) ->
-  Slave.AxiSlaveIn dom ->
-  Signal dom (Index NumLayers) ->
-  Signal dom Bool ->
-  Signal dom Bool ->
-  Signal dom (Vec ModelDimension FixedPoint) ->
-  ( Master.AxiMasterOut dom
-  , Signal dom (Vec ModelDimension FixedPoint)
-  , Signal dom Bool
-  , Signal dom Bool
-  )
-ffnController cycleCounter dramSlaveIn layerIdx inValid outReady inputVec =
-  (ffnAxiMaster, result, validOut, inReady)
-  where
-    (enable, validOut, inReady) = processingControllerFSM inValid outReady ffnSeqValid
-    (ffnAxiMaster, result, ffnSeqValid, _readyOut) =
-      FeedForwardNetwork.feedForwardStage
-        cycleCounter dramSlaveIn layerIdx enable outReady inputVec
+slot0BramBase :: ActivationBramAddr
+slot0BramBase = 0
 
+slot3BramBase :: ActivationBramAddr
+slot3BramBase = natToNum @(3 TN.* ModelDimension)
+
+-- | One transformer layer (MHA → FFN → slot3-to-slot0 copy).
+--
+-- The activation BRAM is instantiated internally.
+-- Slot layout:
+--   0 = inputVector   (written externally via @initWrPort@, or by the copy phase)
+--   2 = attnOutput    (written by MHA residual adder)
+--   3 = ffnOutput     (written by FFN residual adder)
+--
+-- After FFN completes, an internal copy phase streams slot 3 → slot 0 to
+-- prepare the next layer run.  During the copy, each element is also emitted
+-- via @ffnStreamOut@ so the caller can accumulate the FFN output vector for
+-- the logits projector.
+--
+-- @initWrPort@ (lowest-priority write) is used by the caller to inject the
+-- token embedding into slot 0 for layer 0.  It is safe to drive @initWrPort@
+-- whenever the layer is idle (@readyOut = True@).
 transformerLayer ::
   forall dom.
   ( HiddenClockResetEnable dom
   , KnownNat (WordsPerFPVec HeadDimension)
   )
    => Signal dom (Unsigned 32)
-   -> Slave.AxiSlaveIn dom                              -- ^ weights DRAM
-   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)       -- ^ KV cache DRAM (one per KV head)
+   -> Slave.AxiSlaveIn dom                                    -- ^ weights DRAM
+   -> Vec NumKeyValueHeads (Slave.AxiSlaveIn dom)             -- ^ KV cache DRAM
    -> Signal dom (Index NumLayers)
    -> Signal dom (Index SequenceLength)
-   -> Signal dom LayerData
-   -> Signal dom Bool
-   -> ( Master.AxiMasterOut dom                         -- ^ weights AXI master
-      , Vec NumKeyValueHeads (Master.AxiMasterOut dom)  -- ^ KV cache AXI masters
-      , Signal dom (Vec NumQueryHeads (Vec HeadDimension FixedPoint))
-      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-      , Signal dom (Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-      , Signal dom (Vec ModelDimension FixedPoint)
-      , Signal dom (Vec ModelDimension FixedPoint)
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
-      , Signal dom Bool
+   -> Signal dom (Maybe (ActivationBramAddr, FixedPoint))     -- ^ slot 0 init write
+   -> Signal dom Bool                                         -- ^ validIn
+   -> ( Master.AxiMasterOut dom
+      , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
+      , Signal dom Bool                                       -- ^ layerDone (copy complete)
+      , Signal dom Bool                                       -- ^ readyOut (layer idle)
+      , Signal dom (Maybe FixedPoint)                         -- ^ ffnStreamOut (slot 3 stream)
       )
-transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData validIn =
-  ( axiMasterOut
-  , kvAxiMasters
-  , qProj
-  , kProj
-  , vProj
-  , xAfterAttn
-  , ffnOutput
-  , qkvDone
-  , writeDone
-  , attentionDone
-  , ffnDone
-  , qkvReady
-  , ffnArmed
-  , ffnStageStart
-  , ffnValidIn
-  )
+transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPort validIn =
+  (axiMasterOut, kvAxiMasters, layerDone, readyOut, ffnStreamOut)
   where
-    -- Feed-forward stage busy flag
-    layerBusy = register False nextLayerBusy
-      where
-        nextLayerBusy = mux validInGated (pure True)
-                       (mux ffnDone (pure False) layerBusy)
+    --------------------------------------------------------------------------
+    -- Phase tracking (strictly sequential: mha → ffn → copy → idle)
+    --------------------------------------------------------------------------
+    mhaPhaseActive = register False $
+      mux mhaWriteDone (pure False) $
+      mux validIn (pure True)
+      mhaPhaseActive
 
-    validInGated = validIn .&&. (not <$> layerBusy)
+    mhaWriteDonePulse = mhaWriteDone .&&. (not <$> register False mhaWriteDone)
 
-    -- MHA uses its own weights DRAM slave (from 2-master arbiter)
-    (mhaAxiMaster, kvAxiMasters, xAfterAttn, qProj, kProj, vProj, qkvReady, qkvDone, writeDone, attentionDone) =
-      multiHeadAttentionStage cycleCounter mhaSlave kvDramSlaves layerIdx seqPos layerData validInGated
+    ffnPhaseActive = register False $
+      mux ffnWriteDone (pure False) $
+      mux mhaWriteDonePulse (pure True)
+      ffnPhaseActive
 
-    -- 2-master arbiter for weights DRAM: slot 0 = MHA, slot 1 = FFN
+    ffnWriteDonePulse = ffnWriteDone .&&. (not <$> register False ffnWriteDone)
+
+    copyActive = register False $
+      mux copyDone (pure False) $
+      mux ffnWriteDonePulse (pure True)
+      copyActive
+
+    copyCounter = register (0 :: Index ModelDimension) $
+      mux copyActive (satSucc SatWrap <$> copyCounter) (pure 0)
+
+    copyAtMax = copyActive .&&. copyCounter .==. pure maxBound
+
+    copyDrain = register False copyAtMax
+
+    layerDone = register False copyDrain
+
+    copyDone = layerDone  -- one cycle after drain
+
+    --------------------------------------------------------------------------
+    -- Activation BRAM — read address mux
+    -- Priority: copy > ffn > mha (strictly sequential, no contention)
+    --------------------------------------------------------------------------
+    slot3RdAddr   = (slot3BramBase +) . fromIntegral <$> copyCounter
+    bramRdAddr = mux copyActive slot3RdAddr $
+                 mux ffnPhaseActive ffnBramRdAddr
+                 mhaBramRdAddr
+
+    --------------------------------------------------------------------------
+    -- Activation BRAM — write mux
+    -- During copy: write slot 0; during stage phases: stage writes;
+    -- when idle: external initWrPort (embedding for layer 0).
+    --------------------------------------------------------------------------
+    prevCopyCounter = register (0 :: Index ModelDimension) copyCounter
+    prevCopyActive  = register False copyActive
+    inCopyWritePhase = prevCopyActive .||. copyDrain
+
+    copyWrAddr = (slot0BramBase +) . fromIntegral <$> prevCopyCounter
+    copyWrite  = mux inCopyWritePhase
+      (Just <$> ((,) <$> copyWrAddr <*> bramRdData))
+      (pure Nothing)
+
+    activeWrite = mux (copyActive .||. copyDrain) copyWrite $
+                  mux ffnPhaseActive ffnBramWrite $
+                  mux mhaPhaseActive mhaBramWrite
+                  initWrPort
+
+    bramWrAddr = maybe 0 fst <$> activeWrite
+    bramWrData = fmap snd   <$> activeWrite
+
+    bramRdData = activationBram
+      (ActivationBramReadPort  bramRdAddr)
+      (ActivationBramWritePort bramWrAddr bramWrData)
+
+    -- Stream slot 3 elements outward during the copy write phase.
+    ffnStreamOut = mux inCopyWritePhase (Just <$> bramRdData) (pure Nothing)
+
+    --------------------------------------------------------------------------
+    -- 2-master AXI arbiter: slot 0 = MHA weights, slot 1 = FFN weights
+    --------------------------------------------------------------------------
     (axiMasterOut, perLayerSlaves) =
       ARB.axiArbiterWithRouting dramSlaveIn
         (mhaAxiMaster :> ffnAxiMaster :> Nil)
@@ -103,37 +142,18 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos layerData
     mhaSlave = perLayerSlaves !! (0 :: Index 2)
     ffnSlave = perLayerSlaves !! (1 :: Index 2)
 
-    ffnArmed :: Signal dom Bool
-    ffnArmed = register False nextFfnArmed
-      where
-        setArm   = validInGated
-        clearArm = ffnDone
-        nextFfnArmed = mux setArm (pure True) (mux clearArm (pure False) ffnArmed)
+    --------------------------------------------------------------------------
+    -- Multi-head attention (reads slot 0, writes slot 2)
+    --------------------------------------------------------------------------
+    (mhaAxiMaster, kvAxiMasters, mhaWriteDone, _mhaReadyOut, mhaBramRdAddr, mhaBramWrite) =
+      multiHeadAttentionStage
+        cycleCounter mhaSlave kvDramSlaves layerIdx seqPos validIn bramRdData
 
-    ffnStageStart :: Signal dom Bool
-    ffnStageStart = attentionDone .&&. ffnArmed
+    --------------------------------------------------------------------------
+    -- Feed-forward stage (reads slot 2, writes slot 3)
+    --------------------------------------------------------------------------
+    (ffnAxiMaster, ffnWriteDone, _ffnReadyOut, ffnBramRdAddr, ffnBramWrite) =
+      FeedForwardNetwork.feedForwardStage
+        cycleCounter ffnSlave layerIdx mhaWriteDone (pure True) bramRdData
 
-    ffnInput = attentionOutput <$> layerData
-
-    ffnValidIn :: Signal dom Bool
-    ffnValidIn = register False nextFFNValidIn
-      where
-        setFFNValid   = ffnStageStart
-        clearFFNValid = ffnValidIn .&&. ffnDone
-        nextFFNValidIn =
-          mux setFFNValid (pure True)
-            (mux clearFFNValid (pure False) ffnValidIn)
-
-    ffnOutReady :: Signal dom Bool
-    ffnOutReady = pure True
-
-    (ffnAxiMaster, ffnOutput, ffnValidOut, _ffnInReady) =
-      ffnController cycleCounter ffnSlave layerIdx ffnValidIn ffnOutReady ffnInput
-
-    ffnDone = risingEdge ffnValidOut
-
---------------------------------------------------------------------------------
--- Helper
---------------------------------------------------------------------------------
-risingEdge :: HiddenClockResetEnable dom => Signal dom Bool -> Signal dom Bool
-risingEdge sig = sig .&&. (not <$> register False sig)
+    readyOut = (not <$> mhaPhaseActive) .&&. (not <$> ffnPhaseActive) .&&. (not <$> copyActive)

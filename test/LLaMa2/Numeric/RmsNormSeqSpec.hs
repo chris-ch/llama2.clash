@@ -25,12 +25,11 @@ runSim
 runSim validIns xs ws cycles =
   P.take cycles $ P.zip valids results
  where
-  (validSig, resultSig, _) =
+  (validSig, resultSig, _, _) =
     exposeClockResetEnable
-      (rmsNormSeq
-        (fromList validIns)
-        (fromList xs)
-        (fromList ws))
+      (let (v, r, c, rn) = rmsNormSeq (fromList validIns) xi (fromList ws)
+           xi = (!!) <$> fromList xs <*> c
+       in (v, r, c, rn))
       CS.systemClockGen
       CS.resetGen
       CS.enableGen
@@ -53,18 +52,18 @@ spec = describe "RmsNormSeq" $ do
   describe "single input" $ do
     let x = 0.1 :> 0.2 :> 0.3 :> 0.4 :> 0.5 :> 0.6 :> 0.7 :> 0.8 :> Nil :: Vec N FixedPoint
         w = 1.0 :> 1.0 :> 1.0 :> 1.0 :> 1.0 :> 1.0 :> 1.0 :> 1.0 :> Nil :: Vec N FixedPoint
-        -- validIn fires at cycle 0 only; x/w held constant
-        validIns = True : P.repeat False
+        -- validIn fires at cycle 1 (cycle 0 is held in reset by CS.resetGen)
+        validIns = False : True : P.repeat False
         xs       = P.repeat x
         ws       = P.repeat w
-        latency  = 2 * (8 :: Int) + 2  -- 18
+        latency  = 2 * (8 :: Int) + 2 + 1  -- 19 (18 + 1 for reset cycle)
         sim      = runSim validIns xs ws (latency + 5)
         expected = reference x w
 
     it "outputValid is False before latency" $
       P.all (not . P.fst) (P.take (latency - 1) sim) `shouldBe` True
 
-    it "outputValid goes True at cycle 18" $
+    it "outputValid goes True at cycle 19" $
       P.fst (sim P.!! latency) `shouldBe` True
 
     it "result matches rmsNormFwFix within tolerance" $
