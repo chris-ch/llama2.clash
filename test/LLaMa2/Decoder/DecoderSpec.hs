@@ -73,7 +73,7 @@ spec = do
         promptTokens = [1] :: [Token]
         temperature  = 0.0 :: FixedPoint
         seed         = 123 :: Seed
-        maxCycles    = 20_000
+        maxCycles    = 60_000
 
         (firstToken, restPrompt) = case promptTokens of
           (t:ts) -> (t, ts)
