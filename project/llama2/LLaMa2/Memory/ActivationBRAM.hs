@@ -6,7 +6,7 @@ module LLaMa2.Memory.ActivationBRAM
 
 import Clash.Prelude
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Types.LayerData (ActivationBramAddr, ActivationBramDepth)
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 import LLaMa2.Memory.DualPortRAM (trueDualPortRam)
 
 -- | Read port: present an address each cycle; data arrives the next cycle.

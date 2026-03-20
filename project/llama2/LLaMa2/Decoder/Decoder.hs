@@ -5,7 +5,7 @@ module LLaMa2.Decoder.Decoder (
 import Clash.Prelude
 import LLaMa2.Types.LayerData (ActivationBramAddr, Temperature, Seed, Token)
 import LLaMa2.Types.ModelConfig (NumLayers, NumKeyValueHeads, ModelDimension)
-import Data.Maybe (isJust)
+
 
 import qualified LLaMa2.Embedding.OutputProjection as OutputProjection (logitsProjector)
 import qualified LLaMa2.Sampling.Sampler as Sampler (tokenSampler)
@@ -128,6 +128,12 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
     -- =======================================================================
     -- LAYER PROCESSING
     -- =======================================================================
+    -- =======================================================================
+    -- LAYER PROCESSING
+    -- logitsBramRdAddr (from logitsProjector) drives the activation BRAM
+    -- read port when the layer is idle, allowing the logits projector to read
+    -- slot 3 directly without accumulating a Vec register.
+    -- =======================================================================
     layerOutputs = LayerStack.activeLayerProcessor
       cycleCounter
       dramSlaveIn
@@ -136,8 +142,11 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
       seqPosition
       initWrPort
       layerValidLatched
+      logitsBramRdAddr
 
     layerFfnDone = LayerStack.layerDone layerOutputs
+
+    lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
 
     -- =======================================================================
     -- AXI arbitration
@@ -147,53 +156,18 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
                  (LayerStack.axiMasterOut layerOutputs)
 
     -- =======================================================================
-    -- FFN OUTPUT ACCUMULATOR
-    -- Captures the slot-3 stream emitted by TransformerLayer during the copy
-    -- phase and assembles it into a Vec for the logits projector.
-    -- The stream runs for ModelDimension+2 cycles; we index by a counter that
-    -- advances on each Just element.
-    -- =======================================================================
-    ffnStream = LayerStack.ffnStreamOut layerOutputs
-
-    ffnStreamValid = isJust <$> ffnStream
-    ffnStreamData  = (\mx -> case mx of { Just x -> x; Nothing -> 0 }) <$> ffnStream
-
-    -- Detect the rising edge of ffnStreamValid so each new layer's stream
-    -- resets the accumulation index to 0 (the copy phase emits 2 extra
-    -- elements per layer due to prevCopyActive latency, drifting the counter
-    -- by +2 per layer if not corrected).
-    ffnStreamStart = ffnStreamValid .&&. (not <$> register False ffnStreamValid)
-
-    -- Reset register to 1 on stream start (element 0 is written at index 0 via
-    -- ffnEffectiveIdx override; subsequent elements use the register directly).
-    ffnAccumCounter = register (0 :: Index ModelDimension) $
-      mux ffnStreamStart (pure 1) $
-      mux ffnStreamValid (satSucc SatWrap <$> ffnAccumCounter)
-      ffnAccumCounter
-
-    -- Override index to 0 on stream start so element 0 always lands at slot 0.
-    ffnEffectiveIdx = mux ffnStreamStart (pure 0) ffnAccumCounter
-
-    ffnOutputVec = register (repeat 0 :: Vec ModelDimension FixedPoint) $
-      mux ffnStreamValid
-        ((\vec i d -> replace i d vec) <$> ffnOutputVec <*> ffnEffectiveIdx <*> ffnStreamData)
-        ffnOutputVec
-
-    lastLayerComplete = (layerIdx .==. pure maxBound) .&&. layerFfnDone
-
-    -- =======================================================================
     -- OUTPUT PROJECTION AND SAMPLING
     -- =======================================================================
     classifierActive = Controller.processingStage controller .==. pure Controller.Classifier
 
-    (logitsAxiMaster, logitIdx, logitValue, logitValid, logitsAllDone) =
+    (logitsAxiMaster, logitsBramRdAddr, logitIdx, logitValue, logitValid, logitsAllDone) =
       OutputProjection.logitsProjector
         cycleCounter
         dramSlaveIn
         lastLayerComplete
         (pure True)
         logitsAllDone
-        ffnOutputVec
+        (LayerStack.bramRdDataOut layerOutputs)
 
     (sampledToken, samplerValid) =
       Sampler.tokenSampler logitIdx logitValue logitValid logitsAllDone temperature seed
@@ -214,7 +188,7 @@ decoder cycleCounter dramSlaveIn kvDramSlaves inputToken forceInputToken softRes
       , layerValidIn = controllerLayerValid
       , layerDone    = layerFfnDone
       , cycleCount   = cycleCounter
-      , ffnOut0      = fmap (!! (0 :: Index ModelDimension)) ffnOutputVec
+      , ffnOut0      = LayerStack.ffnOut0 layerOutputs
       }
 
 -- | Synthesis wrapper

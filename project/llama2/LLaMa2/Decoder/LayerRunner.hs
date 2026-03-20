@@ -16,7 +16,8 @@ data LayerOutputs dom = LayerOutputs
   , kvAxiMasterOuts :: Vec NumKeyValueHeads (Master.AxiMasterOut dom)
   , layerDone       :: Signal dom Bool   -- ^ copy phase complete (slot 3→0 done)
   , readyOut        :: Signal dom Bool   -- ^ layer is idle, ready for new validIn
-  , ffnStreamOut    :: Signal dom (Maybe FixedPoint) -- ^ slot 3 elements during copy phase
+  , bramRdDataOut   :: Signal dom FixedPoint -- ^ activation BRAM read data (1-cycle latency)
+  , ffnOut0         :: Signal dom FixedPoint -- ^ debug: slot3[0] captured during copy phase
   }
 
 {-# NOINLINE activeLayerProcessor #-}
@@ -31,16 +32,18 @@ activeLayerProcessor :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom (Maybe (ActivationBramAddr, FixedPoint)) -- ^ slot 0 init write (embedding)
   -> Signal dom Bool                                  -- ^ validIn
+  -> Signal dom ActivationBramAddr                    -- ^ extBramRdAddr (drives BRAM when idle)
   -> LayerOutputs dom
-activeLayerProcessor cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos initWrPort inputValid =
+activeLayerProcessor cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos initWrPort inputValid extBramRdAddr =
   LayerOutputs
     { axiMasterOut    = singleAxiMaster
     , kvAxiMasterOuts = singleKvMasters
     , layerDone       = done
     , readyOut        = ready
-    , ffnStreamOut    = stream
+    , bramRdDataOut   = bramRdData
+    , ffnOut0         = ffnOut0Sig
     }
   where
-    (singleAxiMaster, singleKvMasters, done, ready, stream) =
+    (singleAxiMaster, singleKvMasters, done, ready, bramRdData, ffnOut0Sig) =
       TransformerLayer.transformerLayer
-        cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos initWrPort inputValid
+        cycleCounter dramSlaveIn kvDramSlaves activeLayerIdx seqPos initWrPort inputValid extBramRdAddr

@@ -33,9 +33,9 @@ slot3BramBase = natToNum @(3 TN.* ModelDimension)
 --   3 = ffnOutput     (written by FFN residual adder)
 --
 -- After FFN completes, an internal copy phase streams slot 3 → slot 0 to
--- prepare the next layer run.  During the copy, each element is also emitted
--- via @ffnStreamOut@ so the caller can accumulate the FFN output vector for
--- the logits projector.
+-- prepare the next layer run.  When the layer is idle, the activation BRAM
+-- read port is handed to the caller via @extBramRdAddr@ / @bramRdDataOut@
+-- so the logits projector can read slot 3 directly.
 --
 -- @initWrPort@ (lowest-priority write) is used by the caller to inject the
 -- token embedding into slot 0 for layer 0.  It is safe to drive @initWrPort@
@@ -52,14 +52,16 @@ transformerLayer ::
    -> Signal dom (Index SequenceLength)
    -> Signal dom (Maybe (ActivationBramAddr, FixedPoint))     -- ^ slot 0 init write
    -> Signal dom Bool                                         -- ^ validIn
+   -> Signal dom ActivationBramAddr                           -- ^ extBramRdAddr (when layer idle)
    -> ( Master.AxiMasterOut dom
       , Vec NumKeyValueHeads (Master.AxiMasterOut dom)
       , Signal dom Bool                                       -- ^ layerDone (copy complete)
       , Signal dom Bool                                       -- ^ readyOut (layer idle)
-      , Signal dom (Maybe FixedPoint)                         -- ^ ffnStreamOut (slot 3 stream)
+      , Signal dom FixedPoint                                 -- ^ bramRdDataOut (activation BRAM)
+      , Signal dom FixedPoint                                 -- ^ ffnOut0 debug: slot3[0] captured during copy
       )
-transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPort validIn =
-  (axiMasterOut, kvAxiMasters, layerDone, readyOut, ffnStreamOut)
+transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPort validIn extBramRdAddr =
+  (axiMasterOut, kvAxiMasters, layerDone, readyOut, bramRdData, ffnOut0Debug)
   where
     --------------------------------------------------------------------------
     -- Phase tracking (strictly sequential: mha → ffn → copy → idle)
@@ -100,8 +102,9 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPor
     --------------------------------------------------------------------------
     slot3RdAddr   = (slot3BramBase +) . fromIntegral <$> copyCounter
     bramRdAddr = mux copyActive slot3RdAddr $
-                 mux ffnPhaseActive ffnBramRdAddr
-                 mhaBramRdAddr
+                 mux ffnPhaseActive ffnBramRdAddr $
+                 mux mhaPhaseActive mhaBramRdAddr
+                 extBramRdAddr   -- when idle: external caller drives the read port
 
     --------------------------------------------------------------------------
     -- Activation BRAM — write mux
@@ -129,9 +132,6 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPor
       (ActivationBramReadPort  bramRdAddr)
       (ActivationBramWritePort bramWrAddr bramWrData)
 
-    -- Stream slot 3 elements outward during the copy write phase.
-    ffnStreamOut = mux inCopyWritePhase (Just <$> bramRdData) (pure Nothing)
-
     --------------------------------------------------------------------------
     -- 2-master AXI arbiter: slot 0 = MHA weights, slot 1 = FFN weights
     --------------------------------------------------------------------------
@@ -157,3 +157,6 @@ transformerLayer cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos initWrPor
         cycleCounter ffnSlave layerIdx mhaWriteDone (pure True) bramRdData
 
     readyOut = (not <$> mhaPhaseActive) .&&. (not <$> ffnPhaseActive) .&&. (not <$> copyActive)
+
+    -- Debug: capture slot3[0] during copy phase (copyCounter==1 means slot3[0] data has arrived).
+    ffnOut0Debug = regEn 0 (copyActive .&&. copyCounter .==. pure 1) bramRdData

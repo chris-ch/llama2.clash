@@ -2,10 +2,12 @@ module LLaMa2.Embedding.OutputProjection
  ( logitsProjector, logitsProjectorTop
 ) where
 import Clash.Prelude
+import qualified GHC.TypeNats as TN
 
 import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumQueryHeads)
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.WeightsLayout as Layout
@@ -16,6 +18,10 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionContr
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
 
+-- Base address of slot 3 (ffnOutput) in the activation BRAM.
+slot3BramBase :: ActivationBramAddr
+slot3BramBase = natToNum @(3 TN.* ModelDimension)
+
 {-# NOINLINE logitsProjector #-}
 logitsProjector :: forall dom .
   HiddenClockResetEnable dom
@@ -24,15 +30,16 @@ logitsProjector :: forall dom .
   -> Signal dom Bool                                 -- ^ inputValid (lastLayerComplete)
   -> Signal dom Bool                                 -- ^ downStreamReady
   -> Signal dom Bool                                 -- ^ consumeSignal
-  -> Signal dom (Vec ModelDimension FixedPoint)      -- ^ token embedding vector
+  -> Signal dom FixedPoint                           -- ^ bramRdData (activation BRAM slot 3, 1-cycle latency)
   -> ( Master.AxiMasterOut dom
+     , Signal dom ActivationBramAddr                 -- ^ bramRdAddr (pre-issue address for BRAM slot 3)
      , Signal dom (Index VocabularySize)             -- ^ logit index  (streaming, valid when logitValid)
      , Signal dom FixedPoint                         -- ^ logit value  (streaming, valid when logitValid)
      , Signal dom Bool                               -- ^ logitValid   (one pulse per completed row)
      , Signal dom Bool                               -- ^ logitsAllDone (all VocabularySize rows done)
      )
-logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSignal tokenVecSig =
-  (axiMasterOut, rowIndex, RowComputeUnit.rcResult compute, rowDone, outputValid)
+logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSignal bramRdData =
+  (axiMasterOut, bramRdAddr, rowIndex, RowComputeUnit.rcResult compute, rowDone, outputValid)
  where
   inputValidRise :: Signal dom Bool
   inputValidRise = inputValid .&&. (not <$> register False inputValid)
@@ -43,15 +50,17 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
       (pure Layout.rmsFinalAddress)
 
   -- Sequential rmsNorm: triggered on the rising edge of rmsFinalValid.
+  -- xi comes from activation BRAM slot 3 (1-cycle latency via bramRdData).
+  -- rdNext drives bramRdAddr one cycle ahead so the data arrives aligned.
   rmsFinalDone :: Signal dom Bool
   rmsFinalDone = rmsFinalValid .&&. (not <$> register False rmsFinalValid)
 
-  (rmsNormValid, tokenWithRms, rmsCounter, _) = rmsNormSeq rmsFinalDone xi rmsFinalVec
-  xi = (!!) <$> tokenVecSig <*> rmsCounter
+  (rmsNormValid, tokenWithRms, _, rdNext) = rmsNormSeq rmsFinalDone bramRdData rmsFinalVec
+
+  -- Pre-issue activation BRAM read address one cycle ahead of when data is needed.
+  bramRdAddr = (slot3BramBase +) . fromIntegral <$> rdNext
 
   -- effectiveInputOuter: fires once on rising edge of rmsNormValid while pending.
-  -- pendingInput clears on effectiveInputOuter — see FeedForwardNetwork for why
-  -- clearing on rmsNormValid directly would cause a premature clear on layer 2+.
   effectiveInputOuter :: Signal dom Bool
   effectiveInputOuter = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
 
@@ -158,10 +167,11 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
         , PortName "input_valid"
         , PortName "downstream_ready"
         , PortName "consume_signal"
-        , PortName "token_vec"
+        , PortName "bram_rd_data"
         ]
     , t_output = PortProduct ""
         [ PortProduct "axi_out" []
+        , PortName "bram_rd_addr"
         , PortName "logit_idx"
         , PortName "logit_value"
         , PortName "logit_valid"
@@ -177,8 +187,9 @@ logitsProjectorTop
   -> Signal System Bool
   -> Signal System Bool
   -> Signal System Bool
-  -> Signal System (Vec ModelDimension FixedPoint)
+  -> Signal System FixedPoint
   -> ( Master.AxiMasterOut System
+     , Signal System ActivationBramAddr
      , Signal System (Index VocabularySize)
      , Signal System FixedPoint
      , Signal System Bool
