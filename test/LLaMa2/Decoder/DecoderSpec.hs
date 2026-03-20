@@ -287,3 +287,98 @@ spec = do
                 hFlush stdout
                 expectationFailure $ show e
 #endif
+
+  -- -------------------------------------------------------------------------
+  -- Multi-token autoregressive loop (Task 3)
+  -- Runs model-nano with BOS prompt, verifies 3 tokens are generated and that
+  -- all layers complete for each token (KV cache + slot-0 copy consistency).
+  -- -------------------------------------------------------------------------
+  describe "Decoder - multi-token autoregressive loop (model-nano)" $ do
+#ifndef MODEL_NANO
+    it "skipped: run with -f model-nano" $ do
+      pendingWith "Use -f model-nano for multi-token autoregressive test"
+#else
+    it "generates 3 tokens with all layers completing for each" $ do
+      let
+        promptTokens = [1] :: [Token]  -- BOS only; model generates the rest
+        temperature  = 0.0 :: FixedPoint
+        seed         = 123 :: Seed
+        maxCycles    = 100_000
+        nLayers      = natToNum @NumLayers :: Int
+        vocabSize    = natToNum @VocabularySize :: Token
+
+        (firstToken, restPrompt) = case promptTokens of
+          (t:ts) -> (t, ts)
+          []     -> (1, [])
+
+        advanceState (current, remPrompt, usingPrompt) (isReady, sampled)
+          | not isReady = (current, remPrompt, usingPrompt)
+          | otherwise   = case remPrompt of
+                            (p:ps) -> (p, ps, True)
+                            []     -> (sampled, [], False)
+
+        inputSignals = fromList (DL.zip4 inputTokens inputValidFlags
+                                   (P.repeat temperature) (P.repeat seed))
+
+        (coreOutputsSignal, introspection) = bundledOutputs inputSignals
+        (tokenSig, validSig)               = unbundle coreOutputsSignal
+
+        allSampled = sampleN maxCycles $ bundle
+          ( tokenSig
+          , validSig
+          , Decoder.layerIndex introspection
+          , Decoder.layerDone  introspection
+          )
+
+        outputTokens = [tok | (tok, _, _, _) <- allSampled]
+        readyFlags   = [v   | (_, v, _, _)   <- allSampled]
+        layerIndices = P.map fromIntegral [li | (_, _, li, _) <- allSampled] :: [Int]
+        layerDones   = [d   | (_, _, _, d)   <- allSampled]
+        cycles       = [0 .. maxCycles - 1] :: [Int]
+
+        states :: [DecoderInputState]
+        states = P.scanl advanceState (firstToken, restPrompt, True)
+                   (P.zip (P.drop 1 readyFlags) (P.drop 1 outputTokens))
+
+        inputTokens     = firstToken : [tok | (tok, _, _) <- states]
+        inputValidFlags = True       : [u   | (_, _, u)   <- states]
+
+        -- Collect all layerDone events as (cycle, layerIdx)
+        allDoneEvents :: [(Int, Int)]
+        allDoneEvents =
+          [ (c, li)
+          | (c, li, done) <- DL.zip3 cycles layerIndices layerDones
+          , done
+          ]
+
+        -- Find cycle boundaries where readyPulse fires
+        readyPulseCycles :: [Int]
+        readyPulseCycles = [c | (c, r) <- DL.zip cycles readyFlags, r]
+
+        sampledTokens :: [Token]
+        sampledTokens = [tok | (tok, rdy) <- P.zip outputTokens readyFlags, rdy]
+
+      P.putStrLn $ "\n[multi-token] readyPulse cycles: " P.++ show (P.take 5 readyPulseCycles)
+      P.putStrLn $ "[multi-token] sampled tokens:    " P.++ show (P.take 5 sampledTokens)
+      P.putStrLn $ "[multi-token] total layerDones:  " P.++ show (P.length allDoneEvents)
+      hFlush stdout
+
+      -- Must produce at least 3 tokens
+      P.length sampledTokens `shouldSatisfy` (>= 3)
+
+      -- Every sampled token must be a valid vocabulary index
+      sampledTokens `shouldSatisfy` P.all (< vocabSize)
+
+      -- For each of the first 3 tokens, all NumLayers layers must have fired layerDone.
+      -- We slice allDoneEvents by the readyPulse boundaries.
+      let tokenBoundaries = P.zip (0 : readyPulseCycles) readyPulseCycles
+          firstThreeBounds = P.take 3 tokenBoundaries
+
+      P.mapM_ (\(start, end) -> do
+          let eventsInWindow =
+                [ li | (c, li) <- allDoneEvents, c >= start, c < end ]
+          -- All nLayers layers must appear
+          P.length eventsInWindow `shouldBe` nLayers
+          DL.sort eventsInWindow  `shouldBe` [0 .. nLayers - 1]
+        ) firstThreeBounds
+#endif

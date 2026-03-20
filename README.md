@@ -96,7 +96,7 @@ The test suite supports two model configurations:
 
 | Command          | Model             | Time    | When to use                    |
 | ---------------- | ----------------- | ------- | ------------------------------ |
-| `make test`      | nano (ModelDim=8) | ~18 s   | Day-to-day development         |
+| `make test`      | nano (ModelDim=8) | ~2-3 min   | Day-to-day development         |
 | `make test-full` | 260K              | ~10 min | Pre-merge / numeric validation |
 
 ```shell
