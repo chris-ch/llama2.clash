@@ -3,19 +3,23 @@ module LLaMa2.Layer.Attention.WOHeadProjector
   ) where
 
 import Clash.Prelude
+import qualified GHC.TypeNats as TN
 
 import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads )
 import LLaMa2.Numeric.Types (FixedPoint)
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OutputTransactionController
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as OutputAccumulator
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
+
+-- Base address of slot 2 (attentionOutput) in the activation BRAM.
+slot2BramBase :: ActivationBramAddr
+slot2BramBase = natToNum @(2 TN.* ModelDimension)
 
 woHeadProjector :: forall dom.
   HiddenClockResetEnable dom
@@ -23,26 +27,36 @@ woHeadProjector :: forall dom.
   -> Slave.AxiSlaveIn dom
   -> Signal dom (Index NumLayers)
   -> Index NumQueryHeads
-  -> Signal dom Bool                              -- inputValid
-  -> Signal dom Bool                              -- downStreamReady
-  -> Signal dom Bool                              -- consumeSignal (coordinated)
-  -> Signal dom (Vec HeadDimension FixedPoint)    -- per-head attention output
+  -> Signal dom Bool                              -- ^ inputValid
+  -> Signal dom Bool                              -- ^ downStreamReady
+  -> Signal dom Bool                              -- ^ consumeSignal
+  -> Signal dom FixedPoint                        -- ^ bramRdData (activation BRAM, 1-cycle latency)
+  -> Signal dom ActivationBramAddr                -- ^ rdBase (slot0 for head 0, slot2 otherwise)
+  -> Signal dom (Vec HeadDimension FixedPoint)    -- ^ per-head attention output
   -> ( Master.AxiMasterOut dom
-     , Signal dom (Vec ModelDimension FixedPoint) -- WO projected output
-     , Signal dom Bool                            -- outputValid
-     , Signal dom Bool                            -- readyForInput
+     , Signal dom ActivationBramAddr              -- ^ bramRdAddr (to activation BRAM read port)
+     , Signal dom (Maybe (ActivationBramAddr, FixedPoint))  -- ^ bramWrite
+     , Signal dom Bool                            -- ^ outputValid (one-cycle pulse: last row written)
+     , Signal dom Bool                            -- ^ readyForInput
      )
 woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
-  inputValid downStreamReady consumeSignal headVec =
-  (axiMaster, woOut, outputValid, readyForInput)
+  inputValid downStreamReady consumeSignal bramRdData rdBase headVec =
+  (axiMaster, bramRdAddr, bramWrite, outputValid, readyForInput)
  where
   rowIndex :: Signal dom (Index ModelDimension)
   rowIndex = register 0 nextRowIndex
 
+  -- outputDone: True from rcAllDone until consumeSignal resets it.
+  -- Replaces OutputTransactionController.otcOutputValid.
+  outputDone = register False $
+    mux (RowComputeUnit.rcAllDone compute) (pure True) $
+    mux consumeSignal                      (pure False)
+    outputDone
+
   rsIn :: RowScheduler.RowSchedulerIn dom ModelDimension
   rsIn = RowScheduler.RowSchedulerIn
     { rsRowDone       = rowDone
-    , rsOutputValid   = OutputTransactionController.otcOutputValid outputTxn
+    , rsOutputValid   = outputDone
     , rsConsumeSignal = consumeSignal
     , rsCurrentIndex  = rowIndex
     }
@@ -55,19 +69,12 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
     cycleCounter headIdx
     InputTransactionController.InputTransactionIn
       { itcInputValid      = inputValid
-      , itcOutputValid     = OutputTransactionController.otcOutputValid outputTxn
+      , itcOutputValid     = outputDone
       , itcDownStreamReady = downStreamReady
       , itcConsumeSignal   = consumeSignal
       }
 
   inputValidLatched = InputTransactionController.itcLatchedValid inputTxn
-
-  outputTxn = OutputTransactionController.outputTransactionController
-    cycleCounter headIdx
-    OutputTransactionController.OutputTransactionIn
-      { otcAllDone       = RowComputeUnit.rcAllDone compute
-      , otcConsumeSignal = consumeSignal
-      }
 
   effectiveRowIndex :: Signal dom (Index ModelDimension)
   effectiveRowIndex = mux
@@ -96,7 +103,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
   justConsumed = register False consumeSignal
 
   effectiveInputValid = inputValidLatched
-    .&&. (not <$> OutputTransactionController.otcOutputValid outputTxn)
+    .&&. (not <$> outputDone)
     .&&. (not <$> justConsumed)
 
   compute = RowComputeUnit.rowComputeUnit cycleCounter
@@ -113,12 +120,31 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
 
   rowDone = RowComputeUnit.rcRowDone compute
 
-  outputAccum = OutputAccumulator.outputAccumulator cycleCounter headIdx
-    OutputAccumulator.OutputAccumIn
-      { oaRowDone   = RowComputeUnit.rcRowDone compute
-      , oaRowIndex  = rowIndex
-      , oaRowResult = RowComputeUnit.rcResult compute
-      }
+  --------------------------------------------------------------------------
+  -- Per-row BRAM write logic.
+  -- Cycle T: rowDone fires for row I.
+  --   bramRdAddr = rdBase + I  (issues activation BRAM read, 1-cycle latency)
+  --   Latch rowResult and rowIndex.
+  -- Cycle T+1: bramRdData = residual[I].
+  --   bramWrite = Just (slot2[I], bramRdData + rowResultLatch)
+  --------------------------------------------------------------------------
+  rowDonePrev = register False rowDone
 
-  outputValid = OutputTransactionController.otcOutputValid outputTxn
-  woOut       = OutputAccumulator.oaOutput outputAccum
+  rowResultLatch = regEn 0 rowDone (RowComputeUnit.rcResult compute)
+
+  rowIndexLatch = regEn (0 :: Index ModelDimension) rowDone rowIndex
+
+  -- Issue BRAM read on rowDone; idle otherwise.
+  bramRdAddr = mux rowDone
+    (liftA2 (+) rdBase (fromIntegral <$> rowIndex))
+    (pure 0)
+
+  -- Write one cycle after rowDone (BRAM read data now valid).
+  bramWrite = mux rowDonePrev
+    (Just <$> ((,)
+        <$> ((slot2BramBase +) . fromIntegral <$> rowIndexLatch)
+        <*> ((+) <$> bramRdData <*> rowResultLatch)))
+    (pure Nothing)
+
+  -- outputValid fires one cycle after rcAllDone, coinciding with the last BRAM write.
+  outputValid = register False (RowComputeUnit.rcAllDone compute)

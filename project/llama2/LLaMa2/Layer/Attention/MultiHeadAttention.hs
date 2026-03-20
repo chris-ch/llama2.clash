@@ -35,7 +35,7 @@ multiHeadAttentionStage :: forall dom.
   Signal dom (Index NumLayers)                ->
   Signal dom (Index SequenceLength)           ->
   Signal dom Bool                             ->  -- ^ validIn
-  Signal dom FixedPoint                       ->  -- ^ bramRdData (BRAM slot 0, 1-cycle latency)
+  Signal dom FixedPoint                       ->  -- ^ bramRdData (BRAM slot 0/2, 1-cycle latency)
   ( Master.AxiMasterOut dom                       -- ^ weights AXI master
   , Vec NumKeyValueHeads (Master.AxiMasterOut dom) -- ^ KV cache AXI masters
   , Signal dom Bool                               -- ^ writeDone (slot 2 fully written)
@@ -131,89 +131,90 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
       :: Vec NumKeyValueHeads (Signal dom Bool)
 
     -------------------------------------------------------------------------
-    -- WO projection (weights DRAM, one projector per Q-head)
+    -- Latch each head's output at the moment its done flag rises.
+    -- This ensures the vector is stable throughout the serial WO phase,
+    -- even if the KV bank output changes after the head finishes.
     -------------------------------------------------------------------------
-    woConsumeSignal = woAllValid
+    perHeadDoneRise :: Vec NumQueryHeads (Signal dom Bool)
+    perHeadDoneRise = map (\done -> done .&&. (not <$> register False done)) perHeadDoneFlags
+
+    latchedHeadOutputs :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+    latchedHeadOutputs =
+      zipWith (\doneRise out -> regEn (repeat 0) doneRise out) perHeadDoneRise perHeadOutputs
+
+    -------------------------------------------------------------------------
+    -- Serial WO head processing
+    --
+    -- Heads run one at a time in index order.
+    -- Head 0 reads residual from slot 0; heads 1..N-1 accumulate into slot 2.
+    -- Each head writes slot2[i] = rdBase[i] + projectedRow[i] to the BRAM.
+    -- writeDone fires one cycle after the last head's outputValid pulse.
+    -------------------------------------------------------------------------
+    allHeadsDoneRise = allHeadsDone .&&. (not <$> register False allHeadsDone)
+
+    -- woPhaseActive: True while any WO head is still processing.
+    woPhaseActive = register False $
+      mux allHeadsDoneRise (pure True) $
+      mux lastWOHeadDone   (pure False)
+      woPhaseActive
+
+    -- headActive: index of the currently active WO head.
+    headActive = register (0 :: Index NumQueryHeads) $
+      mux anyWOOutputValid (satSucc SatWrap <$> headActive) headActive
+
+    -- rdBase: slot 0 for head 0 (residual source), slot 2 for subsequent heads.
+    rdBase = mux (headActive .==. pure 0) (pure slot0BramBase) (pure slot2BramBase)
 
     woResults = imap (\headIdx _ ->
         WOHP.woHeadProjector cycleCounter (perWOSlaves !! headIdx) layerIdx headIdx
-          (perHeadDoneFlags  !! headIdx)
-          (pure True)
-          woConsumeSignal
-          (perHeadOutputs !! headIdx)
+          (woPhaseActive .&&. headActive .==. pure headIdx)  -- inputValid
+          (pure True)                                         -- downStreamReady
+          (perWOConsumeSignals !! headIdx)                    -- consumeSignal
+          bramRdData
+          rdBase
+          (latchedHeadOutputs !! headIdx)
       ) (repeat () :: Vec NumQueryHeads ())
         :: Vec NumQueryHeads ( Master.AxiMasterOut dom
-                             , Signal dom (Vec ModelDimension FixedPoint)
-                             , Signal dom Bool
-                             , Signal dom Bool
+                             , Signal dom ActivationBramAddr
+                             , Signal dom (Maybe (ActivationBramAddr, FixedPoint))
+                             , Signal dom Bool   -- outputValid
+                             , Signal dom Bool   -- readyForInput
                              )
 
-    woAxiMasterPer = map (\(axi, _, _, _) -> axi) woResults
-    woVecs         = map (\(_, v', _, _)  -> v')  woResults
-    woValids       = map (\(_, _, va, _)  -> va)  woResults
+    woAxiMasterPer = map (\(axi, _, _, _, _) -> axi) woResults
+    perWOOutputValids :: Vec NumQueryHeads (Signal dom Bool)
+    perWOOutputValids = map (\(_, _, _, ov, _) -> ov) woResults
+
+    -- consumeSignal for each head = its own outputValid pulse.
+    perWOConsumeSignals = perWOOutputValids
+
+    anyWOOutputValid = or <$> sequenceA perWOOutputValids
+
+    lastWOHeadDone = anyWOOutputValid .&&. headActive .==. pure maxBound
+
+    writeDone = register False lastWOHeadDone
 
     -------------------------------------------------------------------------
     -- WO sub-arbiter (weights DRAM)
     -------------------------------------------------------------------------
     (woAxiMaster, perWOSlaves) = ARB.axiArbiterWithRouting woTopSlave woAxiMasterPer
 
-    woAllValid = and <$> sequenceA woValids
+    -------------------------------------------------------------------------
+    -- BRAM interface: mux between QKV phase and WO phase.
+    -- Both phases are strictly sequential so only one drives non-zero/non-Nothing.
+    -------------------------------------------------------------------------
+    -- Combine bramRdAddr from all WO heads (at most one non-zero at a time).
+    woBramRdAddr = foldl1 (liftA2 (+)) (map (\(_, br, _, _, _) -> br) woResults)
 
-    gatedHeads = zipWith (\va vec -> mux va vec (pure (repeat 0))) woValids woVecs
-    -- woHeads :: Signal dom (Vec ModelDimension FixedPoint)
-    woHeads    = foldl1 (zipWith (+)) <$> sequenceA gatedHeads
+    -- Combine bramWrite from all WO heads (at most one non-Nothing at a time).
+    woBramWrite = foldl1 (liftA2 (<|>)) (map (\(_, _, bw, _, _) -> bw) woResults)
 
-    attentionDone =
-      let prevValid = register False woAllValid
-       in woAllValid .&&. (not <$> prevValid)
+    -- Time-multiplex read address: QKV rmsNorm uses qkvBramRdAddr; WO phase uses woBramRdAddr.
+    bramRdAddr = mux woPhaseActive woBramRdAddr qkvBramRdAddr
 
-    -- Snapshot woHeads at attentionDone so the residual FSM has a stable
-    -- value throughout its 64-cycle duration (woHeads goes invalid once
-    -- the WO projectors see their woConsumeSignal and reset their outputs).
-    woHeadsCapture = regEn (repeat 0) attentionDone woHeads
+    bramWrite = mux woPhaseActive woBramWrite (pure Nothing)
 
-    --------------------------------------------------------------------------
-    -- Sequential residual add FSM
-    --   Fires on rising edge of woAllValid (attentionDone).
-    --   Reads slot 0 element-by-element (1-cycle BRAM latency).
-    --   Writes slot2[i] = slot0[i] + woHeads[i] to BRAM.
-    --   After ModelDimension + 2 cycles, writeDone fires.
-    --------------------------------------------------------------------------
-    resActive = register False $
-      mux attentionDone (pure True) $
-      mux resLoadAtMax  (pure False)
-      resActive
-
-    resLoadCounter = register 0 $
-      mux resActive (satSucc SatWrap <$> resLoadCounter) (pure 0 :: Signal dom (Index ModelDimension))
-
-    resLoadAtMax = resActive .&&. resLoadCounter .==. pure maxBound
-
-    resDrain = register False resLoadAtMax
-
-    writeDone = register False resDrain
-
-    -- Slot 0 read address during the residual phase.
-    resRdAddr = (slot0BramBase +) . fromIntegral <$> resLoadCounter
-
-    -- Time-multiplex BRAM read port: QKV rmsNorm phase uses qkvBramRdAddr;
-    -- residual phase uses resRdAddr. Phases are strictly sequential.
-    bramRdAddr = mux resActive resRdAddr qkvBramRdAddr
-
-    readyOut = qkvReady .&&. (not <$> resActive) .&&. (not <$> resDrain)
-
-    -- Write path: one cycle behind the read (BRAM latency).
-    prevResCounter = register (0 :: Index ModelDimension) resLoadCounter
-    prevResActive  = register False resActive
-
-    inWritePhase = prevResActive .||. resDrain
-
-    woElem      = (!!) <$> woHeadsCapture <*> prevResCounter
-    slot2WrAddr = (slot2BramBase +) . fromIntegral <$> prevResCounter
-
-    bramWrite = mux inWritePhase
-      (Just <$> ((,) <$> slot2WrAddr <*> ((+) <$> bramRdData <*> woElem)))
-      (pure Nothing)
+    readyOut = qkvReady .&&. (not <$> woPhaseActive)
 
 
 singleHeadController ::

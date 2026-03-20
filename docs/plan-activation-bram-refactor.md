@@ -148,7 +148,16 @@ cycle budget in `DecoderSpec` may need to increase; this is acceptable.
       — FeedForwardNetwork residual FSM reads slot C via exposed BRAM port;
         projectorReadyIn gated by resIdle + not coreValidOutRise to prevent
         the 1-cycle gap where FPDone→FPIdle could fire before resIdle latches.
-- [x] WOHeadProjector (prototyped, reverted — Phase C bug + test cycle budget
-      need fixing before re-landing)
+- [x] WOHeadProjector per-head accumulator
+      — OutputAccumulator (Vec ModelDimension FixedPoint per head × 12 heads)
+        eliminated. Heads now run serially gated by headActive counter.
+      — Head 0 reads residual from slot 0; heads 1..N-1 accumulate into slot 2.
+        Each head writes slot2[i] = rdBase[i] + projectedRow[i] element-by-element.
+      — woHeadsCapture (Vec ModelDimension snapshot) and the separate residual FSM
+        both removed from MultiHeadAttention.
+      — Per-head attention outputs latched individually at perHeadDoneRise to
+        remain stable throughout the serial WO phase.
+      — writeDone fires one cycle after the last head's outputValid pulse.
+      — ffnOut0 reference values and all model-nano decoder tests still pass.
 - [ ] QueryHeadProjector
 - [ ] KeyValueHeadProjector
