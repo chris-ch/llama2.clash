@@ -72,23 +72,43 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
 
     --------------------------------------------------------------------------
     -- DRAM-backed FFN core: W1 (gate) -> W3 (up) -> W2 (down)
+    -- W2 results are written element-by-element to FFN BRAM slot C inside
+    -- ffnProjector.  The residual FSM below reads them back via ffnCRdAddr /
+    -- ffnBramCRdData after coreValidOut fires.
+    --
+    -- readyIn is gated (projectorReadyIn) so ffnProjector stays in FPDone
+    -- until the residual FSM has finished reading all slot-C elements.
+    -- This prevents the projector from starting the next token and overwriting
+    -- slot C before we are done reading it.
     --------------------------------------------------------------------------
-    (ffnAxiMaster, ffnCore, coreValidOut, readyOut) =
-      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn readyIn xHat
+    resIdle = register True $
+      mux coreValidOutRise (pure False) $
+      mux writeDone        (pure True)
+      resIdle
+
+    -- Guard also against the one-cycle gap on the rising edge of coreValidOut:
+    -- resIdle is a register so it still reads True at cycle A when
+    -- coreValidOutRise fires.  Without the extra guard the projector can
+    -- transition FPDone → FPIdle that same cycle, switching the FFN BRAM
+    -- read mux away from slot C before the residual FSM starts reading.
+    projectorReadyIn = readyIn .&&. resIdle .&&. (not <$> coreValidOutRise)
+
+    -- ffnCRdAddr: drives the FFN BRAM slot-C read port inside ffnProjector.
+    -- Presented one cycle ahead of when the data is needed (1-cycle BRAM latency).
+    ffnCRdAddr = mux resActive resLoadCounter (pure 0)
+
+    (ffnAxiMaster, ffnBramCRdData, coreValidOut, readyOut) =
+      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn projectorReadyIn xHat ffnCRdAddr
 
     axiMasterOut = Master.axiMasterMux rmsFfnBusy rmsFfnAxiMaster ffnAxiMaster
 
     --------------------------------------------------------------------------
     -- Sequential residual add FSM
-    --   Reads slot 2 element-by-element (1-cycle BRAM latency).
-    --   Writes slot3[i] = slot2[i] + ffnCore[i] to BRAM.
+    --   Reads slot 2 from activation BRAM and slot C from FFN BRAM in lock-step.
+    --   Writes slot3[i] = slot2[i] + w2[i] to activation BRAM.
     --   After ModelDimension + 2 cycles, writeDone fires.
     --------------------------------------------------------------------------
     coreValidOutRise = coreValidOut .&&. (not <$> register False coreValidOut)
-
-    -- Snapshot ffnCore at coreValidOutRise so the residual FSM has a stable
-    -- value for all 64 cycles (ffnCore goes invalid once the projector resets).
-    ffnCoreCapture = regEn (repeat 0) coreValidOutRise ffnCore
 
     -- resActive: True for ModelDimension cycles while issuing BRAM reads.
     resActive = register False $
@@ -121,10 +141,10 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
     -- Write condition: previous cycle was an active load OR we're in the drain cycle.
     inWritePhase = prevResActive .||. resDrain
 
-    ffnElem = (!!) <$> ffnCoreCapture <*> prevResCounter
-
     slot3WrAddr = (slot3BramBase +) . fromIntegral <$> prevResCounter
 
+    -- ffnBramCRdData delivers w2[prevResCounter] with 1-cycle FFN BRAM latency,
+    -- aligned with bramRdData = slot2[prevResCounter] from the activation BRAM.
     bramWrite = mux inWritePhase
-      (Just <$> ((,) <$> slot3WrAddr <*> ((+) <$> bramRdData <*> ffnElem)))
+      (Just <$> ((,) <$> slot3WrAddr <*> ((+) <$> bramRdData <*> ffnBramCRdData)))
       (pure Nothing)

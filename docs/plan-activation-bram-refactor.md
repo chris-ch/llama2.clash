@@ -142,7 +142,12 @@ cycle budget in `DecoderSpec` may need to increase; this is acceptable.
         DecoderSpec `maxCycles` increased from 20 000 → 60 000 to account for
         the serial FPDown latency (acceptable per plan).
       — ffnOut0 reference values match Phase 1 baseline within tolerance.
-- [ ] FFNProjector w2 accumulator (outputResult Vec ModelDimension)
+- [x] FFNProjector w2 accumulator (outputResult Vec ModelDimension)
+      — w2 results written element-by-element to FFN BRAM slot C
+        (depth extended to 2×HiddenDim + ModelDim).
+      — FeedForwardNetwork residual FSM reads slot C via exposed BRAM port;
+        projectorReadyIn gated by resIdle + not coreValidOutRise to prevent
+        the 1-cycle gap where FPDone→FPIdle could fire before resIdle latches.
 - [x] WOHeadProjector (prototyped, reverted — Phase C bug + test cycle budget
       need fixing before re-landing)
 - [ ] QueryHeadProjector

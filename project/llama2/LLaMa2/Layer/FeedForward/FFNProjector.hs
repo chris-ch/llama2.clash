@@ -19,7 +19,6 @@ import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OTC
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator           as OA
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController  as ITC
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit              as RCU
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler                as RS
@@ -37,12 +36,18 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler         
 --   • gateUpLatched = regEn ... w3OutputValid (zipWith (*) gateSiLU ...)
 --------------------------------------------------------------------------------
 
-type FFNBramDepth = 2 TN.* HiddenDimension
+-- Slot A [0 .. HiddenDim-1]              : w1 (gate) results
+-- Slot B [HiddenDim .. 2*HiddenDim-1]    : SiLU(gate)*up product
+-- Slot C [2*HiddenDim .. 2*HiddenDim+ModelDim-1] : w2 (down) results
+type FFNBramDepth = 2 TN.* HiddenDimension TN.+ ModelDimension
 type FFNBramAddr  = Index FFNBramDepth
 
 -- Slot A base address is 0 (implicit in address arithmetic below).
 ffnSlotBBase :: FFNBramAddr
 ffnSlotBBase = natToNum @HiddenDimension
+
+ffnSlotCBase :: FFNBramAddr
+ffnSlotCBase = natToNum @(2 TN.* HiddenDimension)
 
 --------------------------------------------------------------------------------
 -- FFN Phase FSM
@@ -93,15 +98,16 @@ ffnProjector :: forall dom.
   -> Slave.AxiSlaveIn dom
   -> Signal dom (Index NumLayers)
   -> Signal dom Bool                              -- ^ validIn
-  -> Signal dom Bool                              -- ^ readyIn (from downstream)
+  -> Signal dom Bool                              -- ^ readyIn (from downstream, gated by caller until residual done)
   -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ xHat (RMS-normalised input)
+  -> Signal dom (Index ModelDimension)            -- ^ ffnCRdAddr: slot C read address driven by caller during FPDone
   -> ( Master.AxiMasterOut dom
-     , Signal dom (Vec ModelDimension FixedPoint) -- ^ W2 output (before residual)
+     , Signal dom FixedPoint                      -- ^ FFN BRAM read data (slot C, for caller's residual FSM)
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
-  (axiMasterOut, outputResult, validOut, readyOut)
+ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
+  (axiMasterOut, ffnBramRdData, validOut, readyOut)
  where
   headIdx = 0 :: Index NumQueryHeads
 
@@ -148,28 +154,30 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
     ffnBramWrAddr
     ffnBramWriteOp          -- port B: write when Just
 
-  -- Write mux: w1 writes (FPGate) take priority; SiLU*up writes (FPUp
-  -- post-processing, fires 1 cycle after w3RowDone) are the other case.
-  -- The two are never simultaneous (phases are sequential and w3WriteEnabled
-  -- fires at most 1 cycle into FPDown — long before FPDown reads begin).
+  -- Write mux: phases are strictly sequential so these are never simultaneous.
+  --   w1 writes (FPGate): slot A[rowIndex] ← gate result
+  --   w3 SiLU writes (1 cycle after FPUp row done): slot B[rowIndex] ← SiLU*up
+  --   w2 writes (FPDown, each row done): slot C[rowIndex] ← w2 serial result
   ffnBramWriteOp :: Signal dom (Maybe (FFNBramAddr, FixedPoint))
   ffnBramWriteOp =
     mux (RCU.rcRowDone w1Compute) w1BramWriteOp $
     mux w3WriteEnabled w3SiluBramWriteOp $
-    pure Nothing
+    w2BramWriteOp
 
   ffnBramWrAddr :: Signal dom FFNBramAddr
   ffnBramWrAddr = maybe 0 fst <$> ffnBramWriteOp
 
   -- Read address mux:
   --   FPDown  → slot B + serial column counter (1-cycle pre-fetch)
-  --   FPUp    → slot A + w3RowIndex  (slotABase = 0, so just w3RowIndex)
-  --   Other   → slot A + w3RowIndex  (harmless)
+  --   FPDone  → slot C + ffnCRdAddr  (caller reads w2 results for residual)
+  --   Other   → slot A + w3RowIndex  (FPGate/FPUp/FPIdle, harmless default)
   ffnBramRdAddr :: Signal dom FFNBramAddr
   ffnBramRdAddr =
     mux (fpState .==. pure FPDown)
       ((ffnSlotBBase +) . fromIntegral <$> w2BramPrefetch)
-      (fromIntegral <$> w3RowIndex)
+    $ mux (fpState .==. pure FPDone)
+      ((ffnSlotCBase +) . fromIntegral <$> ffnCRdAddr)
+    $ fromIntegral <$> w3RowIndex
 
   -------------------------------------------------------------------------
   -- W1 (Gate) Phase — HiddenDimension rows × ModelDimension cols
@@ -445,17 +453,12 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat =
   w2SerialResult :: Signal dom FixedPoint
   w2SerialResult = scalePow2F <$> (rowExponent <$> w2WeightRow) <*> w2Acc
 
-  -- Accumulate per-row results into the output vector (Vec ModelDimension).
-  -- This register is the last remaining large Vec; eliminating it is
-  -- priority 2 per plan-activation-bram-refactor.md.
-  w2Accum = OA.outputAccumulator cycleCounter headIdx OA.OutputAccumIn
-    { OA.oaRowDone   = w2RowDone
-    , OA.oaRowIndex  = w2RowIndex
-    , OA.oaRowResult = w2SerialResult
-    }
-
-  outputResult :: Signal dom (Vec ModelDimension FixedPoint)
-  outputResult = regEn (repeat 0) w2OutputValid (OA.oaOutput w2Accum)
+  -- Write each completed row result to FFN BRAM slot C.
+  -- Slot C base = 2*HiddenDimension; indexed by w2RowIndex (ModelDimension rows).
+  w2BramWriteOp :: Signal dom (Maybe (FFNBramAddr, FixedPoint))
+  w2BramWriteOp = mux w2RowDone
+    (Just <$> ((,) <$> ((ffnSlotCBase +) . fromIntegral <$> w2RowIndex) <*> w2SerialResult))
+    (pure Nothing)
 
   -------------------------------------------------------------------------
   -- Top-level handshaking
