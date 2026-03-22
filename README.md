@@ -296,49 +296,46 @@ Measured on `--temperature 0 --seed 123 "Hi"` with the 260K model (dim=64, 5 lay
 
 | Stage | Cycles | Notes |
 | ----- | ------ | ----- |
-| QKV projection | ~792–801 | slightly longer for layer 0 (embedding fetch on first token) |
-| Multi-head attention + WO | ~1569–1591 | grows by ~11 cycles per token as KV sequence lengthens |
-| FFN (RMS norm + W1/W3/W2) | ~4900 | constant — no sequence-length dependence |
-| **Per-layer total** | **~7261–7280** | |
-| Output projection + sampling | ~5777 | constant |
-| **Per-token total** | **~42,095–42,203** | grows slowly with sequence position |
+| **Per-layer total** | **~21,304–21,408** | layer 0 of each token is ~73 cycles longer (embedding fetch); grows by ~11 cycles per attended position |
+| Output projection + sampling | ~5,776 | constant |
+| **Per-token total** | **~112,370–337,273+** | grows with sequence length |
 
 ### Per-token cycle events (prompt `[1, 320, 417]` → `" H"`, `"i"`, `"b"`)
 
-**Token 0 (BOS, seq pos 0)**
+**Token 0 (BOS `"\n<s>\n"`, seq pos 0)**
 
-| Layer | Start | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
-| ----- | ----- | ------- | -------- | ------- | ------------ |
-| 0     | 0     | 801     | 2370     | 7270    | 0.3445       |
-| 1     | 7271  | 8063    | 9632     | 14532   | 0.7467       |
-| 2     | 14533 | 15325   | 16894    | 21794   | 0.6990       |
-| 3     | 21795 | 22587   | 24156    | 29056   | 0.6362       |
-| 4     | 29057 | 29849   | 31418    | 36318   | 0.9740       |
+| Layer | Start  | LayerDone | ffnOutput[0] |
+| ----- | ------ | --------- | ------------ |
+| 0     | 0      | 21,377    | 0.3445       |
+| 1     | 21,378 | 42,681    | 0.7467       |
+| 2     | 42,682 | 63,985    | 0.6990       |
+| 3     | 63,986 | 85,289    | 0.6362       |
+| 4     | 85,290 | 106,593   | 0.9740       |
 
-Ready pulse at cycle 42095. Output token: `" H"`.
+Ready pulse at cycle 112,370. Output token: `" H"`.
 
-**Token 1 (" H", seq pos 1)**
+**Token 1 (`" H"`, seq pos 1)**
 
-| Layer | Start | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
-| ----- | ----- | ------- | -------- | ------- | ------------ |
-| 0     | 42096 | 42895   | 44475    | 49375   | −0.1266      |
-| 1     | 49376 | 50168   | 51748    | 56648   | −0.1755      |
-| 2     | 56649 | 57441   | 59021    | 63921   | 0.1231       |
-| 3     | 63922 | 64714   | 66294    | 71194   | 0.7042       |
-| 4     | 71195 | 71987   | 73567    | 78467   | 1.7086       |
+| Layer | Start   | LayerDone | ffnOutput[0] |
+| ----- | ------- | --------- | ------------ |
+| 0     | 112,371 | 133,757   | −0.1266      |
+| 1     | 133,758 | 155,072   | −0.1755      |
+| 2     | 155,073 | 176,387   | 0.1231       |
+| 3     | 176,388 | 197,702   | 0.7042       |
+| 4     | 197,703 | 219,017   | 1.7086       |
 
-Ready pulse at cycle 84244. Output token: `"i"`.
+Ready pulse at cycle 224,794. Output token: `"i"`.
 
-**Token 2 ("i", seq pos 2)**
+**Token 2 (`"i"`, seq pos 2)**
 
-| Layer | Start  | QKVDone | AttnDone | FFNDone | ffnOutput[0] |
-| ----- | ------ | ------- | -------- | ------- | ------------ |
-| 0     | 84245  | 85044   | 86635    | 91535   | 0.4646       |
-| 1     | 91536  | 92328   | 93919    | 98819   | 0.8395       |
-| 2     | 98820  | 99612   | 101203   | 106103  | 1.1952       |
-| 3     | 106104 | 106896  | 108487   | 113387  | 1.2483       |
-| 4     | 113388 | 114180  | 115771   | 120671  | 1.3673       |
+| Layer | Start   | LayerDone | ffnOutput[0] |
+| ----- | ------- | --------- | ------------ |
+| 0     | 224,795 | 246,192   | 0.4646       |
+| 1     | 246,193 | 267,518   | 0.8395       |
+| 2     | 267,519 | 288,844   | 1.1952       |
+| 3     | 288,845 | 310,170   | 1.2483       |
+| 4     | 310,171 | 331,496   | 1.3673       |
 
-Ready pulse at cycle 126448. Output token: `"b"`.
+Ready pulse at cycle 337,273. Output token: `"b"`.
 
 Generated tokens: `" H"`, `"i"`, `"b"` … (matching the gold-standard `" Hibo and Anna…"` output).
