@@ -109,7 +109,6 @@ library
       LLaMa2.Layer.Attention.KVCache
       LLaMa2.Layer.Attention.KVCacheBankController
       LLaMa2.Layer.Attention.KeyValueHeadProjector
-      LLaMa2.Layer.Attention.KeyValueHeadProjector.OutputAccumulator
       LLaMa2.Layer.Attention.KeyValueHeadProjector.InputTransactionController
       LLaMa2.Layer.Attention.KeyValueHeadProjector.RowComputeUnit
       LLaMa2.Layer.Attention.KeyValueHeadProjector.RowScheduler
@@ -123,7 +122,6 @@ library
       LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler
       LLaMa2.Layer.Attention.QueryHeadProjector.WeightFetchUnit
       LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit
-      LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator
       LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController
       LLaMa2.Layer.Attention.RotaryEncoding
       LLaMa2.Layer.Attention.WeightLoader

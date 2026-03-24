@@ -27,3 +27,4 @@ runq
 core
 .history
 .claude/settings.local.json
+.Xil
