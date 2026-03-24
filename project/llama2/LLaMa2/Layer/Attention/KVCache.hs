@@ -3,7 +3,7 @@ module LLaMa2.Layer.Attention.KVCache (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
+import LLaMa2.Types.ModelConfig (NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers, QHeadsPerKVBank)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 import LLaMa2.Layer.Attention.KVCacheBankController (kvCacheBankController)
@@ -24,7 +24,7 @@ kvBankControllerDRAM ::
   Signal dom (Index SequenceLength)     ->
   Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ keyVec for this bank
   Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ valVec for this bank
-  Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint)) ->  -- ^ queries
+  Vec QHeadsPerKVBank (Signal dom FixedPoint)           ->  -- ^ Q BRAM read data (1-cycle latency)
   Signal dom Bool                       ->  -- ^ qkvValid
   Signal dom Bool                       ->  -- ^ enableWriteKV
   Signal dom Bool                       ->  -- ^ enableAttend
@@ -33,17 +33,18 @@ kvBankControllerDRAM ::
   , Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
   , Vec NumQueryHeads (Signal dom Bool)
   , Signal dom Bool                          -- ^ this bank's write done
+  , Vec QHeadsPerKVBank (Signal dom (Index HeadDimension))  -- ^ Q BRAM read addresses
   )
 kvBankControllerDRAM cycleCounter dramSlaveIn layerIdx seqPos
-                     keyVec valVec queries
+                     keyVec valVec qBramRdDatas
                      qkvValid enableWriteKV enableAttend kvIx =
-  (axiMaster, headOutputs, headDones, wrDone)
+  (axiMaster, headOutputs, headDones, wrDone, qBramRdAddrs)
   where
-    (axiMaster, bankOutputs, bankDones, wrDone) =
+    (axiMaster, bankOutputs, bankDones, wrDone, qBramRdAddrs) =
       kvCacheBankController
         cycleCounter dramSlaveIn layerIdx kvIx
         seqPos qkvValid enableWriteKV enableAttend
-        keyVec valVec queries
+        keyVec valVec qBramRdDatas
 
     -- headOutputs / headDones: bankOutputs already has zeros at non-bank indices
     headOutputs = bankOutputs

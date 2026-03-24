@@ -5,7 +5,7 @@ module LLaMa2.Layer.Attention.MultiHeadAttention (
 import Clash.Prelude
 import qualified GHC.TypeNats as TN
 import LLaMa2.Types.LayerData (ActivationBramAddr)
-import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers)
+import LLaMa2.Types.ModelConfig (ModelDimension, NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers, QHeadsPerKVBank)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Layer.Attention.QKVProjection (qkvProjectionController)
 import LLaMa2.Layer.Attention.KVCache (kvBankControllerDRAM)
@@ -84,16 +84,46 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
     -------------------------------------------------------------------------
     -- QKV projection (weights DRAM, reads from BRAM slot 0)
     -------------------------------------------------------------------------
-    (qkvAxiMaster, qkvProjected, qkvDone, qkvReady, qkvBramRdAddr) =
+    (qkvAxiMaster, kvProjected, qBramWrites, _cosVec, _sinVec, qkvDone, qkvReady, qkvBramRdAddr) =
       qkvProjectionController
         cycleCounter qkvSlave layerIdx validIn writeReadyIn bramRdData seqPos
 
-    (q, k, v) = unbundle qkvProjected
+    (k, v) = unbundle kvProjected
 
-    -- Distribute into per-head signals for KV banks and WO projectors.
-    qPerHead = unbundle q  -- Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+    -- Distribute KV into per-head signals for KV banks.
     kPerHead = unbundle k  -- Vec NumKeyValueHeads (Signal dom (Vec HeadDimension FixedPoint))
     vPerHead = unbundle v  -- Vec NumKeyValueHeads (Signal dom (Vec HeadDimension FixedPoint))
+
+    -------------------------------------------------------------------------
+    -- Per-Q-head BRAMs (one per Q head, depth = HeadDimension)
+    -- Written by QKV projection (qBramWrites), read by KV banks (qBramRdAddrs).
+    -- blockRam's 1-cycle registered output breaks the circular dependency.
+    -------------------------------------------------------------------------
+    qhpk :: Int
+    qhpk = natToNum @NumQueryHeads `div` natToNum @NumKeyValueHeads
+
+    qBramRdDatas :: Vec NumQueryHeads (Signal dom FixedPoint)
+    qBramRdDatas = imap (\qIdx _ ->
+        blockRam (repeat 0 :: Vec HeadDimension FixedPoint)
+                 (qBramRdAddrs !! qIdx)
+                 (qBramWrites  !! qIdx)
+      ) (repeat ())
+
+    -- Flatten per-bank read addresses into a Vec NumQueryHeads.
+    -- Bank kvIx owns Q heads [kvIx*qhpk .. kvIx*qhpk + qhpk - 1].
+    qBramRdAddrs :: Vec NumQueryHeads (Signal dom (Index HeadDimension))
+    qBramRdAddrs = imap (\qIdx _ ->
+        let bank   = fromEnum qIdx `div` qhpk
+            localJ = fromEnum qIdx `mod` qhpk
+        in  (allBankQRdAddrs !! (toEnum bank   :: Index NumKeyValueHeads))
+                              !! (toEnum localJ :: Index QHeadsPerKVBank)
+      ) (repeat ())
+
+    -- Per-bank Q BRAM read data slices (Vec QHeadsPerKVBank per bank).
+    bankQBramData :: Index NumKeyValueHeads -> Vec QHeadsPerKVBank (Signal dom FixedPoint)
+    bankQBramData kvIx = imap (\j _ ->
+        qBramRdDatas !! (toEnum (fromEnum kvIx * qhpk + fromEnum j) :: Index NumQueryHeads)
+      ) (repeat ())
 
     -------------------------------------------------------------------------
     -- KV cache banks (one per KV head, each with its own DRAM slave)
@@ -105,19 +135,21 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
           layerIdx seqPos
           (kPerHead !! kvIx)
           (vPerHead !! kvIx)
-          qPerHead
+          (bankQBramData kvIx)
           qkvDoneLatchedForWrite
           writeEnableForBanks
           attendActive
           kvIx
       ) (repeat () :: Vec NumKeyValueHeads ())
 
-    kvAxiMasters = map (\(a,_,_,_) -> a) kvBankResultsVec
+    kvAxiMasters = map (\(a,_,_,_,_) -> a) kvBankResultsVec
                 :: Vec NumKeyValueHeads (Master.AxiMasterOut dom)
 
-    allHeadOuts  = map (\(_,o,_,_) -> o) kvBankResultsVec
-    allHeadDones = map (\(_,_,d,_) -> d) kvBankResultsVec
-    allWriteDone = map (\(_,_,_,w) -> w) kvBankResultsVec
+    allHeadOuts       = map (\(_,o,_,_,_) -> o) kvBankResultsVec
+    allHeadDones      = map (\(_,_,d,_,_) -> d) kvBankResultsVec
+    allWriteDone      = map (\(_,_,_,w,_) -> w) kvBankResultsVec
+    allBankQRdAddrs   = map (\(_,_,_,_,a) -> a) kvBankResultsVec
+                     :: Vec NumKeyValueHeads (Vec QHeadsPerKVBank (Signal dom (Index HeadDimension)))
 
     perHeadOutputs =
       fold (zipWith (liftA2 (zipWith (+)))) allHeadOuts

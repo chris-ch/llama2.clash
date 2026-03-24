@@ -10,7 +10,9 @@ module LLaMa2.Types.ModelConfig (
     VocabularySize,
     SequenceLength,
     BankDepth,
-    BankAddress
+    BankAddress,
+    QHeadsPerKVBank,
+    QBramPerBankDepth
 ) where
 
 import Clash.Prelude
@@ -134,3 +136,7 @@ type SequenceLength = 512
 
 type BankDepth   = SequenceLength TN.* HeadDimension
 type BankAddress = Index BankDepth
+
+-- Q-BRAM geometry per KV bank
+type QHeadsPerKVBank   = NumQueryHeads `TN.Div` NumKeyValueHeads
+type QBramPerBankDepth = QHeadsPerKVBank TN.* HeadDimension

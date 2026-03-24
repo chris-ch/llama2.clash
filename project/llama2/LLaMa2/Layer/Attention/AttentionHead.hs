@@ -13,19 +13,15 @@ data SoftState = SoftStateF
   , numerF :: Vec HeadDimension FixedPoint
   } deriving (Generic, NFDataX, Show, Eq)
 
-dotProduct :: Vec HeadDimension FixedPoint -> Vec HeadDimension FixedPoint -> FixedPoint
-dotProduct a b = sum (zipWith (*) a b)
-
 attentionHead :: HiddenClockResetEnable dom
   => Signal dom Bool
   -> Signal dom Bool
-  -> Signal dom (Vec HeadDimension FixedPoint)
-  -> Signal dom (Vec HeadDimension FixedPoint)
+  -> Signal dom FixedPoint
   -> Signal dom (Vec HeadDimension FixedPoint)
   -> Signal dom Bool
   -> ( Signal dom (Vec HeadDimension FixedPoint)
      , Signal dom Bool )
-attentionHead clear stepEn qSig kSig vSig lastT =
+attentionHead clear stepEn dotProdRaw vSig lastT =
   (softResult <$> st, stepEn .&&. lastT)
  where
   -- 1/sqrt(HeadDimension) via synthesizable invSqrtF — no Double needed.
@@ -34,7 +30,7 @@ attentionHead clear stepEn qSig kSig vSig lastT =
 
   stepInput =
     mux stepEn
-      (Just <$> bundle ( (* scale) <$> (dotProduct <$> qSig <*> kSig), vSig))
+      (Just <$> bundle ( (* scale) <$> dotProdRaw, vSig))
       (pure Nothing)
 
   st = mealy

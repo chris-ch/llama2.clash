@@ -89,7 +89,7 @@ spec = do
           -- No external slot 0 init (all-zero DRAM, zero embedding)
           initWrPort = pure Nothing
 
-          (_masterOut, _kvMasters, layerDoneSig, readyOutSig, _ffnStream) =
+          (_masterOut, _kvMasters, layerDoneSig, readyOutSig, _bramRdData, _ffnOut0) =
             exposeClockResetEnable
               (transformerLayer
                 (pure 0)
@@ -98,7 +98,8 @@ spec = do
                 0  -- layer 0
                 seqPos
                 initWrPort
-                validIn)
+                validIn
+                (pure 0))  -- extBramRdAddr: unused in test
               CS.systemClockGen CS.resetGen CS.enableGen
 
           masterOut = _masterOut
