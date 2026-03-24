@@ -84,15 +84,9 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
     -------------------------------------------------------------------------
     -- QKV projection (weights DRAM, reads from BRAM slot 0)
     -------------------------------------------------------------------------
-    (qkvAxiMaster, kvProjected, qBramWrites, _cosVec, _sinVec, qkvDone, qkvReady, qkvBramRdAddr) =
+    (qkvAxiMaster, kPerHead, vPerHead, qBramWrites, _cosVec, _sinVec, qkvDone, qkvReady, qkvBramRdAddr) =
       qkvProjectionController
         cycleCounter qkvSlave layerIdx validIn writeReadyIn bramRdData seqPos
-
-    (k, v) = unbundle kvProjected
-
-    -- Distribute KV into per-head signals for KV banks.
-    kPerHead = unbundle k  -- Vec NumKeyValueHeads (Signal dom (Vec HeadDimension FixedPoint))
-    vPerHead = unbundle v  -- Vec NumKeyValueHeads (Signal dom (Vec HeadDimension FixedPoint))
 
     -------------------------------------------------------------------------
     -- Per-Q-head BRAMs (one per Q head, depth = HeadDimension)
@@ -172,7 +166,7 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
 
     latchedHeadOutputs :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
     latchedHeadOutputs =
-      zipWith (\doneRise out -> regEn (repeat 0) doneRise out) perHeadDoneRise perHeadOutputs
+      zipWith (regEn (repeat 0)) perHeadDoneRise perHeadOutputs
 
     -------------------------------------------------------------------------
     -- Serial WO head processing

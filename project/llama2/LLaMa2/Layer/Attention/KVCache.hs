@@ -22,8 +22,8 @@ kvBankControllerDRAM ::
   Slave.AxiSlaveIn dom                  ->  -- ^ dedicated per-bank KV DRAM slave
   Signal dom (Index NumLayers)          ->
   Signal dom (Index SequenceLength)     ->
-  Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ keyVec for this bank
-  Signal dom (Vec HeadDimension FixedPoint)             ->  -- ^ valVec for this bank
+  Signal dom (Maybe (Index HeadDimension, FixedPoint))  ->  -- ^ K element writes (streaming)
+  Signal dom (Maybe (Index HeadDimension, FixedPoint))  ->  -- ^ V element writes (streaming)
   Vec QHeadsPerKVBank (Signal dom FixedPoint)           ->  -- ^ Q BRAM read data (1-cycle latency)
   Signal dom Bool                       ->  -- ^ qkvValid
   Signal dom Bool                       ->  -- ^ enableWriteKV

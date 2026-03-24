@@ -9,13 +9,14 @@ module LLaMa2.Layer.Attention.KVCacheBankController
   ) where
 
 import Clash.Prelude
+import Data.Maybe (isJust)
 import qualified GHC.TypeNats as TN
 
 import LLaMa2.Types.ModelConfig
 import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Slave as Slave
-import LLaMa2.Memory.WeightsLayout (WordsPerFPVec, fixedPointVecParser, fixedPointVecPackerVec, axiNWordFetcher)
+import LLaMa2.Memory.WeightsLayout (WordsPerFPVec, fixedPointVecParser, axiNWordFetcher)
 import LLaMa2.Memory.AxiWriteMaster (axiWriteMaster)
 import LLaMa2.Memory.KVCacheLayout (kvCacheKAddress, kvCacheVAddress)
 import LLaMa2.Layer.Attention.AttentionHead (attentionHead)
@@ -54,8 +55,8 @@ kvCacheBankController :: forall dom.
   -> Signal dom Bool                                                  -- ^ qkvValid
   -> Signal dom Bool                                                  -- ^ enableWriteKV
   -> Signal dom Bool                                                  -- ^ enableAttend
-  -> Signal dom (Vec HeadDimension FixedPoint)                        -- ^ K vector to write
-  -> Signal dom (Vec HeadDimension FixedPoint)                        -- ^ V vector to write
+  -> Signal dom (Maybe (Index HeadDimension, FixedPoint))             -- ^ K element writes (with rotary, streaming)
+  -> Signal dom (Maybe (Index HeadDimension, FixedPoint))             -- ^ V element writes (raw, streaming)
   -> Vec QHeadsPerKVBank (Signal dom FixedPoint)                      -- ^ Q BRAM read data (1-cycle latency)
   -> ( Master.AxiMasterOut dom
      , Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
@@ -64,7 +65,7 @@ kvCacheBankController :: forall dom.
      , Vec QHeadsPerKVBank (Signal dom (Index HeadDimension))         -- ^ Q BRAM read addresses
      )
 kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
-                       qkvValid enableWriteKV enableAttend keyVec valVec
+                       qkvValid enableWriteKV enableAttend kElemWrite vElemWrite
                        qBramRdDatas =
   (axiMaster, headOutputs, headDones, writeDone, qBramRdAddrs)
   where
@@ -111,12 +112,86 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     burstLen :: Unsigned 8
     burstLen = fromIntegral (natToNum @(WordsPerFPVec HeadDimension) - 1 :: Int)
 
-    -- Latch K and V packed data at write start
-    latchedKWords :: Signal dom (Vec (WordsPerFPVec HeadDimension) (BitVector 512))
-    latchedKWords = regEn (repeat 0) startWrite (fixedPointVecPackerVec <$> keyVec)
+    -- -----------------------------------------------------------------------
+    -- Streaming K/V element → BRAM word packing
+    --
+    -- Elements arrive one at a time from KeyValueHeadProjector as
+    -- Maybe (Index HeadDimension, FixedPoint).  We pack them into 512-bit
+    -- AXI words using the same little-endian layout as fixedPointVecPackerVec:
+    --   element i → word (i/16), bytes [(i%16)*4 .. (i%16)*4+3].
+    -- A completed word is written to the K (or V) BRAM so that the write
+    -- master can stream beats directly from BRAM.
+    -- -----------------------------------------------------------------------
+    kElemValid :: Signal dom Bool
+    kElemValid = isJust <$> kElemWrite
 
-    latchedVWords :: Signal dom (Vec (WordsPerFPVec HeadDimension) (BitVector 512))
-    latchedVWords = regEn (repeat 0) startWrite (fixedPointVecPackerVec <$> valVec)
+    kElemIdx :: Signal dom (Index HeadDimension)
+    kElemIdx = (\w -> case w of { Just (i,_) -> i; Nothing -> 0 }) <$> kElemWrite
+
+    kElemVal :: Signal dom FixedPoint
+    kElemVal = (\w -> case w of { Just (_,v) -> v; Nothing -> 0 }) <$> kElemWrite
+
+    vElemValid :: Signal dom Bool
+    vElemValid = isJust <$> vElemWrite
+
+    vElemIdx :: Signal dom (Index HeadDimension)
+    vElemIdx = (\w -> case w of { Just (i,_) -> i; Nothing -> 0 }) <$> vElemWrite
+
+    vElemVal :: Signal dom FixedPoint
+    vElemVal = (\w -> case w of { Just (_,v) -> v; Nothing -> 0 }) <$> vElemWrite
+
+    -- Word-complete when the element is the last in a 512-bit word (position 15)
+    -- OR is the last element overall (maxBound of HeadDimension).
+    wordComplete :: Signal dom (Index HeadDimension) -> Signal dom Bool -> Signal dom Bool
+    wordComplete idx valid = valid .&&.
+      ((\i -> fromEnum i `mod` 16 == 15 || i == maxBound) <$> idx)
+
+    wordBramIdx :: Signal dom (Index HeadDimension)
+               -> Signal dom (Index (WordsPerFPVec HeadDimension))
+    wordBramIdx idx = toEnum . (`div` 16) . fromEnum <$> idx
+
+    -- Insert one FixedPoint into a 512-bit word buffer at the correct byte
+    -- position, matching the little-endian layout of fixedPointVecPackerVec.
+    insertFP :: Index HeadDimension -> FixedPoint -> BitVector 512 -> BitVector 512
+    insertFP idx fp word =
+      let bits :: BitVector 32
+          bits      = pack fp
+          bytePos   = (fromEnum idx `mod` 16) * 4
+          bytes     = unpack word :: Vec 64 (BitVector 8)
+          b0        = resize bits              :: BitVector 8
+          b1        = resize (bits `shiftR`  8) :: BitVector 8
+          b2        = resize (bits `shiftR` 16) :: BitVector 8
+          b3        = resize (bits `shiftR` 24) :: BitVector 8
+          bytes'    = replace (fromIntegral bytePos       :: Index 64) b0
+                    $ replace (fromIntegral (bytePos + 1) :: Index 64) b1
+                    $ replace (fromIntegral (bytePos + 2) :: Index 64) b2
+                    $ replace (fromIntegral (bytePos + 3) :: Index 64) b3
+                    bytes
+      in pack bytes'
+
+    -- K word buffer: accumulates elements until a full 512-bit word is ready.
+    kWordBufNext :: Signal dom (BitVector 512)
+    kWordBufNext = mux kElemValid (insertFP <$> kElemIdx <*> kElemVal <*> kWordBuf) kWordBuf
+
+    kWordBuf :: Signal dom (BitVector 512)
+    kWordBuf = register 0 $ mux (wordComplete kElemIdx kElemValid) (pure 0) kWordBufNext
+
+    kWordBramWr :: Signal dom (Maybe (Index (WordsPerFPVec HeadDimension), BitVector 512))
+    kWordBramWr = mux (wordComplete kElemIdx kElemValid)
+      (curry Just <$> wordBramIdx kElemIdx <*> kWordBufNext)
+      (pure Nothing)
+
+    -- V word buffer
+    vWordBufNext :: Signal dom (BitVector 512)
+    vWordBufNext = mux vElemValid (insertFP <$> vElemIdx <*> vElemVal <*> vWordBuf) vWordBuf
+
+    vWordBuf :: Signal dom (BitVector 512)
+    vWordBuf = register 0 $ mux (wordComplete vElemIdx vElemValid) (pure 0) vWordBufNext
+
+    vWordBramWr :: Signal dom (Maybe (Index (WordsPerFPVec HeadDimension), BitVector 512))
+    vWordBramWr = mux (wordComplete vElemIdx vElemValid)
+      (curry Just <$> wordBramIdx vElemIdx <*> vWordBufNext)
+      (pure Nothing)
 
     -- Write beat counter (for multi-beat bursts)
     writeBeat :: Signal dom (Index (WordsPerFPVec HeadDimension))
@@ -144,10 +219,18 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
       ((`kvCacheKAddress` kvHeadIdx) <$> layerIdx <*> latchedSeqPos)
       ((`kvCacheVAddress` kvHeadIdx) <$> layerIdx <*> latchedSeqPos)
 
+    -- K and V AXI-word BRAMs (depth = WordsPerFPVec HeadDimension).
+    -- Read address = nextWriteBeat (1 cycle ahead) so data is ready when needed.
+    kWordBramOut :: Signal dom (BitVector 512)
+    kWordBramOut = blockRam (repeat 0 :: Vec (WordsPerFPVec HeadDimension) (BitVector 512))
+                             nextWriteBeat kWordBramWr
+
+    vWordBramOut :: Signal dom (BitVector 512)
+    vWordBramOut = blockRam (repeat 0 :: Vec (WordsPerFPVec HeadDimension) (BitVector 512))
+                             nextWriteBeat vWordBramWr
+
     writeDataBeat :: Signal dom (BitVector 512)
-    writeDataBeat = mux isWritingK
-      ((!!) <$> latchedKWords <*> writeBeat)
-      ((!!) <$> latchedVWords <*> writeBeat)
+    writeDataBeat = mux isWritingK kWordBramOut vWordBramOut
 
     (writeMaster, writeDoneRaw, writeDataReady) =
       axiWriteMaster dramSlaveIn writeAddr (pure burstLen) startBurst writeDataBeat (pure True)
@@ -283,13 +366,13 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     dotAcc0 :: Signal dom FixedPoint
     dotAcc0 = register 0 $
       mux enterQDot0 (pure 0) $
-      mux (inQDot0 .&&. isOddDataCycle) (liftA2 (+) dotAcc0 contribution) $
+      mux (inQDot0 .&&. isOddDataCycle) (liftA2 (+) dotAcc0 contribution)
       dotAcc0
 
     dotAcc1 :: Signal dom FixedPoint
     dotAcc1 = register 0 $
       mux enterQDot1 (pure 0) $
-      mux (inQDot1 .&&. isOddDataCycle) (liftA2 (+) dotAcc1 contribution) $
+      mux (inQDot1 .&&. isOddDataCycle) (liftA2 (+) dotAcc1 contribution)
       dotAcc1
 
     -- -----------------------------------------------------------------------

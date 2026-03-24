@@ -14,7 +14,7 @@ import LLaMa2.Types.ModelConfig
       SequenceLength )
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
-import LLaMa2.Types.LayerData (ActivationBramAddr, ActivationBramDepth)
+import LLaMa2.Types.LayerData (ActivationBramAddr)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
@@ -110,17 +110,17 @@ qkvProjector :: forall dom.
   -> Signal dom (Index SequenceLength)
   -> Signal dom FixedPoint             -- ^ bramRdData: BRAM output (slot 0, 1-cycle latency from bramRdAddr)
   -> ( Master.AxiMasterOut dom
-     , Signal dom ( Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ Q BRAM writes
-     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)            -- ^ cosVec
-     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)            -- ^ sinVec
+     , Vec NumKeyValueHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ K writes (with rotary)
+     , Vec NumKeyValueHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ V writes
+     , Vec NumQueryHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))     -- ^ Q BRAM writes
+     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)               -- ^ cosVec
+     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)               -- ^ sinVec
      , Signal dom Bool
      , Signal dom Bool
      , Signal dom ActivationBramAddr   -- ^ bramRdAddr: drive this to BRAM read port (slot 0)
      )
 qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos bramRdData =
-  (axiMasterOut, kvOut, qBramWrites, cosVec, sinVec, outputValid, readyForInput, bramRdAddr)
+  (axiMasterOut, kWrites, vWrites, qBramWrites, cosVec, sinVec, outputValid, readyForInput, bramRdAddr)
  where
   ----------------------------------------------------------------------------
   -- DRAM-backed rmsAttF fetch (once per inputValid; gates QKV start)
@@ -162,7 +162,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   (rmsNormValid, xNorm, _, rdNext) = rmsNormSeq rmsAttDone bramRdData rmsAttVec
 
   bramRdAddr :: Signal dom ActivationBramAddr
-  bramRdAddr = (slot0BramBase +) <$> (fromIntegral <$> rdNext)
+  bramRdAddr = (slot0BramBase +) . fromIntegral <$> rdNext
 
   -- Hold latch until all three (rmsAtt + cos + sin) have been fetched AND
   -- rmsNorm has completed for THIS token.
@@ -230,34 +230,33 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   ----------------------------------------------------------------------------
   -- KV DRAM path: independent K and V compute paths per head, both via AXI
   ----------------------------------------------------------------------------
-  kvResults :: Vec NumKeyValueHeads ( Master.AxiMasterOut dom  -- K AXI master
-                                    , Master.AxiMasterOut dom  -- V AXI master
-                                    , Signal dom (Vec HeadDimension FixedPoint)  -- K (with rotary)
-                                    , Signal dom (Vec HeadDimension FixedPoint)  -- V
+  kvResults :: Vec NumKeyValueHeads ( Master.AxiMasterOut dom
+                                    , Master.AxiMasterOut dom
+                                    , Signal dom (Maybe (Index HeadDimension, FixedPoint))  -- K writes
+                                    , Signal dom (Maybe (Index HeadDimension, FixedPoint))  -- V writes
                                     , Signal dom Bool  -- outputValid
                                     , Signal dom Bool  -- readyForInput
                                     )
   kvResults = imap (\kvIdx _ ->
       KVHP.keyValueHeadProjector cycleCounter
-        (perKSlaves !! kvIdx)   -- K DRAM slave
-        (perVSlaves !! kvIdx)   -- V DRAM slave
+        (perKSlaves !! kvIdx)
+        (perVSlaves !! kvIdx)
         layerIdx kvIdx
         effectiveInputValid
-        (pure True)             -- downStreamReady for FSM (always ready for next row)
-        consumeSignal           -- consumeSignal for coordinated latch clearing
+        (pure True)
+        consumeSignal
         cosVec sinVec xNorm
     ) (repeat () :: Vec NumKeyValueHeads ())
 
   kAxiMasters = map (\(k, _, _, _, _, _) -> k) kvResults
   vAxiMasters = map (\(_, v, _, _, _, _) -> v) kvResults
-  kVecs       = map (\(_, _, k, _, _, _) -> k) kvResults
-  vVecs       = map (\(_, _, _, v, _, _) -> v) kvResults
+  kWrites     = map (\(_, _, k, _, _, _) -> k) kvResults
+  vWrites     = map (\(_, _, _, v, _, _) -> v) kvResults
   kvValids    = map (\(_, _, _, _, va, _) -> va) kvResults
   kvReadys    = map (\(_, _, _, _, _, r)  -> r)  kvResults
 
   outputValid   = (and <$> sequenceA qValids) .&&. (and <$> sequenceA kvValids)
   readyForInput = (and <$> sequenceA qReadys) .&&. (and <$> sequenceA kvReadys)
-  kvOut         = bundle (sequenceA kVecs, sequenceA vVecs)
 
 --------------------------------------------------------------------------------
 -- QKV Projection Controller
@@ -272,22 +271,22 @@ qkvProjectionController ::
   -> Signal dom FixedPoint             -- ^ bramRdData (BRAM slot 0, 1-cycle latency)
   -> Signal dom (Index SequenceLength)
   -> ( Master.AxiMasterOut dom
-     , Signal dom ( Vec NumKeyValueHeads (Vec HeadDimension FixedPoint)
-                  , Vec NumKeyValueHeads (Vec HeadDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ Q BRAM writes
-     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)            -- ^ cosVec
-     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)            -- ^ sinVec
+     , Vec NumKeyValueHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ K writes
+     , Vec NumKeyValueHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))  -- ^ V writes
+     , Vec NumQueryHeads (Signal dom (Maybe (Index HeadDimension, FixedPoint)))     -- ^ Q BRAM writes
+     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)               -- ^ cosVec
+     , Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)               -- ^ sinVec
      , Signal dom Bool
      , Signal dom Bool
      , Signal dom ActivationBramAddr   -- ^ bramRdAddr (drive to BRAM read port)
      )
 qkvProjectionController cycleCounter dramSlaveIn layerIdx inputValid downStreamReady bramRdData seqPos =
-  (axiMasterOut, kvResult, qBramWrites, cosVec, sinVec, outputValid, readyForInput, bramRdAddr)
+  (axiMasterOut, kWrites, vWrites, qBramWrites, cosVec, sinVec, outputValid, readyForInput, bramRdAddr)
  where
   (enable, outputValid, inReadyRaw) =
     FSM.processingControllerFSM inputValid downStreamReady matVecValid
 
-  (axiMasterOut, kvResult, qBramWrites, cosVec, sinVec, matVecValid, projReadyOut, bramRdAddr) =
+  (axiMasterOut, kWrites, vWrites, qBramWrites, cosVec, sinVec, matVecValid, projReadyOut, bramRdAddr) =
     qkvProjector cycleCounter dramSlaveIn layerIdx enable downStreamReady
                  seqPos bramRdData
 

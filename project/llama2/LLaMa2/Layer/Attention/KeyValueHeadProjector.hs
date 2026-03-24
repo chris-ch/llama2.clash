@@ -8,13 +8,11 @@ import LLaMa2.Types.ModelConfig
     ( HeadDimension, ModelDimension, NumLayers, NumQueryHeads
     , NumKeyValueHeads, RotaryPositionalEmbeddingDimension )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Layer.Attention.RotaryEncoding (rotaryPositionEncoder)
 
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OutputTransactionController
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputAccumulator as OutputAccumulator
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler as RowScheduler
@@ -32,16 +30,16 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
   -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
-  -> ( Master.AxiMasterOut dom                     -- K AXI master
-     , Master.AxiMasterOut dom                     -- V AXI master
-     , Signal dom (Vec HeadDimension FixedPoint)   -- K output (with rotary)
-     , Signal dom (Vec HeadDimension FixedPoint)   -- V output
-     , Signal dom Bool                             -- outputValid
-     , Signal dom Bool                             -- readyForInput
+  -> ( Master.AxiMasterOut dom                                      -- K AXI master
+     , Master.AxiMasterOut dom                                      -- V AXI master
+     , Signal dom (Maybe (Index HeadDimension, FixedPoint))         -- K writes (with rotary)
+     , Signal dom (Maybe (Index HeadDimension, FixedPoint))         -- V writes (raw)
+     , Signal dom Bool                                              -- outputValid
+     , Signal dom Bool                                              -- readyForInput
      )
 keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
   inputValid downStreamReady consumeSignal cosVec sinVec xHat =
-  (kAxiMaster, vAxiMaster, kRoOut, vOut, outputValid, readyForInput)
+  (kAxiMaster, vAxiMaster, kWrite, vWrite, outputValid, readyForInput)
  where
   qTag :: Index NumQueryHeads
   qTag = fromIntegral kvHeadIdx
@@ -123,17 +121,54 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   kReadyForInput = RowComputeUnit.rcIdleReady kCompute .&&. kWeightReady
 
-  kRowDone = RowComputeUnit.rcRowDone kCompute
+  kRowDone   = RowComputeUnit.rcRowDone kCompute
+  kRowResult = RowComputeUnit.rcResult kCompute
 
-  kOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
-    OutputAccumulator.OutputAccumIn
-      { oaRowDone   = RowComputeUnit.rcRowDone kCompute
-      , oaRowIndex  = kRowIndex
-      , oaRowResult = RowComputeUnit.rcResult kCompute
-      }
+  -- -----------------------------------------------------------------------
+  -- K: pair-wise rotary encoding → streaming BRAM writes
+  -- Mirrors queryHeadCore in QueryHeadProjector.hs.
+  -- Row 2i (even): latch result; Row 2i+1 (odd): compute rotary pair and emit.
+  -- -----------------------------------------------------------------------
+  kIsOddRow :: Signal dom Bool
+  kIsOddRow = odd . fromEnum <$> kRowIndex
 
-  kOutputValid = OutputTransactionController.otcOutputValid kOutputTxn
-  kRoOut = rotaryPositionEncoder <$> OutputAccumulator.oaOutput kOutputAccum <*> cosVec <*> sinVec
+  kEvenLatched :: Signal dom FixedPoint
+  kEvenLatched = regEn 0 (kRowDone .&&. (not <$> kIsOddRow)) kRowResult
+
+  kPairIdx :: Signal dom (Index RotaryPositionalEmbeddingDimension)
+  kPairIdx = (\r -> toEnum (fromEnum r `div` 2)) <$> kRowIndex
+
+  kCosVal :: Signal dom FixedPoint
+  kCosVal = (!!) <$> cosVec <*> kPairIdx
+
+  kSinVal :: Signal dom FixedPoint
+  kSinVal = (!!) <$> sinVec <*> kPairIdx
+
+  -- k'[2i]   = k[2i]*cos - k[2i+1]*sin
+  kEvenRotated :: Signal dom FixedPoint
+  kEvenRotated = liftA2 (-) (liftA2 (*) kEvenLatched kCosVal)
+                             (liftA2 (*) kRowResult   kSinVal)
+
+  -- k'[2i+1] = k[2i]*sin + k[2i+1]*cos
+  kOddRotated :: Signal dom FixedPoint
+  kOddRotated  = liftA2 (+) (liftA2 (*) kEvenLatched kSinVal)
+                             (liftA2 (*) kRowResult   kCosVal)
+
+  -- On odd rowDone: write k'[2i] immediately (even address = kRowIndex - 1)
+  kWriteImm :: Signal dom (Maybe (Index HeadDimension, FixedPoint))
+  kWriteImm = mux (kRowDone .&&. kIsOddRow)
+    ((curry Just . subtract 1 <$> kRowIndex) <*> kEvenRotated)
+    (pure Nothing)
+
+  -- One cycle later: write k'[2i+1] (odd address = kRowIndex)
+  kWritePending :: Signal dom (Maybe (Index HeadDimension, FixedPoint))
+  kWritePending = register Nothing $
+    mux (kRowDone .&&. kIsOddRow)
+      (curry Just <$> kRowIndex <*> kOddRotated)
+      (pure Nothing)
+
+  kWrite :: Signal dom (Maybe (Index HeadDimension, FixedPoint))
+  kWrite = mux (kRowDone .&&. kIsOddRow) kWriteImm kWritePending
 
   -------------------------------------------------------------------------
   -- V PATH
@@ -211,18 +246,16 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
 
   vRowDone = RowComputeUnit.rcRowDone vCompute
 
-  vOutputAccum = OutputAccumulator.outputAccumulator cycleCounter qTag
-    OutputAccumulator.OutputAccumIn
-      { oaRowDone   = RowComputeUnit.rcRowDone vCompute
-      , oaRowIndex  = vRowIndex
-      , oaRowResult = RowComputeUnit.rcResult vCompute
-      }
-
-  vOutputValid = OutputTransactionController.otcOutputValid vOutputTxn
-  vOut         = OutputAccumulator.oaOutput vOutputAccum
+  -- V: no rotary encoding — stream each row result directly as it completes.
+  vWrite :: Signal dom (Maybe (Index HeadDimension, FixedPoint))
+  vWrite = mux vRowDone
+    (curry Just <$> vRowIndex <*> RowComputeUnit.rcResult vCompute)
+    (pure Nothing)
 
   -------------------------------------------------------------------------
   -- COMBINED OUTPUTS
   -------------------------------------------------------------------------
+  kOutputValid  = OutputTransactionController.otcOutputValid kOutputTxn
+  vOutputValid  = OutputTransactionController.otcOutputValid vOutputTxn
   outputValid   = kOutputValid .&&. vOutputValid
   readyForInput = kReadyForInput .&&. vReadyForInput

@@ -81,56 +81,49 @@ oaDone      :: Signal dom Bool                            -- all rows written
 Downstream reads back via the shared BRAM read port, one element per cycle,
 instead of indexing a Vec.
 
-## Prioritisation
+## Prioritisation (completed)
 
-1. **`FFNProjector` w1 / w3 accumulators + `gateRaw` / `gateUpLatched`**
-   Largest registers; primary cause of Vivado failure for 110m and 7b.
-   Proof-of-concept already exists from the WO head projector prototype (see
-   git history for the reverted Task 1 attempt — the streaming approach itself
-   was correct; it was reverted only because of simulation speed and a Phase C
-   residual-write bug).
+All originally-identified Vec register sites have been eliminated.  The order
+of implementation was:
 
-2. **`WOHeadProjector` per-head accumulator**
-   Already prototyped.  The serial-heads approach (one head at a time using the
-   shared activation BRAM) correctly eliminates the `Vec ModelDimension`
-   accumulator.  The simulation slowdown (8× due to serialising NumQueryHeads)
-   is acceptable for synthesis; tests just need a larger `maxCycles` budget.
-   The Phase C bug (spurious extra write) must be fixed:
-   ```haskell
-   -- WRONG (causes extra write on pipeline drain):
-   inResWritePhase = (prevResActive .||. resDrain) .&&. prevResPhase .==. pure 1
-   -- CORRECT:
-   inResWritePhase = resActive .&&. prevResPhase .==. pure 1
-   ```
+1. **`FFNProjector` w1 / w3 accumulators + `gateRaw` / `gateUpLatched`** ✓
+2. **`FFNProjector` w2 accumulator** ✓
+3. **`WOHeadProjector` per-head accumulator** ✓  (serial-heads, activation BRAM)
+4. **`KVCacheBankController` QDot timing bug** ✓  (bug fix, not a Vec refactor)
+5. **`QueryHeadProjector`** ✓  (pair-wise RoPE inline, BRAM write output)
+6. **`KeyValueHeadProjector`** ✓  (K: inline RoPE; V: direct; KVBC word BRAMs)
 
-3. **`QueryHeadProjector` / `KeyValueHeadProjector`**
-   Smaller registers; lower urgency.  Tackle after FFN and WO are done.
+## FFN refactor (implemented)
 
-## FFN refactor sketch
-
-The three FFN phases become BRAM-mediated:
+The three FFN phases are BRAM-mediated as planned:
 
 ```
-FPGate:  RowComputeUnit writes w1 results → BRAM slot A[0..HiddenDim-1]
-FPUp:    RowComputeUnit writes w3 results → BRAM slot B[0..HiddenDim-1]
-         (simultaneously reads slot A to apply SiLU element-by-element
-          and writes SiLU(A)⊙B → BRAM slot C[0..HiddenDim-1])
-FPDown:  RowComputeUnit reads slot C as column input, writes w2 results
-         → BRAM slot D[0..ModelDim-1]
+FPGate:  RowComputeUnit writes w1 results → FFN BRAM slot A[0..HiddenDim-1]
+FPUp:    RowComputeUnit writes w3 results → FFN BRAM slot B[0..HiddenDim-1]
+         post-FPUp pass: SiLU(A)⊙B → FFN BRAM slot C[0..HiddenDim-1]
+FPDown:  RowComputeUnit reads slot C as column, writes w2 results
+         → FFN BRAM slot C offset [2×HiddenDim .. 2×HiddenDim+ModelDim-1]
 ```
-
-The element-wise `SiLU(gate) * up` product can be computed during a short
-post-FPUp pass that reads slots A and B and writes slot C — or folded into the
-FPDown column fetch if timing permits.
 
 No `Vec HiddenDimension` register appears anywhere in this design.
 
-## Simulation impact
+`DecoderSpec` `maxCycles` was increased from 20 000 → 60 000 to account for
+the serial FPDown column read latency.
 
-The BRAM-backed approach serialises work that was previously done in a single
-`replace` operation.  For large models the DRAM fetch is already the bottleneck
-so the extra BRAM read cycles are hidden.  For the 260k simulation model the
-cycle budget in `DecoderSpec` may need to increase; this is acceptable.
+## Simulation impact (resolved)
+
+All 113 tests pass with the full BRAM-backed design.  The cycle budget increase
+in `DecoderSpec` was the only simulation accommodation needed.
+
+## Remaining cleanup
+
+- `KeyValueHeadProjector/OutputAccumulator.hs` — dead code, can be deleted.
+- `QueryHeadProjector/OutputAccumulator.hs` — dead code, can be deleted.
+
+## Next steps
+
+- Run Vivado elaboration against the 110m or 7b model config to confirm the
+  flip-flop count is within bounds and synthesis succeeds.
 
 ## Status
 
@@ -159,5 +152,33 @@ cycle budget in `DecoderSpec` may need to increase; this is acceptable.
         remain stable throughout the serial WO phase.
       — writeDone fires one cycle after the last head's outputValid pulse.
       — ffnOut0 reference values and all model-nano decoder tests still pass.
-- [ ] QueryHeadProjector
-- [ ] KeyValueHeadProjector
+- [x] KVCacheBankController QDot counter timing bug
+      — `qDotDone` fired spuriously on the first cycle of every QDot phase
+        because `qDotCounter` still held `maxBound` from the previous phase
+        (the reset to 0 takes effect the *next* cycle).  This caused QDot1 to
+        accumulate zero contributions (dotAcc1=0) and QDot0 row 2+ to also
+        fire immediately, producing wrong attention scores for seqPos≥1.
+      — Fix: guard `qDotDone` with `.&&. (not <$> (enterQDot0 .||. enterQDot1))`.
+      — Verified: model-nano multi-token test (seqPos=1) and model-260k
+        ffnOut0 reference test both pass after the fix.
+- [x] QueryHeadProjector
+      — OutputAccumulator (Vec HeadDimension FixedPoint per head) eliminated.
+        QueryHeadProjector.hs now writes directly to a per-head Q BRAM via
+        pair-wise RoPE encoding on-the-fly (`Maybe (Index HeadDimension, FixedPoint)`).
+      — QueryHeadProjector/OutputAccumulator.hs still exists but is no longer
+        imported or used; can be deleted.
+- [x] KeyValueHeadProjector
+      — `Vec HeadDimension FixedPoint` OutputAccumulators (K and V) eliminated.
+      — K path: pair-wise RoPE applied inline as rows complete (same pattern as
+        QueryHeadProjector); emits `Maybe (Index HeadDimension, FixedPoint)`.
+      — V path: each row result emitted directly as `Maybe (Index HeadDimension, FixedPoint)`.
+      — KVCacheBankController: `latchedKWords`/`latchedVWords` (Vec FFs) replaced
+        by K and V AXI-word BRAMs (depth = WordsPerFPVec HeadDimension).
+        Elements are packed into 512-bit words on arrival via `insertFP` helper
+        (matching fixedPointVecPackerVec's little-endian layout); completed words
+        are written to BRAM.  Write master reads from BRAM using `nextWriteBeat`
+        as the read address (1-cycle ahead) so data is available when each beat fires.
+      — QKVProjection and MultiHeadAttention wiring updated accordingly.
+      — Dead code: KeyValueHeadProjector/OutputAccumulator.hs and
+        QueryHeadProjector/OutputAccumulator.hs are no longer imported by anyone.
+      — All 113 tests pass after the refactor.
