@@ -130,10 +130,13 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   inputValidRise :: Signal dom Bool
   inputValidRise = inputValid .&&. (not <$> register False inputValid)
 
-  (rmsAttAxiMaster, rmsAttVec, rmsAttValid, rmsAttBusy) =
-    FPVec.fpVecLoader cycleCounter dramSlaveIn
+  -- BRAM-backed weight loader: eliminates Vec output register.
+  -- rdNext (from rmsNormSeq) pre-fetches the next weight element.
+  (rmsAttAxiMaster, wRdData, rmsAttValid, rmsAttBusy) =
+    FPVec.fpVecLoaderBram cycleCounter dramSlaveIn
       inputValidRise
       (Layout.rmsAttAddress <$> layerIdx)
+      rdNext
 
   ----------------------------------------------------------------------------
   -- Serial cos/sin fetch: triggered once rmsAtt completes
@@ -154,12 +157,10 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
       cosDone
       (Layout.rotarySinAddress <$> seqPos)
 
-  -- Sequential rmsNorm: starts when rmsAtt weights arrive (rmsAttDone already
-  -- exists above as the cos-fetch trigger).  Runs in parallel with cos/sin
-  -- fetches; effectiveInputValid waits for whichever finishes last.
-  -- bramRdData provides xi element-by-element; rdNext drives the BRAM read address
-  -- one cycle ahead so data[counter] arrives in time (1-cycle BRAM latency).
-  (rmsNormValid, xNorm, _, rdNext) = rmsNormSeq rmsAttDone bramRdData rmsAttVec
+  -- Sequential rmsNorm: xi from activation BRAM (bramRdData), wi from weight BRAM (wRdData).
+  -- rdNext pre-fetches both BRAMs one cycle ahead.
+  -- xNormWrite is broadcast to all Q and KV heads' internal xNorm BRAMs.
+  (rmsNormValid, xNormWrite, _, rdNext) = rmsNormSeq rmsAttDone bramRdData wRdData
 
   bramRdAddr :: Signal dom ActivationBramAddr
   bramRdAddr = (slot0BramBase +) . fromIntegral <$> rdNext
@@ -219,7 +220,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                         effectiveInputValid
                         (pure True)      -- downStreamReady for FSM (always ready for next row)
                         consumeSignal    -- consumeSignal for latch clearing
-                        cosVec sinVec xNorm
+                        cosVec sinVec xNormWrite
     ) (repeat () :: Vec NumQueryHeads ())
 
   qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
@@ -245,7 +246,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
         effectiveInputValid
         (pure True)
         consumeSignal
-        cosVec sinVec xNorm
+        cosVec sinVec xNormWrite
     ) (repeat () :: Vec NumKeyValueHeads ())
 
   kAxiMasters = map (\(k, _, _, _, _, _) -> k) kvResults

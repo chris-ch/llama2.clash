@@ -97,16 +97,16 @@ ffnProjector :: forall dom.
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
   -> Signal dom (Index NumLayers)
-  -> Signal dom Bool                              -- ^ validIn
-  -> Signal dom Bool                              -- ^ readyIn (from downstream, gated by caller until residual done)
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ xHat (RMS-normalised input)
-  -> Signal dom (Index ModelDimension)            -- ^ ffnCRdAddr: slot C read address driven by caller during FPDone
+  -> Signal dom Bool                                          -- ^ validIn
+  -> Signal dom Bool                                          -- ^ readyIn (from downstream, gated by caller until residual done)
+  -> Signal dom (Maybe (Index ModelDimension, FixedPoint))    -- ^ xHatWrite: rmsNorm BRAM writes (element-by-element)
+  -> Signal dom (Index ModelDimension)                        -- ^ ffnCRdAddr: slot C read address driven by caller during FPDone
   -> ( Master.AxiMasterOut dom
      , Signal dom FixedPoint                      -- ^ FFN BRAM read data (slot C, for caller's residual FSM)
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
+ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHatWrite ffnCRdAddr =
   (axiMasterOut, ffnBramRdData, validOut, readyOut)
  where
   headIdx = 0 :: Index NumQueryHeads
@@ -139,8 +139,18 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
 
   acceptInput = fpState .==. pure FPIdle .&&. validIn .&&. w1WeightReady
 
-  xHatLatched :: Signal dom (Vec ModelDimension FixedPoint)
-  xHatLatched = regEn (repeat 0) acceptInput xHat
+  -------------------------------------------------------------------------
+  -- xHat BRAM: written element-by-element by rmsNorm (before acceptInput).
+  -- Read port time-multiplexed: w1 during FPGate, w3 during FPUp.
+  -------------------------------------------------------------------------
+  xHatRdAddr :: Signal dom (Index ModelDimension)
+  xHatRdAddr = mux (fpState .==. pure FPGate)
+    (RCU.rcColumnAddr w1Compute)
+    (RCU.rcColumnAddr w3Compute)
+
+  xHatRdData :: Signal dom FixedPoint
+  xHatRdData = blockRam (repeat 0 :: Vec ModelDimension FixedPoint)
+                 xHatRdAddr xHatWrite
 
   -------------------------------------------------------------------------
   -- FFN intermediate BRAM
@@ -234,7 +244,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w1RowIndex
     , RCU.rcWeightDram      = LOADER.dramRowOut w1Lo
-    , RCU.rcColumn          = xHatLatched
+    , RCU.rcColumnRdData    = xHatRdData
     }
 
   -- Element-by-element write to slot A: fires once per row on rcRowDone.
@@ -299,7 +309,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     , RCU.rcDownStreamReady = pure True
     , RCU.rcRowIndex        = w3RowIndex
     , RCU.rcWeightDram      = LOADER.dramRowOut w3Lo
-    , RCU.rcColumn          = xHatLatched
+    , RCU.rcColumnRdData    = xHatRdData
     }
 
   -- Latch w3 row result and index for 1-cycle BRAM read latency.

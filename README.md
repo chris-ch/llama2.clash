@@ -207,6 +207,15 @@ row-wise burst throughput) and 96 UltraRAM blocks, which are well-suited for KV 
 storage. The ZU5EG (`xczu5eg-sfvc784-2-e`) is the closest K26/KV260 proxy but offers
 fewer resources and a lower speed grade — it is outclassed by the ZU7EV for this workload.
 
+### Vivado command
+
+*Not to be run within the dev container!*
+
+```shell
+vivado -mode batch -source tools/elab.tcl -tclargs \
+    "temp/clash-verilog-model-110m/full/LLaMa2.Embedding.InputEmbedding.inputEmbeddingTop" \
+    "temp/vivado-elab-110m"`
+```
 
 ## Migrating to LLaMa 3
 

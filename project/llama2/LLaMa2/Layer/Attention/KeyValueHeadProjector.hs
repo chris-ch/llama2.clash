@@ -12,6 +12,7 @@ import LLaMa2.Numeric.Types (FixedPoint)
 import qualified LLaMa2.Memory.AXI.Slave as Slave
 import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
+import LLaMa2.Memory.DualPortRAM (trueDualPortRam)
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OutputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController as InputTransactionController
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit as RowComputeUnit
@@ -27,18 +28,18 @@ keyValueHeadProjector :: forall dom.
   -> Signal dom Bool                               -- inputValid
   -> Signal dom Bool                               -- downStreamReady
   -> Signal dom Bool                               -- consumeSignal (coordinated)
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
-  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
-  -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
-  -> ( Master.AxiMasterOut dom                                      -- K AXI master
-     , Master.AxiMasterOut dom                                      -- V AXI master
-     , Signal dom (Maybe (Index HeadDimension, FixedPoint))         -- K writes (with rotary)
-     , Signal dom (Maybe (Index HeadDimension, FixedPoint))         -- V writes (raw)
-     , Signal dom Bool                                              -- outputValid
-     , Signal dom Bool                                              -- readyForInput
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)  -- cosVec
+  -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)  -- sinVec
+  -> Signal dom (Maybe (Index ModelDimension, FixedPoint))           -- xNormWrite
+  -> ( Master.AxiMasterOut dom                                       -- K AXI master
+     , Master.AxiMasterOut dom                                       -- V AXI master
+     , Signal dom (Maybe (Index HeadDimension, FixedPoint))          -- K writes (with rotary)
+     , Signal dom (Maybe (Index HeadDimension, FixedPoint))          -- V writes (raw)
+     , Signal dom Bool                                               -- outputValid
+     , Signal dom Bool                                               -- readyForInput
      )
 keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
-  inputValid downStreamReady consumeSignal cosVec sinVec xHat =
+  inputValid downStreamReady consumeSignal cosVec sinVec xNormWrite =
   (kAxiMaster, vAxiMaster, kWrite, vWrite, outputValid, readyForInput)
  where
   qTag :: Index NumQueryHeads
@@ -109,6 +110,17 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
     .&&. (not <$> OutputTransactionController.otcOutputValid kOutputTxn)
     .&&. (not <$> justConsumed)
 
+  -- xNorm BRAM: trueDualPortRam so K and V can read independently.
+  -- Port A: write from xNormWrite (rmsNorm phase), then read for K (compute phase).
+  -- Port B: read for V (compute phase, no writes).
+  -- Phases are strictly sequential (xNorm written before effectiveInputValid fires),
+  -- so there is no simultaneous read/write conflict.
+  (kNormRdData, vNormRdData) = trueDualPortRam
+    (RowComputeUnit.rcColumnAddr kCompute)  -- port A read addr (for K)
+    xNormWrite                              -- port A write (from rmsNorm)
+    (RowComputeUnit.rcColumnAddr vCompute)  -- port B read addr (for V)
+    (pure Nothing)                          -- port B never writes
+
   kCompute = RowComputeUnit.rowComputeUnit cycleCounter
     RowComputeUnit.RowComputeIn
       { rcInputValid      = kEffectiveInputValid
@@ -116,7 +128,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = kRowIndex
       , rcWeightDram      = kCurrentRowDram
-      , rcColumn          = xHat
+      , rcColumnRdData    = kNormRdData
       }
 
   kReadyForInput = RowComputeUnit.rcIdleReady kCompute .&&. kWeightReady
@@ -239,7 +251,7 @@ keyValueHeadProjector cycleCounter kDramSlaveIn vDramSlaveIn layerIdx kvHeadIdx
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = vRowIndex
       , rcWeightDram      = vCurrentRowDram
-      , rcColumn          = xHat
+      , rcColumnRdData    = vNormRdData
       }
 
   vReadyForInput = RowComputeUnit.rcIdleReady vCompute .&&. vWeightReady

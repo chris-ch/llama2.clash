@@ -81,28 +81,76 @@ read_verilog $vfiles
 report_compile_order -file [file join $OUT_DIR compile_order_pre_elab.rpt]
 
 # ===================================================================
-# Determine top module automatically from Clash naming convention
+# Determine top module from clash-manifest.json (authoritative)
 # ===================================================================
 
-# Clash always generates a top module whose name ends with "Top" 
-# and is usually the longest filename (or contains the full hierarchy)
-set top_candidates [lsort -command {apply { {a b} { expr {[string length $b] - [string length $a]} } }} \
-                         [glob -nocomplain -tails -directory $RTL_DIR *.v]]
+# Clash writes clash-manifest.json in every output directory.
+# The top_component.name field is the exact Verilog module name for the top.
 
 set TOP ""
-foreach candidate $top_candidates {
-    if {[string match "*Top*" $candidate] || [string match "*topEntity*" $candidate]} {
-        set TOP [file rootname $candidate]
-        break
+set manifest_file [file join $RTL_DIR clash-manifest.json]
+
+if {[file exists $manifest_file]} {
+    set fh [open $manifest_file r]
+    set manifest [read $fh]
+    close $fh
+    # Find the "top_component" key, then search for "name" within that substring.
+    # Split into two steps to avoid \{ / \} inside {} which confuses Tcl's brace counter.
+    set tc_idx [string first {"top_component"} $manifest]
+    if {$tc_idx >= 0} {
+        set tc_substr [string range $manifest $tc_idx end]
+        if {[regexp {"name"\s*:\s*"([^"]+)"} $tc_substr -> TOP]} {
+            puts "INFO: Top module from clash-manifest.json = $TOP"
+        } else {
+            puts "WARNING: Could not parse name from top_component in clash-manifest.json"
+        }
+    } else {
+        puts "WARNING: top_component key not found in clash-manifest.json"
     }
+} else {
+    puts "WARNING: clash-manifest.json not found in $RTL_DIR"
+}
+
+# Fallback: the module that is never instantiated by any other module
+if {$TOP eq ""} {
+    set all_modules {}
+    foreach f $vfiles {
+        set fh [open $f r]
+        set content [read $fh]
+        close $fh
+        if {[regexp {module\s+(\w+)} $content -> modname]} {
+            lappend all_modules $modname
+        }
+    }
+    set instantiated {}
+    foreach f $vfiles {
+        set fh [open $f r]
+        set content [read $fh]
+        close $fh
+        foreach {_ inst_type} [regexp -all -inline {\m(\w+)\s+(?:#\s*\([^)]*\)\s*)?\w+\s*\(} $content] {
+            lappend instantiated $inst_type
+        }
+    }
+    foreach m $all_modules {
+        if {[lsearch -exact $instantiated $m] < 0} {
+            set TOP $m
+            break
+        }
+    }
+    if {$TOP ne ""} { puts "INFO: Top module from instantiation analysis = $TOP" }
+}
+
+# Last resort: shortest .v filename (Clash tops are always short/clean names)
+if {$TOP eq ""} {
+    set TOP [file rootname [lindex [lsort -command {apply { {a b} { expr {[string length $a] - [string length $b]} } }} \
+                                        [glob -nocomplain -tails -directory $RTL_DIR *.v]] 0]]
+    puts "INFO: Top module from shortest filename fallback = $TOP"
 }
 
 if {$TOP eq ""} {
-    # Fallback: take the longest filename (Clash top is almost always the biggest)
-    set TOP [file rootname [lindex $top_candidates 0]]
+    puts "ERROR: Could not determine top module"
+    exit 1
 }
-
-puts "INFO: Auto-detected top module = $TOP"
 
 # ===================================================================
 # Elaborate with explicit top
@@ -135,4 +183,3 @@ puts "Functional netlist : $OUT_DIR/post_elab_netlist.v"
 puts "Synth stub         : $OUT_DIR/post_elab_stub.v"
 puts "Hierarchy report   : $OUT_DIR/hierarchy.rpt"
 puts "All files written to: $OUT_DIR"
-

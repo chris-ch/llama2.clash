@@ -46,15 +46,19 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
     --------------------------------------------------------------------------
     validInRise = validIn .&&. (not <$> register False validIn)
 
-    (rmsFfnAxiMaster, rmsFfnVec, rmsFfnValid, rmsFfnBusy) =
-      FPVec.fpVecLoader cycleCounter dramSlaveIn
+    -- BRAM-backed weight loader: eliminates Vec output register.
+    -- rdNext (from rmsNormSeq below) pre-fetches the next weight element.
+    (rmsFfnAxiMaster, wRdData, rmsFfnValid, rmsFfnBusy) =
+      FPVec.fpVecLoaderBram cycleCounter dramSlaveIn
         validInRise
         (Layout.rmsFfnAddress <$> layerIdx)
+        rdNext
 
-    -- Sequential rmsNorm: bramRdData supplies xi element-by-element.
-    -- rdNext drives the BRAM read address one cycle ahead (1-cycle BRAM latency).
+    -- Sequential rmsNorm: xi from activation BRAM (bramRdData), wi from weight BRAM (wRdData).
+    -- rdNext pre-fetches both BRAMs one cycle ahead.
+    -- xHatWrite is passed element-by-element to ffnProjector's internal xHat BRAM.
     rmsFfnDone = rmsFfnValid .&&. (not <$> register False rmsFfnValid)
-    (rmsNormValid, xHat, _, rdNext) = rmsNormSeq rmsFfnDone bramRdData rmsFfnVec
+    (rmsNormValid, xHatWrite, _, rdNext) = rmsNormSeq rmsFfnDone bramRdData wRdData
 
     effectiveValidIn = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
 
@@ -98,7 +102,7 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
     ffnCRdAddr = mux resActive resLoadCounter (pure 0)
 
     (ffnAxiMaster, ffnBramCRdData, coreValidOut, readyOut) =
-      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn projectorReadyIn xHat ffnCRdAddr
+      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn projectorReadyIn xHatWrite ffnCRdAddr
 
     axiMasterOut = Master.axiMasterMux rmsFfnBusy rmsFfnAxiMaster ffnAxiMaster
 

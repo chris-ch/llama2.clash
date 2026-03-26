@@ -254,11 +254,11 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     vFetchAddr = (`kvCacheVAddress` kvHeadIdx) <$> layerIdx <*> rowCounter
 
 
-    (kReadMaster, kWordsOut, kDataValid, kFetchReady, _kDbg) =
+    (kReadMaster, kWordsOut, kDataValid, kFetchReady, _kDbg, _, _, _) =
       axiNWordFetcher @dom @(WordsPerFPVec HeadDimension)
         dramSlaveIn fetchKReq kFetchAddr
 
-    (vReadMaster, vWordsOut, vDataValid, vFetchReady, _vDbg) =
+    (vReadMaster, vWordsOut, vDataValid, vFetchReady, _vDbg, _, _, _) =
       axiNWordFetcher @dom @(WordsPerFPVec HeadDimension)
         dramSlaveIn fetchVReq vFetchAddr
 

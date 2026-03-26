@@ -106,6 +106,13 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
     .&&. (not <$> outputDone)
     .&&. (not <$> justConsumed)
 
+  -- Simulate 1-cycle BRAM read latency by registering the pre-fetch address.
+  -- rcColumnAddr = satSucc(colCounter) is issued 1 cycle ahead; registering it
+  -- gives colCounter at the cycle the element is consumed.
+  -- HeadDimension = 64 elements: combinational mux is small (no BRAM needed).
+  headVecRdData :: Signal dom FixedPoint
+  headVecRdData = (!!) <$> headVec <*> register 0 (RowComputeUnit.rcColumnAddr compute)
+
   compute = RowComputeUnit.rowComputeUnit cycleCounter
     RowComputeUnit.RowComputeIn
       { rcInputValid      = effectiveInputValid
@@ -113,7 +120,7 @@ woHeadProjector cycleCounter dramSlaveIn layerIdx headIdx
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = rowIndex
       , rcWeightDram      = currentRowDram
-      , rcColumn          = headVec
+      , rcColumnRdData    = headVecRdData
       }
 
   readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady

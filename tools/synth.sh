@@ -139,3 +139,62 @@ find "$OUT" -name "*.v" | sort
 echo ""
 echo "=== Clash log summary ==="
 grep -rE "took:|error:|warning:|Compiling|Killed" "$OUT"/*.log "$OUT"/**/*.log 2>/dev/null | tail -30
+
+# ---------------------------------------------------------------------------
+# Post-synthesis design complexity report
+#
+# Vivado RTL elaboration can crash (OOM / silent kill) when individual wires
+# exceed ~50 K bits, because it builds per-bit internal data structures.
+# This report surfaces the widest wires per module so you can spot the
+# bottleneck before running Vivado.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Design complexity report ==="
+echo "    (Widest declared wires per .v file — crash risk grows above ~50 K bits)"
+echo ""
+printf "  %-10s  %-10s  %-8s  %s\n" "MaxBits" "Lines" "Size" "File"
+printf "  %-10s  %-10s  %-8s  %s\n" "-------" "-----" "----" "----"
+
+while IFS= read -r vfile; do
+    max_bits=$(grep -oP '(?<=\[)[0-9]+(?=:0\])' "$vfile" 2>/dev/null \
+               | awk 'BEGIN{m=0} {if($1>m)m=$1} END{print m+0}')
+    lines=$(wc -l < "$vfile")
+    size=$(du -sh "$vfile" | cut -f1)
+    rel="${vfile#$OUT/}"
+    # Highlight files where the widest wire exceeds 50 K bits
+    if [ "$max_bits" -gt 50000 ] 2>/dev/null; then
+        flag="  <-- WARNING: wide bus"
+    else
+        flag=""
+    fi
+    printf "  %-10s  %-10s  %-8s  %s%s\n" "$max_bits" "$lines" "$size" "$rel" "$flag"
+done < <(find "$OUT" -name "*.v" | sort)
+
+echo ""
+echo "=== System memory ==="
+free -h | head -2
+
+echo ""
+echo "--- Vivado elab memory estimate ---"
+# Heuristic: Vivado needs roughly 30–100 bytes per bit for the widest wire
+# in its internal representation.  The estimate below uses the 100-byte
+# worst-case factor so you know the safe lower bound on available RAM.
+all_max=$(find "$OUT" -name "*.v" -exec grep -oP '(?<=\[)[0-9]+(?=:0\])' {} \; 2>/dev/null \
+          | awk 'BEGIN{m=0} {if($1>m)m=$1} END{print m+0}')
+if [ "${all_max:-0}" -gt 0 ]; then
+    # Heuristic: Vivado's elaboration is dominated by expression-tree nodes,
+    # not raw storage.  Empirically, wires wider than ~50 K bits cause
+    # multi-GB memory spikes; at 300 K bits expect 50–200 GB peak usage.
+    echo "    Widest wire across design : ${all_max} bits"
+    avail_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    avail_gb=$(awk "BEGIN{printf \"%.1f\", $avail_kb / (1024*1024)}")
+    echo "    Available RAM now         : ${avail_gb} GB"
+    if [ "$all_max" -gt 50000 ]; then
+        echo ""
+        echo "    ACTION: wire(s) wider than 50 K bits detected — Vivado elab of the"
+        echo "    full topEntity is likely to OOM (empirically: >50 K bits -> multi-GB"
+        echo "    spikes; >300 K bits -> 50-200 GB peak).  Consider running elab on the"
+        echo "    sub-entities (InputEmbedding, rowComputeUnit, etc.) individually"
+        echo "    to isolate which module carries the oversized bus."
+    fi
+fi

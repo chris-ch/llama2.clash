@@ -65,9 +65,9 @@ queryHeadCore :: forall dom.
   -> Signal dom Bool                              -- consumeSignal
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)  -- cosVec
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint)  -- sinVec
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- xHat
+  -> Signal dom (Maybe (Index ModelDimension, FixedPoint))           -- xNormWrite
   -> QueryHeadCoreOut dom
-queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat =
+queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xNormWrite =
   QueryHeadCoreOut
     { qhcAxiMaster   = WeightFetchUnit.wfAxiMaster weightFetch
     , qhcBramWrite   = qBramWrite
@@ -130,6 +130,13 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
                           (not <$> OutputTransactionController.otcOutputValid outputTxn) .&&.
                           (not <$> justConsumed)
 
+    -- xNorm BRAM: written by rmsNorm before computation starts, read serially
+    -- by the RowComputeUnit one element per cycle (1-cycle BRAM latency).
+    xNormRdData :: Signal dom FixedPoint
+    xNormRdData = blockRam (repeat 0 :: Vec ModelDimension FixedPoint)
+                    (RowComputeUnit.rcColumnAddr compute)
+                    xNormWrite
+
     compute = RowComputeUnit.rowComputeUnit cycleCounter
             RowComputeUnit.RowComputeIn
               { rcInputValid      = effectiveInputValid
@@ -137,7 +144,7 @@ queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamRea
               , rcDownStreamReady = downStreamReady
               , rcRowIndex        = rowIndex
               , rcWeightDram      = currentRowDram
-              , rcColumn          = xHat
+              , rcColumnRdData    = xNormRdData
               }
 
     readyForInput = RowComputeUnit.rcIdleReady compute .&&. weightReady
@@ -229,14 +236,14 @@ queryHeadProjector :: forall dom.
   -> Signal dom Bool                                                -- consumeSignal
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- cosVec
   -> Signal dom (Vec RotaryPositionalEmbeddingDimension FixedPoint) -- sinVec
-  -> Signal dom (Vec ModelDimension FixedPoint)                     -- xHat
+  -> Signal dom (Maybe (Index ModelDimension, FixedPoint))          -- xNormWrite
   -> ( Master.AxiMasterOut dom
      , Signal dom (Maybe (Index HeadDimension, FixedPoint))         -- Q BRAM write
      , Signal dom Bool                                              -- outputValid
      , Signal dom Bool                                              -- readyForInput
      , QHeadDebugInfo dom
      )
-queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat =
+queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xNormWrite =
   ( qhcAxiMaster core
   , qhcBramWrite core
   , qhcOutputValid core
@@ -244,4 +251,4 @@ queryHeadProjector cycleCounter dramSlaveIn layerIdx headIdx inputValid downStre
   , qhcDebug core
   )
   where
-    core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xHat
+    core = queryHeadCore cycleCounter dramSlaveIn layerIdx headIdx inputValid downStreamReady consumeSignal cosVec sinVec xNormWrite

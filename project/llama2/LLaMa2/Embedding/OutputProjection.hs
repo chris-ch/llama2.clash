@@ -44,21 +44,29 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   inputValidRise :: Signal dom Bool
   inputValidRise = inputValid .&&. (not <$> register False inputValid)
 
-  (rmsFinalAxiMaster, rmsFinalVec, rmsFinalValid, rmsFinalBusy) =
-    FPVec.fpVecLoader cycleCounter dramSlaveIn
+  -- BRAM-backed weight loader: eliminates Vec output register.
+  -- rdNext (from rmsNormSeq) pre-fetches the next weight element.
+  (rmsFinalAxiMaster, wRdData, rmsFinalValid, rmsFinalBusy) =
+    FPVec.fpVecLoaderBram cycleCounter dramSlaveIn
       inputValidRise
       (pure Layout.rmsFinalAddress)
+      rdNext
 
-  -- Sequential rmsNorm: triggered on the rising edge of rmsFinalValid.
-  -- xi comes from activation BRAM slot 3 (1-cycle latency via bramRdData).
-  -- rdNext drives bramRdAddr one cycle ahead so the data arrives aligned.
+  -- Sequential rmsNorm: xi from activation BRAM (bramRdData), wi from weight BRAM (wRdData).
+  -- rdNext pre-fetches both BRAMs one cycle ahead.
   rmsFinalDone :: Signal dom Bool
   rmsFinalDone = rmsFinalValid .&&. (not <$> register False rmsFinalValid)
 
-  (rmsNormValid, tokenWithRms, _, rdNext) = rmsNormSeq rmsFinalDone bramRdData rmsFinalVec
+  (rmsNormValid, tokenWithRmsWrite, _, rdNext) = rmsNormSeq rmsFinalDone bramRdData wRdData
 
   -- Pre-issue activation BRAM read address one cycle ahead of when data is needed.
   bramRdAddr = (slot3BramBase +) . fromIntegral <$> rdNext
+
+  -- Internal BRAM holds the rmsNorm result; RowComputeUnit reads it serially.
+  tokenWithRmsRdData :: Signal dom FixedPoint
+  tokenWithRmsRdData = blockRam (repeat 0 :: Vec ModelDimension FixedPoint)
+                         (RowComputeUnit.rcColumnAddr compute)
+                         tokenWithRmsWrite
 
   -- effectiveInputOuter: fires once on rising edge of rmsNormValid while pending.
   effectiveInputOuter :: Signal dom Bool
@@ -148,7 +156,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
       , rcDownStreamReady = downStreamReady
       , rcRowIndex        = rowIndex
       , rcWeightDram      = currentRowDram
-      , rcColumn          = tokenWithRms
+      , rcColumnRdData    = tokenWithRmsRdData
       }
 
   rowDone = RowComputeUnit.rcRowDone compute

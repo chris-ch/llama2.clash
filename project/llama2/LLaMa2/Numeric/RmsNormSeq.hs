@@ -12,24 +12,27 @@ data RmsNormState
   = RNIdle
   | RNAccum      -- ^ Pass 1: accumulate sum(x[i]^2), one element per cycle
   | RNScale      -- ^ 1 cycle: compute scale = invSqrtF(acc/n + eps)
-  | RNNormalize  -- ^ Pass 2: write x[i] * scale * w[i] into output register
+  | RNNormalize  -- ^ Pass 2: write x[i] * scale * w[i] into output BRAM
   | RNDone       -- ^ outputValid held high; waits for next validIn
   deriving (Generic, NFDataX, Show, Eq)
 
 -- | Sequential RMS normalisation.
 --
 -- Replaces the fully-combinational 'rmsNormFwFix' with a state machine that
--- processes one element per cycle, avoiding the wide combinational cloud that
--- causes Vivado elaboration to run out of memory for large model dimensions.
+-- processes one element per cycle, avoiding the wide Vec registers that cause
+-- Vivado elaboration OOM for large model dimensions.
 --
--- On a one-cycle 'validIn' pulse the machine latches the current values of
--- 'xSig' and 'wSig' (which must be stable that cycle) and proceeds:
+-- Both 'xi' and 'wi' are scalar BRAM outputs delivered with 1-cycle latency.
+-- The caller drives the x-BRAM and w-BRAM read ports with 'rdNext', which is
+-- the next counter value (issued 1 cycle before it is needed).
+--
+-- On a one-cycle 'validIn' pulse the machine proceeds:
 --
 -- @
 --   RNIdle      (waiting)
 --   RNAccum     (n cycles)  acc += x[i]^2
 --   RNScale     (1 cycle)   scale = invSqrtF(acc/n + eps)
---   RNNormalize (n cycles)  out[i] = x[i] * scale * w[i]
+--   RNNormalize (n cycles)  bramWrite = Just (i, x[i] * scale * w[i])
 --   RNDone      (held)      outputValid = True
 -- @
 --
@@ -37,20 +40,19 @@ data RmsNormState
 -- 'outputValid' is a level signal held until the next 'validIn'.
 --
 -- Hardware cost: 2 DSP multipliers + 1 adder (all scalar, registered).
--- The wide Vec output register uses FF-with-enable per element, which
--- Vivado infers correctly from the 'replace' pattern.
+-- Output is written element-by-element to the caller's BRAM via 'bramWrite'.
 {-# NOINLINE rmsNormSeq #-}
 rmsNormSeq
   :: forall dom n. (HiddenClockResetEnable dom, KnownNat n)
   => Signal dom Bool               -- ^ validIn: one-cycle pulse
-  -> Signal dom FixedPoint         -- ^ xi (element at counter; from BRAM output or @(Vec.!!) xVec counter@)
-  -> Signal dom (Vec n FixedPoint) -- ^ w  (weight vector, must be stable on validIn)
-  -> ( Signal dom Bool               -- ^ outputValid (level, held from RNDone)
-     , Signal dom (Vec n FixedPoint) -- ^ result
-     , Signal dom (Index n)          -- ^ counter  (current element index)
-     , Signal dom (Index n)          -- ^ rdNext   (next element index; use as BRAM pre-issue address)
+  -> Signal dom FixedPoint         -- ^ xi: x element at 'counter' (from x-BRAM, 1-cycle latency)
+  -> Signal dom FixedPoint         -- ^ wi: weight element at 'counter' (from w-BRAM, 1-cycle latency)
+  -> ( Signal dom Bool                           -- ^ outputValid (level, held from RNDone)
+     , Signal dom (Maybe (Index n, FixedPoint))  -- ^ bramWrite: xHat BRAM write port
+     , Signal dom (Index n)                      -- ^ counter: current element index
+     , Signal dom (Index n)                      -- ^ rdNext: pre-fetch address for x- and w-BRAMs
      )
-rmsNormSeq validIn xi wSig = (outputValid, outReg, counter, nextCounter)
+rmsNormSeq validIn xi wi = (outputValid, bramWrite, counter, nextCounter)
   where
     -- Compile-time reciprocal: floor(2^20 / n) as FixedPoint bit pattern.
     invNBits :: Signed 32
@@ -65,24 +67,11 @@ rmsNormSeq validIn xi wSig = (outputValid, outReg, counter, nextCounter)
     counter :: Signal dom (Index n)
     acc     :: Signal dom FixedPoint
     scale   :: Signal dom FixedPoint
-    outReg  :: Signal dom (Vec n FixedPoint)
 
-    state   = register RNIdle     nextState
-    counter = register 0          nextCounter
-    acc     = register 0          nextAcc
-    scale   = register 0          nextScale
-    outReg  = register (repeat 0) nextOutReg
-
-    -- ----------------------------------------------------------------
-    -- Element selection
-    -- ----------------------------------------------------------------
-    -- xi is provided by the caller (from BRAM output or Vec.!! counter).
-    -- Callers driving BRAM use rdNext as the pre-issue address; the
-    -- 1-cycle BRAM latency then delivers xi = x[counter] on the right cycle.
-    -- Callers using a Vec use xi = ((!!) <$> xVec <*> counter) directly.
-
-    wi :: Signal dom FixedPoint
-    wi = (!!) <$> wSig <*> counter
+    state   = register RNIdle nextState
+    counter = register 0      nextCounter
+    acc     = register 0      nextAcc
+    scale   = register 0      nextScale
 
     -- ----------------------------------------------------------------
     -- Phase predicates
@@ -127,16 +116,15 @@ rmsNormSeq validIn xi wSig = (outputValid, outReg, counter, nextCounter)
         (invSqrtF . (+ epsF) <$> ((*) <$> acc <*> pure invN))
         scale
 
-    -- Write one normalised element per cycle into the output Vec register.
-    -- Vivado infers FF-with-enable: each FF only updates when counter==i.
+    -- One normalised element per cycle during RNNormalize.
     outElem :: Signal dom FixedPoint
     outElem = (\x_ s w_ -> x_ * s * w_) <$> xi <*> scale <*> wi
 
-    nextOutReg :: Signal dom (Vec n FixedPoint)
-    nextOutReg =
-      mux inNormalize
-        (replace <$> counter <*> outElem <*> outReg)
-        outReg
+    -- BRAM write port: valid during RNNormalize only.
+    bramWrite :: Signal dom (Maybe (Index n, FixedPoint))
+    bramWrite = mux inNormalize
+      ((\c e -> Just (c, e)) <$> counter <*> outElem)
+      (pure Nothing)
 
     nextState :: Signal dom RmsNormState
     nextState =

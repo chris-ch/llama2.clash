@@ -771,13 +771,16 @@ axiNWordFetcher :: forall dom numWords.
   -> Signal dom Bool                   -- ^ requestPulse (1-cycle) when ready==True
   -> Signal dom (Unsigned 32)          -- ^ base address
   -> ( Master.AxiMasterOut dom
-     , Signal dom (Vec numWords (BitVector 512))
+     , Signal dom (Vec numWords (BitVector 512)) -- ^ wordsOut: buffered Vec (legacy)
      , Signal dom Bool                 -- ^ dataValid (1-cycle pulse at completion)
      , Signal dom Bool                 -- ^ ready
      , FetcherDebug dom
+     , Signal dom (BitVector 512)      -- ^ beatWordOut: current AXI beat data
+     , Signal dom Bool                 -- ^ beatWordValid: beat received this cycle
+     , Signal dom (Index numWords)     -- ^ beatIdx: current beat index
      )
 axiNWordFetcher slaveIn reqPulse addrIn =
-  (masterOut, wordsOut, dataValid, ready, debugOut)
+  (masterOut, wordsOut, dataValid, ready, debugOut, beatWordOut, beatWordValid, beatIdx)
  where
   numWordsI = natToNum @numWords :: Int
   burstLen  = numWordsI - 1
@@ -856,6 +859,11 @@ axiNWordFetcher slaveIn reqPulse addrIn =
 
   wordsOut  = wordBuffer
   dataValid = state .==. pure MWDone
+
+  -- Streaming beat outputs: valid each cycle a beat is received during WaitR.
+  beatWordOut   = currWord
+  beatWordValid = rReceived .&&. ((\case MWWaitR _ -> True; _ -> False) <$> state)
+  beatIdx       = beat
 
   masterOut = Master.AxiMasterOut
     { arvalid = arvalidOut
