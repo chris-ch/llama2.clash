@@ -254,19 +254,31 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     vFetchAddr = (`kvCacheVAddress` kvHeadIdx) <$> layerIdx <*> rowCounter
 
 
-    (kReadMaster, kWordsOut, kDataValid, kFetchReady, _kDbg, _, _, _) =
+    (kReadMaster, kDataValid, kFetchReady, _kDbg, kBeatWordOut, kBeatWordValid, kBeatIdx) =
       axiNWordFetcher @dom @(WordsPerFPVec HeadDimension)
         dramSlaveIn fetchKReq kFetchAddr
 
-    (vReadMaster, vWordsOut, vDataValid, vFetchReady, _vDbg, _, _, _) =
+    (vReadMaster, vDataValid, vFetchReady, _vDbg, vBeatWordOut, vBeatWordValid, vBeatIdx) =
       axiNWordFetcher @dom @(WordsPerFPVec HeadDimension)
         dramSlaveIn fetchVReq vFetchAddr
 
+    kWordBuffer :: Signal dom (Vec (WordsPerFPVec HeadDimension) (BitVector 512))
+    kWordBuffer = register (repeat 0) $
+      mux kBeatWordValid
+        (replace <$> kBeatIdx <*> kBeatWordOut <*> kWordBuffer)
+        kWordBuffer
+
+    vWordBuffer :: Signal dom (Vec (WordsPerFPVec HeadDimension) (BitVector 512))
+    vWordBuffer = register (repeat 0) $
+      mux vBeatWordValid
+        (replace <$> vBeatIdx <*> vBeatWordOut <*> vWordBuffer)
+        vWordBuffer
+
     kRow :: Signal dom (Vec HeadDimension FixedPoint)
-    kRow = fixedPointVecParser <$> kWordsOut
+    kRow = fixedPointVecParser <$> kWordBuffer
 
     vRow :: Signal dom (Vec HeadDimension FixedPoint)
-    vRow = fixedPointVecParser <$> vWordsOut
+    vRow = fixedPointVecParser <$> vWordBuffer
 
     -- Latch K row when kDataValid fires (stable through Q-dot and V fetch)
     kRowLatched :: Signal dom (Vec HeadDimension FixedPoint)

@@ -44,9 +44,15 @@ fpVecLoader _cycleCounter dramSlaveIn fetchTrigger address =
   (captureAvail, capturedAddr) =
     Layout.requestCaptureStage fetchTrigger address fetcherReady
 
-  (axiMaster, wordsOut, fetchDone, fetcherReady, _dbg, _, _, _) =
+  (axiMaster, fetchDone, fetcherReady, _dbg, beatWordOut, beatWordValid, beatIdx) =
     Layout.axiNWordFetcher @dom @(Layout.WordsPerFPVec n)
       dramSlaveIn captureAvail capturedAddr
+
+  wordBuffer :: Signal dom (Vec (Layout.WordsPerFPVec n) (BitVector 512))
+  wordBuffer = register (repeat 0) $
+    mux beatWordValid
+      (replace <$> beatIdx <*> beatWordOut <*> wordBuffer)
+      wordBuffer
 
   state :: Signal dom FPVState
   state = register FPVIdle nextState
@@ -64,7 +70,7 @@ fpVecLoader _cycleCounter dramSlaveIn fetchTrigger address =
   capturing = state .==. pure FPVFetching .&&. fetchDone
 
   dramVec :: Signal dom (Vec n FixedPoint)
-  dramVec = Layout.fixedPointVecParser <$> wordsOut
+  dramVec = Layout.fixedPointVecParser <$> wordBuffer
 
   outputVec :: Signal dom (Vec n FixedPoint)
   outputVec = register (repeat 0) $ mux capturing dramVec outputVec
@@ -97,9 +103,15 @@ fpVecLoaderDyn _cycleCounter dramSlaveIn fetchTrigger address =
   (captureAvail, capturedAddr) =
     Layout.requestCaptureStage fetchTrigger address fetcherReady
 
-  (axiMaster, wordsOut, fetchDone, fetcherReady, _dbg, _, _, _) =
+  (axiMaster, fetchDone, fetcherReady, _dbg, beatWordOut, beatWordValid, beatIdx) =
     Layout.axiNWordFetcher @dom @(Layout.WordsPerFPVec n)
       dramSlaveIn captureAvail capturedAddr
+
+  wordBuffer :: Signal dom (Vec (Layout.WordsPerFPVec n) (BitVector 512))
+  wordBuffer = register (repeat 0) $
+    mux beatWordValid
+      (replace <$> beatIdx <*> beatWordOut <*> wordBuffer)
+      wordBuffer
 
   state :: Signal dom FPVState
   state = register FPVIdle nextState
@@ -117,7 +129,7 @@ fpVecLoaderDyn _cycleCounter dramSlaveIn fetchTrigger address =
   capturing = state .==. pure FPVFetching .&&. fetchDone
 
   dramVec :: Signal dom (Vec n FixedPoint)
-  dramVec = Layout.fixedPointVecParser <$> wordsOut
+  dramVec = Layout.fixedPointVecParser <$> wordBuffer
 
   outputVec :: Signal dom (Vec n FixedPoint)
   outputVec = register (repeat 0) $ mux capturing dramVec outputVec
@@ -161,7 +173,7 @@ fpVecLoaderBram _cycleCounter dramSlaveIn fetchTrigger address rdAddr =
     Layout.requestCaptureStage fetchTrigger address fetcherReady
 
   -- Streaming beat outputs: write each beat to BRAM as it arrives.
-  (axiMaster, _, fetchDone, fetcherReady, _, beatWordOut, beatWordValid, beatIdx) =
+  (axiMaster, fetchDone, fetcherReady, _, beatWordOut, beatWordValid, beatIdx) =
     Layout.axiNWordFetcher @dom @(Layout.WordsPerFPVec n)
       dramSlaveIn captureAvail capturedAddr
 
