@@ -22,7 +22,7 @@ import qualified LLaMa2.Memory.AXI.Master as Master
 import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import qualified LLaMa2.Memory.WeightsLayout as Layout
 import qualified LLaMa2.Memory.FPVecLoader as FPVec
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector, QHeadDebugInfo)
+import qualified LLaMa2.Layer.Attention.QueryHeadProjector as QHP (queryHeadProjector)
 import qualified LLaMa2.Layer.Attention.KeyValueHeadProjector as KVHP
 
 --------------------------------------------------------------------------------
@@ -213,7 +213,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                                 , Signal dom (Maybe (Index HeadDimension, FixedPoint))
                                 , Signal dom Bool
                                 , Signal dom Bool
-                                , QHP.QHeadDebugInfo dom )
+                                )
   qResults = imap (\headIdx _ ->
       QHP.queryHeadProjector cycleCounter (perQSlaves !! headIdx) layerIdx headIdx
                         effectiveInputValid
@@ -222,10 +222,10 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
                         cosVec sinVec xNorm
     ) (repeat () :: Vec NumQueryHeads ())
 
-  qAxiMasters = map (\(axi, _, _, _, _) -> axi) qResults
-  qBramWrites = map (\(_, w, _, _, _) -> w) qResults
-  qValids     = map (\(_, _, v, _, _) -> v) qResults
-  qReadys     = map (\(_, _, _, r, _) -> r) qResults
+  qAxiMasters = map (\(axi, _, _, _) -> axi) qResults
+  qBramWrites = map (\(_, w, _, _) -> w) qResults
+  qValids     = map (\(_, _, v, _) -> v) qResults
+  qReadys     = map (\(_, _, _, r) -> r) qResults
 
   ----------------------------------------------------------------------------
   -- KV DRAM path: independent K and V compute paths per head, both via AXI
