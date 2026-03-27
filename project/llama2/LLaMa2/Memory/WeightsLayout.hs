@@ -472,7 +472,7 @@ multiWordRowParser words' = RowI8E { rowMantissas = mantissas, rowExponent = exp
          let iI = fromEnum i
              idx = if iI < 63 then iI else iI + 1
          in allBytes !! idx
-      ) (repeat (0 :: Int))
+      ) (repeat ())
 
     mantissas = map unpack mantBytes
 

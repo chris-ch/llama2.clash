@@ -59,8 +59,8 @@ kvCacheBankController :: forall dom.
   -> Signal dom (Maybe (Index HeadDimension, FixedPoint))             -- ^ V element writes (raw, streaming)
   -> Vec QHeadsPerKVBank (Signal dom FixedPoint)                      -- ^ Q BRAM read data (1-cycle latency)
   -> ( Master.AxiMasterOut dom
-     , Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
-     , Vec NumQueryHeads (Signal dom Bool)
+     , Vec QHeadsPerKVBank (Signal dom (Vec HeadDimension FixedPoint)) -- ^ head outputs (local order)
+     , Vec QHeadsPerKVBank (Signal dom Bool)                           -- ^ head done flags (local order)
      , Signal dom Bool                               -- ^ write done
      , Vec QHeadsPerKVBank (Signal dom (Index HeadDimension))         -- ^ Q BRAM read addresses
      )
@@ -454,23 +454,20 @@ kvCacheBankController _cycleCounter dramSlaveIn layerIdx kvHeadIdx seqPos
     -- -----------------------------------------------------------------------
     -- Per-query attention heads (GQA: multiple Q heads per KV bank)
     -- -----------------------------------------------------------------------
-    qIdx0 = queryHeadIndex0 kvHeadIdx
     hasQ1 = hasSecondQueryHead kvHeadIdx
-    qIdx1 = queryHeadIndex1 kvHeadIdx
 
     (out0, done0) = attentionHead clearSt stepEn dotAcc0 vRow isLastRow
     (out1, done1)
       | hasQ1    = attentionHead clearSt stepEn dotAcc1 vRow isLastRow
       | otherwise = (pure (repeat 0), pure False)
 
-    initOuts  = repeat (pure (repeat 0)) :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
-    initDones = repeat (pure False) :: Vec NumQueryHeads (Signal dom Bool)
+    -- Return outputs in local (bank-relative) order: local head 0 = out0, local head 1 = out1.
+    -- MultiHeadAttention assembles global Q head order via concat over all banks.
+    headOutputs :: Vec QHeadsPerKVBank (Signal dom (Vec HeadDimension FixedPoint))
+    headOutputs = imap (\j _ -> if j == 0 then out0 else out1) (repeat ())
 
-    headOutputs0 = replace qIdx0 out0 initOuts
-    headOutputs  = if hasQ1 then replace qIdx1 out1 headOutputs0 else headOutputs0
-
-    headDones0   = replace qIdx0 done0 initDones
-    headDones    = if hasQ1 then replace qIdx1 done1 headDones0 else headDones0
+    headDones :: Vec QHeadsPerKVBank (Signal dom Bool)
+    headDones = imap (\j _ -> if j == 0 then done0 else done1) (repeat ())
 
     -- -----------------------------------------------------------------------
     -- AXI master mux: write phase takes priority, then read phases
@@ -504,11 +501,4 @@ hasSecondQueryHead :: Index NumKeyValueHeads -> Bool
 hasSecondQueryHead kvIx =
   queryHeadsPerKeyValueHead >= 2 && (baseQueryIndex kvIx + 1 <= maxQueryHeadIndex)
 
-queryHeadIndex0 :: Index NumKeyValueHeads -> Index NumQueryHeads
-queryHeadIndex0 kvIx = toEnum (min maxQueryHeadIndex (baseQueryIndex kvIx))
 
-queryHeadIndex1 :: Index NumKeyValueHeads -> Index NumQueryHeads
-queryHeadIndex1 kvIx =
-  if hasSecondQueryHead kvIx
-    then toEnum (baseQueryIndex kvIx + 1)
-    else queryHeadIndex0 kvIx

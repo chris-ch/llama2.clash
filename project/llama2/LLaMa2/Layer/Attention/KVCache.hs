@@ -3,7 +3,7 @@ module LLaMa2.Layer.Attention.KVCache (
 ) where
 
 import Clash.Prelude
-import LLaMa2.Types.ModelConfig (NumQueryHeads, HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers, QHeadsPerKVBank)
+import LLaMa2.Types.ModelConfig (HeadDimension, NumKeyValueHeads, SequenceLength, NumLayers, QHeadsPerKVBank)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Memory.WeightsLayout (WordsPerFPVec)
 import LLaMa2.Layer.Attention.KVCacheBankController (kvCacheBankController)
@@ -30,8 +30,8 @@ kvBankControllerDRAM ::
   Signal dom Bool                       ->  -- ^ enableAttend
   Index NumKeyValueHeads                ->
   ( Master.AxiMasterOut dom
-  , Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
-  , Vec NumQueryHeads (Signal dom Bool)
+  , Vec QHeadsPerKVBank (Signal dom (Vec HeadDimension FixedPoint)) -- ^ head outputs (local order)
+  , Vec QHeadsPerKVBank (Signal dom Bool)                           -- ^ head done flags (local order)
   , Signal dom Bool                          -- ^ this bank's write done
   , Vec QHeadsPerKVBank (Signal dom (Index HeadDimension))  -- ^ Q BRAM read addresses
   )
