@@ -775,9 +775,12 @@ axiNWordFetcher :: forall dom numWords.
      , Signal dom Bool                 -- ^ dataValid (1-cycle pulse at completion)
      , Signal dom Bool                 -- ^ ready
      , FetcherDebug dom
+     , Signal dom (BitVector 512)      -- ^ beatWordOut: current AXI beat data
+     , Signal dom Bool                 -- ^ beatWordValid: True when a beat is being received
+     , Signal dom (Index numWords)     -- ^ beatIdx: index of the current beat word
      )
 axiNWordFetcher slaveIn reqPulse addrIn =
-  (masterOut, wordsOut, dataValid, ready, debugOut)
+  (masterOut, wordsOut, dataValid, ready, debugOut, currWord, beatWordValid, beat)
  where
   numWordsI = natToNum @numWords :: Int
   burstLen  = numWordsI - 1
@@ -854,8 +857,8 @@ axiNWordFetcher slaveIn reqPulse addrIn =
         (replace <$> beat <*> currWord <*> wordBuffer)
         wordBuffer
 
-  wordsOut  = wordBuffer
-  dataValid = state .==. pure MWDone
+  wordsOut      = wordBuffer
+  dataValid     = state .==. pure MWDone
 
   masterOut = Master.AxiMasterOut
     { arvalid = arvalidOut
@@ -868,9 +871,10 @@ axiNWordFetcher slaveIn reqPulse addrIn =
     , bready  = pure False
     }
 
-  isWaitRState = (\case MWWaitR _ -> True; _ -> False) <$> state
-  isDoneState  = (== MWDone) <$> state
-  beatAsInt    = fromEnum <$> beat
+  isWaitRState  = (\case MWWaitR _ -> True; _ -> False) <$> state
+  isDoneState   = (== MWDone) <$> state
+  beatAsInt     = fromEnum <$> beat
+  beatWordValid = isWaitRState .&&. rReceived
 
   debugOut = FetcherDebug
     { dbgLatchedAddr   = addrReg

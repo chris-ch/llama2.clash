@@ -4,7 +4,7 @@ module LLaMa2.Embedding.OutputProjection
 import Clash.Prelude
 import qualified GHC.TypeNats as TN
 
-import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
+import LLaMa2.Numeric.RmsNormSeq (rmsNormSeqVec)
 import LLaMa2.Numeric.Types (FixedPoint)
 import LLaMa2.Types.ModelConfig (ModelDimension, VocabularySize, NumQueryHeads)
 import LLaMa2.Types.LayerData (ActivationBramAddr)
@@ -55,7 +55,7 @@ logitsProjector cycleCounter dramSlaveIn inputValid downStreamReady consumeSigna
   rmsFinalDone :: Signal dom Bool
   rmsFinalDone = rmsFinalValid .&&. (not <$> register False rmsFinalValid)
 
-  (rmsNormValid, tokenWithRms, _, rdNext) = rmsNormSeq rmsFinalDone bramRdData rmsFinalVec
+  (rmsNormValid, tokenWithRms, _, rdNext) = rmsNormSeqVec rmsFinalDone bramRdData rmsFinalVec
 
   -- Pre-issue activation BRAM read address one cycle ahead of when data is needed.
   bramRdAddr = (slot3BramBase +) . fromIntegral <$> rdNext

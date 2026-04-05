@@ -42,19 +42,23 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
   (axiMasterOut, writeDone, readyOut, bramRdAddr, bramWrite)
   where
     --------------------------------------------------------------------------
-    -- DRAM-backed fRMSFfnF fetch (once per inputValid; gates FFN start)
+    -- DRAM-backed fRMSFfnF fetch into BRAM (once per inputValid; gates FFN start)
     --------------------------------------------------------------------------
     validInRise = validIn .&&. (not <$> register False validIn)
 
-    (rmsFfnAxiMaster, rmsFfnVec, rmsFfnValid, rmsFfnBusy) =
-      FPVec.fpVecLoader cycleCounter dramSlaveIn
+    -- fpVecLoaderBram: stores RMS FFN weights in internal BRAM.
+    -- rdNext (from rmsNormSeq) pre-fetches one element per cycle with 1-cycle latency.
+    (rmsFfnAxiMaster, wiData, rmsFfnValid, rmsFfnBusy) =
+      FPVec.fpVecLoaderBram cycleCounter dramSlaveIn
         validInRise
         (Layout.rmsFfnAddress <$> layerIdx)
+        rdNext
 
-    -- Sequential rmsNorm: bramRdData supplies xi element-by-element.
-    -- rdNext drives the BRAM read address one cycle ahead (1-cycle BRAM latency).
+    -- Sequential rmsNorm: bramRdData supplies xi element-by-element (1-cycle BRAM latency).
+    -- wiData supplies wi element-by-element from fpVecLoaderBram (1-cycle BRAM latency).
+    -- rdNext drives the BRAM read address one cycle ahead for both xi and wi.
     rmsFfnDone = rmsFfnValid .&&. (not <$> register False rmsFfnValid)
-    (rmsNormValid, xHat, _, rdNext) = rmsNormSeq rmsFfnDone bramRdData rmsFfnVec
+    (rmsNormValid, xHatWrite, _, rdNext) = rmsNormSeq rmsFfnDone bramRdData wiData
 
     effectiveValidIn = pendingInput .&&. rmsNormValid .&&. (not <$> register False rmsNormValid)
 
@@ -98,7 +102,7 @@ feedForwardStage cycleCounter dramSlaveIn layerIdx validIn readyIn bramRdData =
     ffnCRdAddr = mux resActive resLoadCounter (pure 0)
 
     (ffnAxiMaster, ffnBramCRdData, coreValidOut, readyOut) =
-      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn projectorReadyIn xHat ffnCRdAddr
+      ffnProjector cycleCounter dramSlaveIn layerIdx effectiveValidIn projectorReadyIn xHatWrite ffnCRdAddr
 
     axiMasterOut = Master.axiMasterMux rmsFfnBusy rmsFfnAxiMaster ffnAxiMaster
 

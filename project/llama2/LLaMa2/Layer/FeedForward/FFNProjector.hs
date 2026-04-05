@@ -20,7 +20,6 @@ import qualified LLaMa2.Memory.AXI.Arbiter as ARB
 import qualified LLaMa2.Layer.Attention.WeightLoader as LOADER
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.OutputTransactionController as OTC
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.InputTransactionController  as ITC
-import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowComputeUnit              as RCU
 import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler                as RS
 
 --------------------------------------------------------------------------------
@@ -28,21 +27,11 @@ import qualified LLaMa2.Layer.Attention.QueryHeadProjector.RowScheduler         
 --
 -- Slot A [0 .. HiddenDim-1]           : w1 (gate) results
 -- Slot B [HiddenDim .. 2*HiddenDim-1] : SiLU(gate)*up product (w2 column input)
---
--- Using a separate BRAM eliminates:
---   • w1Accum Vec HiddenDimension register (gateRaw)
---   • w3Accum Vec HiddenDimension register (gateUpLatched)
---   • gateRaw   = regEn (repeat 0) w1OutputValid (oaOutput w1Accum)
---   • gateUpLatched = regEn ... w3OutputValid (zipWith (*) gateSiLU ...)
---------------------------------------------------------------------------------
-
--- Slot A [0 .. HiddenDim-1]              : w1 (gate) results
--- Slot B [HiddenDim .. 2*HiddenDim-1]    : SiLU(gate)*up product
 -- Slot C [2*HiddenDim .. 2*HiddenDim+ModelDim-1] : w2 (down) results
+--------------------------------------------------------------------------------
 type FFNBramDepth = 2 TN.* HiddenDimension TN.+ ModelDimension
 type FFNBramAddr  = Index FFNBramDepth
 
--- Slot A base address is 0 (implicit in address arithmetic below).
 ffnSlotBBase :: FFNBramAddr
 ffnSlotBBase = natToNum @HiddenDimension
 
@@ -78,18 +67,104 @@ mkRowReqPulse _cycleCounter fetchReq weightReady effRowIdx = pulse
     pulse            = reqRise .||. (reqValidGated .&&. rowIdxChanged)
 
 --------------------------------------------------------------------------------
+-- Inline serial row accumulator
+--
+-- Mirrors the W2 inline pattern: one element per cycle, BRAM-fed column.
+-- Returns (state, fetchReq, rowReset, rowEnable, allDone, idleReady,
+--          compCounter, rowDone, serialResult)
+-- where serialResult is valid when rowDone fires.
+--------------------------------------------------------------------------------
+
+serialRowAccum :: forall dom numRows numCols.
+  ( HiddenClockResetEnable dom
+  , KnownNat numRows
+  , KnownNat numCols
+  , 1 <= numCols
+  )
+  => Signal dom Bool                    -- ^ effInput  (colValid)
+  -> Signal dom Bool                    -- ^ weightValid (rowValid)
+  -> Signal dom Bool                    -- ^ rowDoneIn  (rowDone — fed back from output)
+  -> Signal dom (Index numRows)         -- ^ rowIndex
+  -> Signal dom (RowI8E numCols)        -- ^ weightRow (from DRAM)
+  -> Signal dom FixedPoint              -- ^ colRdData (from BRAM, 1-cycle latency)
+  -> ( Signal dom MultiplierState
+     , Signal dom Bool   -- fetchReq
+     , Signal dom Bool   -- rowReset
+     , Signal dom Bool   -- rowEnable
+     , Signal dom Bool   -- allDone
+     , Signal dom Bool   -- idleReady
+     , Signal dom (Index numCols)  -- compCounter (column element index)
+     , Signal dom Bool             -- rowDone
+     , Signal dom FixedPoint       -- serialResult (valid when rowDone fires)
+     , Signal dom (Index numCols)  -- colPrefetch (pre-fetch address for column BRAM)
+     )
+serialRowAccum effInput weightValid rowDoneIn rowIndex weightRow colRdData =
+  (machState, fetchReq, rowReset, rowEnable, allDone, idleReady,
+   compCounter, rowDone, serialResult, colPrefetch)
+  where
+    (machState, fetchReq, rowReset, rowEnable, allDone, idleReady) =
+      matrixMultiplierStateMachine
+        effInput weightValid (pure True) rowDoneIn rowIndex
+
+    -- Column element counter: reset on MReset, advance on MProcessing
+    compCounter :: Signal dom (Index numCols)
+    compCounter = register 0 nextCompCounter
+
+    nextCompCounter :: Signal dom (Index numCols)
+    nextCompCounter =
+      mux rowReset   (pure 0) $
+      mux rowEnable  (satSucc SatBound <$> compCounter) $
+      compCounter
+
+    -- Pre-fetch address: issued 1 cycle ahead so data arrives on time
+    -- MReset  → 0 (delivers col[0] at first MProcessing)
+    -- MProcess k → k+1 (delivers col[k+1] next cycle)
+    colPrefetch :: Signal dom (Index numCols)
+    colPrefetch =
+      mux rowReset (pure 0) (satSucc SatBound <$> compCounter)
+
+    -- Serial multiply-accumulate
+    mantissaElem :: Signal dom (Signed 8)
+    mantissaElem = (!!) <$> (rowMantissas <$> weightRow) <*> compCounter
+
+    product' :: Signal dom FixedPoint
+    product' = (fromIntegral <$> mantissaElem) * colRdData
+
+    acc :: Signal dom FixedPoint
+    acc = register 0 nextAcc
+
+    nextAcc :: Signal dom FixedPoint
+    nextAcc =
+      mux rowReset (pure 0) $
+      mux (rowEnable .&&. (not <$> rowDoneIn)) (acc + product') $
+      acc
+
+    -- Row done detection: rising edge of lastElemFlag, then registered
+    lastElemFlag :: Signal dom Bool
+    lastElemFlag = (compCounter .==. pure maxBound) .&&. rowEnable
+
+    rowDoneRaw :: Signal dom Bool
+    rowDoneRaw = lastElemFlag .&&. (not <$> register False lastElemFlag)
+
+    rowDone :: Signal dom Bool
+    rowDone = register False rowDoneRaw
+
+    -- Scale by quantisation exponent to produce the dot-product result
+    serialResult :: Signal dom FixedPoint
+    serialResult = scalePow2F <$> (rowExponent <$> weightRow) <*> acc
+
+--------------------------------------------------------------------------------
 -- ffnProjector
 --
 -- DRAM-backed FFN with BRAM-backed intermediate storage.
 -- Sequential phases:
---   FPGate: W1 (gate)   — HiddenDimension × ModelDimension, column = xHat
---           Results written element-by-element to FFN BRAM slot A.
---   FPUp:   W3 (up)     — HiddenDimension × ModelDimension, column = xHat
---           As each row i completes, reads slot A[i] from BRAM, computes
---           SiLU(gate[i]) * up[i], writes to slot B[i].
---   FPDown: W2 (down)   — ModelDimension × HiddenDimension
---           Column (slot B) is read serially from BRAM, one element per cycle.
---           No Vec HiddenDimension register is held across phases.
+--   FPGate: W1 (gate)   — HiddenDimension rows × ModelDimension cols
+--           Column (xHat) read from xHat BRAM, results written to slot A.
+--   FPUp:   W3 (up)     — HiddenDimension rows × ModelDimension cols
+--           Column (xHat) read from xHat BRAM, SiLU(gate)*up to slot B.
+--   FPDown: W2 (down)   — ModelDimension rows × HiddenDimension cols
+--           Column (slot B) read from FFN BRAM serially.
+--           Results written to slot C element-by-element.
 --------------------------------------------------------------------------------
 
 ffnProjector :: forall dom.
@@ -97,16 +172,16 @@ ffnProjector :: forall dom.
   => Signal dom (Unsigned 32)
   -> Slave.AxiSlaveIn dom
   -> Signal dom (Index NumLayers)
-  -> Signal dom Bool                              -- ^ validIn
-  -> Signal dom Bool                              -- ^ readyIn (from downstream, gated by caller until residual done)
-  -> Signal dom (Vec ModelDimension FixedPoint)   -- ^ xHat (RMS-normalised input)
-  -> Signal dom (Index ModelDimension)            -- ^ ffnCRdAddr: slot C read address driven by caller during FPDone
+  -> Signal dom Bool                                         -- ^ validIn
+  -> Signal dom Bool                                         -- ^ readyIn
+  -> Signal dom (Maybe (Index ModelDimension, FixedPoint))   -- ^ xHatWrite (from rmsNormSeq)
+  -> Signal dom (Index ModelDimension)                       -- ^ ffnCRdAddr: slot C read addr (from caller)
   -> ( Master.AxiMasterOut dom
-     , Signal dom FixedPoint                      -- ^ FFN BRAM read data (slot C, for caller's residual FSM)
+     , Signal dom FixedPoint                      -- ^ FFN BRAM read data (slot C, for residual FSM)
      , Signal dom Bool                            -- ^ validOut
      , Signal dom Bool                            -- ^ readyOut
      )
-ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
+ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHatWrite ffnCRdAddr =
   (axiMasterOut, ffnBramRdData, validOut, readyOut)
  where
   headIdx = 0 :: Index NumQueryHeads
@@ -139,28 +214,41 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
 
   acceptInput = fpState .==. pure FPIdle .&&. validIn .&&. w1WeightReady
 
-  xHatLatched :: Signal dom (Vec ModelDimension FixedPoint)
-  xHatLatched = regEn (repeat 0) acceptInput xHat
+  -------------------------------------------------------------------------
+  -- xHat BRAM
+  -- Port A: read (W1 during FPGate, W3 during FPUp)
+  -- Port B: write (xHatWrite from rmsNormSeq, happens before FPGate starts)
+  --
+  -- Read address mux: during FPGate use W1 pre-fetch, during FPUp use W3.
+  -- Writes and reads are strictly sequential (RNNormalize ends before FPGate).
+  -------------------------------------------------------------------------
+  xHatBramRdAddr :: Signal dom (Index ModelDimension)
+  xHatBramRdAddr =
+    mux (fpState .==. pure FPGate) w1ColPrefetch $
+    mux (fpState .==. pure FPUp)   w3ColPrefetch $
+    pure 0
+
+  (xHatBramRdData, _) = trueDualPortRam
+    xHatBramRdAddr
+    (pure Nothing)                         -- port A: read-only
+    (maybe 0 fst <$> xHatWrite)            -- port B: dummy read addr
+    xHatWrite                              -- port B: write when Just
 
   -------------------------------------------------------------------------
   -- FFN intermediate BRAM
-  --   Port A: read  (gate reads during FPUp, column reads during FPDown)
-  --   Port B: write (w1 results during FPGate, SiLU*up during FPUp)
+  --   Port A: read  (slot A during FPUp, slot B during FPDown, slot C during FPDone)
+  --   Port B: write (slot A during FPGate, slot B during FPUp, slot C during FPDown)
   -------------------------------------------------------------------------
   ffnBramRdData :: Signal dom FixedPoint
   ffnBramRdData = fst $ trueDualPortRam
     ffnBramRdAddr
-    (pure Nothing)          -- port A: read-only
+    (pure Nothing)
     ffnBramWrAddr
-    ffnBramWriteOp          -- port B: write when Just
+    ffnBramWriteOp
 
-  -- Write mux: phases are strictly sequential so these are never simultaneous.
-  --   w1 writes (FPGate): slot A[rowIndex] ← gate result
-  --   w3 SiLU writes (1 cycle after FPUp row done): slot B[rowIndex] ← SiLU*up
-  --   w2 writes (FPDown, each row done): slot C[rowIndex] ← w2 serial result
   ffnBramWriteOp :: Signal dom (Maybe (FFNBramAddr, FixedPoint))
   ffnBramWriteOp =
-    mux (RCU.rcRowDone w1Compute) w1BramWriteOp $
+    mux w1RowDone w1BramWriteOp $
     mux w3WriteEnabled w3SiluBramWriteOp $
     w2BramWriteOp
 
@@ -168,9 +256,9 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
   ffnBramWrAddr = maybe 0 fst <$> ffnBramWriteOp
 
   -- Read address mux:
-  --   FPDown  → slot B + serial column counter (1-cycle pre-fetch)
-  --   FPDone  → slot C + ffnCRdAddr  (caller reads w2 results for residual)
-  --   Other   → slot A + w3RowIndex  (FPGate/FPUp/FPIdle, harmless default)
+  --   FPDown  → slot B + W2 column counter pre-fetch
+  --   FPDone  → slot C + ffnCRdAddr (caller reads W2 results for residual)
+  --   Other   → slot A + w3RowIndex (FPGate/FPUp: reads gate for SiLU)
   ffnBramRdAddr :: Signal dom FFNBramAddr
   ffnBramRdAddr =
     mux (fpState .==. pure FPDown)
@@ -181,13 +269,12 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
 
   -------------------------------------------------------------------------
   -- W1 (Gate) Phase — HiddenDimension rows × ModelDimension cols
-  -- Row results written to FFN BRAM slot A instead of OutputAccumulator.
   -------------------------------------------------------------------------
   w1RowIndex :: Signal dom (Index HiddenDimension)
   w1RowIndex = register 0 (RS.rsNextRowIndex w1RS)
 
   w1RS = RS.rowScheduler RS.RowSchedulerIn
-    { RS.rsRowDone       = RCU.rcRowDone w1Compute
+    { RS.rsRowDone       = w1RowDone
     , RS.rsOutputValid   = w1OutputValid
     , RS.rsConsumeSignal = w1ConsumeSignal
     , RS.rsCurrentIndex  = w1RowIndex
@@ -206,19 +293,18 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
 
   w1OutputTxn = OTC.outputTransactionController cycleCounter headIdx
     OTC.OutputTransactionIn
-      { OTC.otcAllDone       = RCU.rcAllDone w1Compute
+      { OTC.otcAllDone       = w1AllDone
       , OTC.otcConsumeSignal = w1ConsumeSignal
       }
 
   w1OutputValid   = OTC.otcOutputValid w1OutputTxn
   w1ConsumeSignal = w1OutputValid
 
-  w1ReqPulse = mkRowReqPulse cycleCounter
-                 (RCU.rcFetchReq w1Compute) w1WeightReady w1EffRow
+  w1ReqPulse = mkRowReqPulse cycleCounter w1FetchReq w1WeightReady w1EffRow
 
   (w1AxiMaster, w1Lo, w1WeightValidRaw, w1WeightReadyRaw) =
     LOADER.w1WeightLoader cycleCounter w1Slave layerIdx
-      w1EffRow w1ReqPulse (pure True) (RCU.rcRowDone w1Compute)
+      w1EffRow w1ReqPulse (pure True) w1RowDone
 
   w1WeightValid = w1WeightValidRaw
   w1WeightReady = w1WeightReadyRaw
@@ -228,31 +314,27 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     .&&. (not <$> w1OutputValid)
     .&&. (not <$> w1JustConsumed)
 
-  w1Compute = RCU.rowComputeUnit cycleCounter RCU.RowComputeIn
-    { RCU.rcInputValid      = w1EffInput
-    , RCU.rcWeightValid     = w1WeightValid
-    , RCU.rcDownStreamReady = pure True
-    , RCU.rcRowIndex        = w1RowIndex
-    , RCU.rcWeightDram      = LOADER.dramRowOut w1Lo
-    , RCU.rcColumn          = xHatLatched
-    }
+  -- Serial inline computation for W1
+  (_w1MachState, w1FetchReq, _w1RowReset, _w1RowEnable, w1AllDone, _w1IdleReady,
+   _w1CompCounter, w1RowDone, w1SerialResult, w1ColPrefetch) =
+    serialRowAccum @dom @HiddenDimension @ModelDimension
+      w1EffInput w1WeightValid w1RowDone
+      w1RowIndex (LOADER.dramRowOut w1Lo) xHatBramRdData
 
-  -- Element-by-element write to slot A: fires once per row on rcRowDone.
+  -- Write each completed W1 row result to FFN BRAM slot A.
   w1BramWriteOp :: Signal dom (Maybe (FFNBramAddr, FixedPoint))
-  w1BramWriteOp = mux (RCU.rcRowDone w1Compute)
-    (Just <$> ((,) <$> (fromIntegral <$> w1RowIndex) <*> RCU.rcResult w1Compute))
+  w1BramWriteOp = mux w1RowDone
+    (Just <$> ((,) <$> (fromIntegral <$> w1RowIndex) <*> w1SerialResult))
     (pure Nothing)
 
   -------------------------------------------------------------------------
   -- W3 (Up) Phase — HiddenDimension rows × ModelDimension cols
-  -- As each row i completes, reads gate[i] from slot A (1-cycle BRAM
-  -- latency), computes SiLU(gate[i]) * up[i], writes to slot B[i].
   -------------------------------------------------------------------------
   w3RowIndex :: Signal dom (Index HiddenDimension)
   w3RowIndex = register 0 (RS.rsNextRowIndex w3RS)
 
   w3RS = RS.rowScheduler RS.RowSchedulerIn
-    { RS.rsRowDone       = RCU.rcRowDone w3Compute
+    { RS.rsRowDone       = w3RowDone
     , RS.rsOutputValid   = w3OutputValid
     , RS.rsConsumeSignal = w3ConsumeSignal
     , RS.rsCurrentIndex  = w3RowIndex
@@ -271,19 +353,18 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
 
   w3OutputTxn = OTC.outputTransactionController cycleCounter headIdx
     OTC.OutputTransactionIn
-      { OTC.otcAllDone       = RCU.rcAllDone w3Compute
+      { OTC.otcAllDone       = w3AllDone
       , OTC.otcConsumeSignal = w3ConsumeSignal
       }
 
   w3OutputValid   = OTC.otcOutputValid w3OutputTxn
   w3ConsumeSignal = w3OutputValid
 
-  w3ReqPulse = mkRowReqPulse cycleCounter
-                 (RCU.rcFetchReq w3Compute) w3WeightReady w3EffRow
+  w3ReqPulse = mkRowReqPulse cycleCounter w3FetchReq w3WeightReady w3EffRow
 
   (w3AxiMaster, w3Lo, w3WeightValidRaw, w3WeightReadyRaw) =
     LOADER.w3WeightLoader cycleCounter w3Slave layerIdx
-      w3EffRow w3ReqPulse (pure True) (RCU.rcRowDone w3Compute)
+      w3EffRow w3ReqPulse (pure True) w3RowDone
 
   w3WeightValid = w3WeightValidRaw
   w3WeightReady = w3WeightReadyRaw
@@ -293,27 +374,22 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     .&&. (not <$> w3OutputValid)
     .&&. (not <$> w3JustConsumed)
 
-  w3Compute = RCU.rowComputeUnit cycleCounter RCU.RowComputeIn
-    { RCU.rcInputValid      = w3EffInput
-    , RCU.rcWeightValid     = w3WeightValid
-    , RCU.rcDownStreamReady = pure True
-    , RCU.rcRowIndex        = w3RowIndex
-    , RCU.rcWeightDram      = LOADER.dramRowOut w3Lo
-    , RCU.rcColumn          = xHatLatched
-    }
+  -- Serial inline computation for W3
+  (_w3MachState, w3FetchReq, _w3RowReset, _w3RowEnable, w3AllDone, _w3IdleReady,
+   _w3CompCounter, w3RowDone, w3SerialResult, w3ColPrefetch) =
+    serialRowAccum @dom @HiddenDimension @ModelDimension
+      w3EffInput w3WeightValid w3RowDone
+      w3RowIndex (LOADER.dramRowOut w3Lo) xHatBramRdData
 
-  -- Latch w3 row result and index for 1-cycle BRAM read latency.
-  w3RowDone :: Signal dom Bool
-  w3RowDone = RCU.rcRowDone w3Compute
-
+  -- Latch W3 row result and index for 1-cycle FFN BRAM read latency.
   w3ResultLatch :: Signal dom FixedPoint
-  w3ResultLatch = regEn 0 w3RowDone (RCU.rcResult w3Compute)
+  w3ResultLatch = regEn 0 w3RowDone w3SerialResult
 
   w3RowIdxLatch :: Signal dom (Index HiddenDimension)
   w3RowIdxLatch = regEn 0 w3RowDone w3RowIndex
 
-  -- 1-cycle delay: BRAM read for slot A[i] was issued when w3RowDone fired;
-  -- data arrives this cycle. Compute and write slot B[i].
+  -- 1-cycle delay: FFN BRAM read for slot A[i] was issued on w3RowDone;
+  -- data arrives the next cycle. Compute SiLU(gate[i]) * up[i] → slot B[i].
   w3WriteEnabled :: Signal dom Bool
   w3WriteEnabled = register False w3RowDone
 
@@ -327,19 +403,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
   -------------------------------------------------------------------------
   -- W2 (Down) Phase — ModelDimension rows × HiddenDimension cols
   --
-  -- The column (formerly gateUpLatched :: Vec HiddenDimension FixedPoint)
-  -- is now read serially from FFN BRAM slot B, one element per cycle.
-  -- This replaces RCU.rowComputeUnit with an inline serial dot product.
-  --
-  -- Per-row timing:
-  --   MReset   (1 cycle): w2CompCounter reset, BRAM pre-fetches col[0]
-  --   MProcess (HiddenDimension cycles):
-  --     cycle k (k=0..HiddenDim-1):
-  --       BRAM data = col[k] (issued at cycle k-1 / MReset)
-  --       mantissa  = rowMantissas[k]
-  --       acc      += mantissa[k] * col[k]
-  --       BRAM pre-fetch: col[k+1] (driven via w2BramPrefetch)
-  --   rowDone fires 2 cycles after last element (edge-detect + register)
+  -- Inline serial: column read from FFN BRAM slot B, results to slot C.
   -------------------------------------------------------------------------
   w2RowIndex :: Signal dom (Index ModelDimension)
   w2RowIndex = register 0 (RS.rsNextRowIndex w2RS)
@@ -371,8 +435,7 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
   w2OutputValid   = OTC.otcOutputValid w2OutputTxn
   w2ConsumeSignal = w2OutputValid
 
-  w2ReqPulse = mkRowReqPulse cycleCounter
-                 w2FetchReq w2WeightReady w2EffRow
+  w2ReqPulse = mkRowReqPulse cycleCounter w2FetchReq w2WeightReady w2EffRow
 
   (w2AxiMaster, w2Lo, w2WeightValidRaw, w2WeightReadyRaw) =
     LOADER.w2WeightLoader cycleCounter w2Slave layerIdx
@@ -386,48 +449,33 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     .&&. (not <$> w2OutputValid)
     .&&. (not <$> w2JustConsumed)
 
-  -- Row-level FSM (replaces matrixMultiplierStateMachine inside RCU).
-  -- downStreamReady = pure True: MDone lasts exactly 1 cycle before resetting
-  -- to MIdle; the OTC latches w2AllDone for us.
   (_w2MachState :: Signal dom MultiplierState, w2FetchReq, w2RowReset, w2RowEnable, w2AllDone, _w2IdleReady) =
     matrixMultiplierStateMachine
       w2EffInput w2WeightValid (pure True) w2RowDone w2RowIndex
 
-  -- Column counter: indexes the current computation element.
-  --   MReset cycle    : counter resets to 0 (applied next cycle = first MProcessing)
-  --   MProcessing k   : counter = k (0-based); advances each enable cycle
   w2CompCounter :: Signal dom (Index HiddenDimension)
   w2CompCounter = register 0 nextW2CompCounter
 
   nextW2CompCounter :: Signal dom (Index HiddenDimension)
   nextW2CompCounter =
-    mux w2RowReset (pure 0) $
+    mux w2RowReset  (pure 0) $
     mux w2RowEnable (satSucc SatBound <$> w2CompCounter) $
     w2CompCounter
 
-  -- BRAM pre-fetch address: drives the FFN BRAM read port during FPDown.
-  -- During MReset  : 0        → col[0] arrives at first MProcessing cycle
-  -- During MProcessing cycle k (compCounter=k):
-  --   satSucc(k) → col[k+1] arrives next cycle (irrelevant on last element)
+  -- BRAM pre-fetch for slot B column during FPDown
   w2BramPrefetch :: Signal dom (Index HiddenDimension)
   w2BramPrefetch =
     mux w2RowReset (pure 0) (satSucc SatBound <$> w2CompCounter)
 
-  -- Weight row from DRAM (stable throughout each row's processing window).
   w2WeightRow :: Signal dom (RowI8E HiddenDimension)
   w2WeightRow = LOADER.dramRowOut w2Lo
 
-  -- Serial multiply: mantissa[compCounter] × col[compCounter]
-  -- ffnBramRdData delivers col[compCounter] with 1-cycle latency:
-  --   the address issued at MReset/previous cycle was compCounter-1 (or 0),
-  --   so the data arriving now is exactly col[compCounter] once aligned.
   w2MantissaElem :: Signal dom (Signed 8)
   w2MantissaElem = (!!) <$> (rowMantissas <$> w2WeightRow) <*> w2CompCounter
 
   w2Product :: Signal dom FixedPoint
   w2Product = (fromIntegral <$> w2MantissaElem) * ffnBramRdData
 
-  -- Accumulator: reset on MReset, accumulate on MProcessing (guarded by rowDone).
   w2Acc :: Signal dom FixedPoint
   w2Acc = register 0 nextW2Acc
 
@@ -437,9 +485,6 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
     mux (w2RowEnable .&&. (not <$> w2RowDone)) (w2Acc + w2Product) $
     w2Acc
 
-  -- Row done: fires when the last element (compCounter == maxBound) has been
-  -- processed. Uses rising-edge detection to produce a 1-cycle pulse,
-  -- mirroring parallel64RowProcessor's rowDone convention.
   w2LastElemFlag :: Signal dom Bool
   w2LastElemFlag = (w2CompCounter .==. pure maxBound) .&&. w2RowEnable
 
@@ -449,12 +494,9 @@ ffnProjector cycleCounter dramSlaveIn layerIdx validIn readyIn xHat ffnCRdAddr =
   w2RowDone :: Signal dom Bool
   w2RowDone = register False w2RowDoneRaw
 
-  -- Scale accumulator by quantisation exponent to produce the dot-product result.
   w2SerialResult :: Signal dom FixedPoint
   w2SerialResult = scalePow2F <$> (rowExponent <$> w2WeightRow) <*> w2Acc
 
-  -- Write each completed row result to FFN BRAM slot C.
-  -- Slot C base = 2*HiddenDimension; indexed by w2RowIndex (ModelDimension rows).
   w2BramWriteOp :: Signal dom (Maybe (FFNBramAddr, FixedPoint))
   w2BramWriteOp = mux w2RowDone
     (Just <$> ((,) <$> ((ffnSlotCBase +) . fromIntegral <$> w2RowIndex) <*> w2SerialResult))

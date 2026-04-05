@@ -13,7 +13,7 @@ import LLaMa2.Types.ModelConfig
       RotaryPositionalEmbeddingDimension,
       SequenceLength )
 import LLaMa2.Numeric.Types (FixedPoint)
-import LLaMa2.Numeric.RmsNormSeq (rmsNormSeq)
+import LLaMa2.Numeric.RmsNormSeq (rmsNormSeqVec)
 import LLaMa2.Types.LayerData (ActivationBramAddr)
 import qualified LLaMa2.Layer.Attention.FSM as FSM (processingControllerFSM)
 
@@ -159,7 +159,7 @@ qkvProjector cycleCounter dramSlaveIn layerIdx inputValid downStreamReady seqPos
   -- fetches; effectiveInputValid waits for whichever finishes last.
   -- bramRdData provides xi element-by-element; rdNext drives the BRAM read address
   -- one cycle ahead so data[counter] arrives in time (1-cycle BRAM latency).
-  (rmsNormValid, xNorm, _, rdNext) = rmsNormSeq rmsAttDone bramRdData rmsAttVec
+  (rmsNormValid, xNorm, _, rdNext) = rmsNormSeqVec rmsAttDone bramRdData rmsAttVec
 
   bramRdAddr :: Signal dom ActivationBramAddr
   bramRdAddr = (slot0BramBase +) . fromIntegral <$> rdNext
