@@ -139,19 +139,18 @@ multiHeadAttentionStage cycleCounter dramSlaveIn kvDramSlaves layerIdx seqPos
     kvAxiMasters = map (\(a,_,_,_,_) -> a) kvBankResultsVec
                 :: Vec NumKeyValueHeads (Master.AxiMasterOut dom)
 
-    allHeadOuts       = map (\(_,o,_,_,_) -> o) kvBankResultsVec
-    allHeadDones      = map (\(_,_,d,_,_) -> d) kvBankResultsVec
     allWriteDone      = map (\(_,_,_,w,_) -> w) kvBankResultsVec
     allBankQRdAddrs   = map (\(_,_,_,_,a) -> a) kvBankResultsVec
                      :: Vec NumKeyValueHeads (Vec QHeadsPerKVBank (Signal dom (Index HeadDimension)))
 
-    perHeadOutputs =
-      fold (zipWith (liftA2 (zipWith (+)))) allHeadOuts
-        :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+    -- Each bank returns Vec QHeadsPerKVBank outputs in local (bank-relative) order.
+    -- concat assembles them into global Q-head order: bank0[0], bank0[1], ..., bankN[0], ...
+    -- This is a static wire assignment — no runtime mux.
+    perHeadOutputs :: Vec NumQueryHeads (Signal dom (Vec HeadDimension FixedPoint))
+    perHeadOutputs = concat (map (\(_,o,_,_,_) -> o) kvBankResultsVec)
 
-    perHeadDoneFlags =
-      fold (zipWith (liftA2 (||))) allHeadDones
-        :: Vec NumQueryHeads (Signal dom Bool)
+    perHeadDoneFlags :: Vec NumQueryHeads (Signal dom Bool)
+    perHeadDoneFlags = concat (map (\(_,_,d,_,_) -> d) kvBankResultsVec)
 
     perBankWriteDoneFlags = allWriteDone
       :: Vec NumKeyValueHeads (Signal dom Bool)
